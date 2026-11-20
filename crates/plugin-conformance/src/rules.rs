@@ -94,7 +94,12 @@ fn unmarked_references(docs: &DocSet, registry: &Registry, findings: &mut Vec<Fi
 }
 
 fn is_open(closure: &str) -> bool {
-    closure.split_whitespace().next().map(|word| word.trim_matches(|c: char| !c.is_alphanumeric())) == Some("Open")
+    let mut words = closure.split_whitespace().map(|word| word.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase());
+    match words.next().as_deref() {
+        Some("open") => true,
+        Some("still") => words.next().as_deref() == Some("open"),
+        _ => false,
+    }
 }
 
 fn closures(docs: &DocSet, findings: &mut Vec<Finding>) -> Result<(), Error> {
@@ -102,6 +107,9 @@ fn closures(docs: &DocSet, findings: &mut Vec<Finding>) -> Result<(), Error> {
     let mut rows = 0;
     for table in &document.tables {
         let Some(closure) = table.column("Closure") else {
+            if table.first_header() == "ID" {
+                return Err(Error::MissingTable { file: path.to_owned(), header: "Closure" });
+            }
             continue;
         };
         for row in &table.rows {

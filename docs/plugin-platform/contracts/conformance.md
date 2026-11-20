@@ -171,7 +171,7 @@ Test IDs match `^(T|[A-Z][A-Z0-9]*)-[a-z][a-z0-9]*(-[a-z0-9]+)*$`. Topic IDs suc
 
 A test ID is defined by the first cell of a body row in a table whose first header cell is `ID`, in `implementation/*-acceptance.md`. A test ID is referenced by an inline code span holding exactly one ID or one wildcard, such as `RUN-sink` or `PAR-*`. Prose words such as UI-thread are never IDs, because they are not code spans. A bare word outside a code span that equals a defined ID is reported as an unmarked reference, except in its defining cell. Every acceptance file needs at least one `ID` table row.
 
-A question is open when the first word of its `Closure` cell, without punctuation or markup, is `Open`. A closed question links a document under `decisions/` and one under `contracts/`. [Question closure](../question-closure.md) needs at least one `Closure` row.
+A question is open when the first word of its `Closure` cell, without punctuation or markup, is `Open` in any case, or when the cell starts with `Still open`. Every question table headed `ID` has a `Closure` column. A closed question links a document under `decisions/` and one under `contracts/`. [Question closure](../question-closure.md) needs at least one `Closure` row.
 
 A proof row is a body row of a table whose first header cell is `ID`, in [the proof inventory](../implementation/proof-inventory.md), whose first cell starts with `REF-`. Its `Target` cell must contain `EC`, `PC` or `Both` as a word. The inventory needs at least one proof row.
 

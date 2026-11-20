@@ -110,7 +110,10 @@ fn a_wildcard_must_match_a_defined_id() {
 #[test]
 fn an_open_question_is_reported_through_punctuation_and_markup() {
     let open = |line: usize, question: &str| Finding::OpenQuestion { at: at("question-closure.md", line), question: question.into() };
-    assert_eq!(findings("open-question"), vec![open(8, "SYS-01.2"), open(9, "SYS-01.3"), open(10, "SYS-01.4"), open(11, "SYS-01.5")]);
+    assert_eq!(
+        findings("open-question"),
+        vec![open(8, "SYS-01.2"), open(9, "SYS-01.3"), open(10, "SYS-01.4"), open(11, "SYS-01.5"), open(12, "SYS-01.6"), open(13, "SYS-01.7")]
+    );
 }
 
 #[test]
@@ -176,6 +179,15 @@ fn a_defect_needs_an_owner_and_an_exit_phase() {
 #[test]
 fn a_question_closure_without_a_closure_column_is_an_error() {
     let missing = match error(&materialize("renamed-closure")) {
+        Error::MissingTable { file, header } => (file, header),
+        other => panic!("expected a missing table, got {other:?}"),
+    };
+    assert_eq!(missing, (PathBuf::from("question-closure.md"), "Closure"));
+}
+
+#[test]
+fn a_question_table_without_a_closure_column_is_an_error_beside_a_valid_one() {
+    let missing = match error(&materialize("one-renamed-closure")) {
         Error::MissingTable { file, header } => (file, header),
         other => panic!("expected a missing table, got {other:?}"),
     };

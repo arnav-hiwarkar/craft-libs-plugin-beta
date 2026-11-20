@@ -9,3 +9,6 @@
 | SYS-01.3 | Open? | Open. Waiting on the review. |
 | SYS-01.4 | Open? | Open, pending review |
 | SYS-01.5 | Open? | Open<br>pending review |
+| SYS-01.6 | Open? | open: lower case |
+| SYS-01.7 | Open? | Still open after review |
+| SYS-01.8 | Closed? | Openly closed. [Decision](decisions/ADR-X.md) · [Contract](contracts/x.md) |
