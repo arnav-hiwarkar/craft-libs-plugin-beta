@@ -1,0 +1,46 @@
+# Workspace and plugin surface contract
+
+UI-01 is designed with runtime verification gates. The [ADR](../decisions/ADR-UI-01.md) records the decision. UI-02 defines the body formats, UI-03 defines tools and interaction detail, and UI-04 defines command registration and hook detail. All interfaces below are design signatures.
+
+## Identity and registration
+
+```text
+ContributionKey = (PackageId, LocalContributionId)
+InstanceKey = (ContributionKey, AppWorkspaceScope | PersistentProjectBinding, InstanceId)
+MountRef = opaque (InstanceKey, ProcessEpoch, MountEpoch)
+Site = Panel(DefaultAnchor, Multiplicity) | Inspector(SlotId) | Dialog(DialogRole)
+ManifestUi = (ContributionKey, Site, LocalizedTitle, BundleIcon?, RequiredContracts)
+Body = (MountRef, BaseRevision?, Revision, Content)
+UiAction = (MountRef, BodyRevision, NodeId, ActionId, EventReceipt, ContextTicket?, Payload)
+PlacementIntent = Docked(AnchorRole) | FloatInApp | PreferNative
+UiOutcome = Applied | Presented(EffectivePlacement) | BodyStale | Denied | Busy | Unsupported
+```
+
+Register declared descriptors for enabled compatible contributions, using package identity from the validated local loader and manifest. The worker can publish its own content, request a presentation, or create additional instances where declared. It cannot send arbitrary workspace mutations. Host allocates instances, binds scopes, and issues mount references. Designate one stable single-instance ID when multiplicity is one. The stored project binding has no execution authority. The live target uses a separate document handle and incarnation. Resolve aliases under a compatible release migration with provenance and collision checks. Titles, locale, icon references and renderer revisions never define identity.
+
+```text
+ui.open(contribution, optional_instance, preference) -> Result<UiOutcome>
+ui.publish(mount, body_update) -> Result<BodyRevision>
+ui.close(mount) -> Result<UiOutcome>
+ui.dialog(dialog_contribution, request_id, initial_body) -> Future<DialogOutcome>
+onUiAction(admitted_action) -> async ()
+onMount / onMetrics / onVisibility / onUnmount -> async lifecycle events
+```
+
+A panel uses the ordinary Window entry, command registry, tab and focus traversal. A custom canvas is a body in the panel. A utility is a floating group. A fullscreen view uses effective native fullscreen when advertised, otherwise host workspace maximize when available. Modal scope, focus trap, Esc, dismissal and protected priority belong to the app dialog host. Guest close is advisory; framework teardown never waits. Inspector augmenters contribute in deterministic user order then stable key order. A replacement applies only to a named replaceable slot selected by the user. The slot retains default content and an independently usable restore action. Host permission, file, emergency and recovery chrome stay under host control.
+
+## Layout and persistence
+
+The app owns visible widgets, docking actions, layout, persistence, focus and popup ownership. The framework has one renderer and dock model in each app. A floating group stores its user preference alongside in-app geometry, native normal bounds and dock-return data. Native opening requires the preference, the live backend capability and every member's eligibility. Default historical groups keep the former automatic behavior. When a closed group's location is retained for reopen, save its presentation preference with that location. Group splits inherit the existing preference unless the initiating user action names another choice. A merge takes the destination group's choice. Clamping to a reachable display and an embedded fallback do not erase saved normal bounds or dock-return data. Expose the effective presentation with a reason when downgraded. Native is measured separately per supported OS/backend. Headless reports UI unavailable.
+
+Persist placement and identity as one versioned workspace snapshot. Keep inactive named layouts in the same policy. Read bounded records and hydrate placeholders before reconciliation. Missing or disabled bodies keep their open/hidden status and placement. No package is loaded from a workspace reference. Retain an original readable copy and isolate the new version if older builds would discard unknown entries. Map a legacy numeric ScriptUI ID only via proven durable origin; otherwise keep it as an inert legacy placeholder. Preserve the user's original source and data. Reinstall or restart recreates the mount with a fresh `MountEpoch`.
+
+## Frame, authority and liveness
+
+1. Prepare and validate content on the side of the app UI loop. A budgeted UI publication accepts a prepared snapshot only for a live owner, expected body revision, current `MountEpoch` and current `PrincipalEpoch`. Generation names follow the [runtime table](runtime.md#generations). A malformed or stale update preserves the last valid snapshot and gives the worker a typed refresh request. Render uses immutable data; no synchronous guest call, IPC wait or whole-tree validation happens in paint. Theme and input go through Craft controls.
+2. The originating viewport claims raw input once, with event provenance and the active focus, capture and modal state. Claimed keys and clipboard events cannot re-enter the root after blur. Keep drop origin until the host chooses its own file-open route or issues a scoped plugin file handle. Only forward an unclaimed, admitted host event. Repeated layout uses the current pass's events only. Use the framework's existing invalidation and settle mechanisms, with an exhaustive content dependency key. Otherwise leave the region unsettled.
+3. Stage semantic effects from root and native passes. At the UI owner barrier apply authoritative host actions, then resolve same-pass modal, placement and target changes. Cancel captures, text compositions and affected pending actions. Recheck staged messages and any ready replies before releasing them. Scope modal blocking to its owner scope. A deferred native callback follows the same barrier before any guest effect. Coalesce only explicitly replaceable data. If the queue cannot admit a required terminal event, cancel its gesture and invalidate its ticket locally. Charge framing bytes before allocation. Bound preparation time, prepared bytes, resident resources and publication per plugin and across the host process and all viewports. Reserve terminal-event capacity before a capture starts. Apply equivalent limits on CPU and GPU leases.
+4. Host-issued context tickets capture mount, `ProcessEpoch`, event identity, document incarnation, targets, `PrincipalEpoch`, optional `InteractionEpoch` and a read set. Each ticket and job records a read set (ReadKey → O(1) token) covering captured targets, query leases opened under it, render reads and write targets; publication compares tokens only; mismatch returns Stale(ReadKey[]) with no Undo; DocRevision scopes previews and receipts only. The worker can request one labeled edit from a ticket. The canonical edit gate validates targets and live authority at admission and again at commit. Serialize final admission against grant revocation and publication on the app owner. A submitted ticket permits one terminal execution. Duplicate requests return the cached terminal outcome while it exists and return Expired after receipt eviction. Expiry cannot restore execution authority. Preserve a capture through cosmetic body revisions only while its declared target, action type and interpretation stay stable. Cancel when the action is removed or rebound. A changed document tab cannot retarget a request; another open document needs its own ticket from `doc.ticket` ([invocation contract](operations.md#documents-resources-and-devices)). For a live, explicit document binding, commit to that document only when its preconditions still pass. An active-document inspector creates a fresh binding on tab switch. Job lifetime independent of a panel belongs to the explicitly admitted job API.
+5. On close, reparent, revoke, fault or restart, advance the relevant `MountEpoch`, `ProcessEpoch` or `PrincipalEpoch` and retire current capture, IME, previews, modals and body resources. Preview tasks use their own generation and cannot publish to a committed cache key. Preserve open workspace placement with an inert attributed placeholder after fault or disable. Restore focus to an eligible host control. Ready actions and pending replies from the old epoch fail. A reparent can reuse content while advancing its `InteractionEpoch`. Retire resources off the UI thread after safe completion. Charge retired GPU bytes until the fence permits reclaim or device reset ends the allocations.
+
+All effects depend on a current authorized principal. Loading local images and icons uses bounded bundle assets or separately picked capabilities. Custom GPU bodies receive revocable host-managed resources. An offline HTML body is optional. It needs an independently demonstrated offline process and broker boundary for all subresources, navigation, external opens and subprocesses. Use a packaged-only resource provider. Render equivalent semantic or canvas content where isolation cannot be verified. Native code needs verified OS confinement including descendants. Full-access consent cannot waive offline policy. [UI-01 acceptance](../implementation/ui-01-acceptance.md)

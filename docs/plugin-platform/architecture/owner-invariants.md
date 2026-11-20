@@ -1,0 +1,10 @@
+# Requirements that bind every contract
+
+- ArtCraft provides one SDK and one authority model. Each app supplies its own document, commands, tool integration, render and history semantics through one adapter. The same negotiated feature has the same meaning across apps. A native engine feature that lacks a public SDK path is an integration gap to resolve in the phase plan.
+- EffectCraft and PhotoCraft lead. Keep the framework and app engines as the owners of their existing concerns. New UI must participate in canonical tabs, floating columns, layout persistence, focus, theme and IME. The shared platform can supply resident content to a framework renderer. Paint and real-time input must continue during worker stalls.
+- Support extensions on built-in objects and new first-class persistent types. Projects retain state and references even when a plugin is missing or fails to migrate. Save/undo own canonical edits. External publications have their own outcomes. Exact export requires exact results or a clear failure.
+- Bundled first-party features use the same public SDK, authority and performance paths as third-party plugins. A local package must be explicitly selected and enabled. A project may describe a missing dependency and preserve bytes. It cannot activate code by itself.
+- Offline is a host contract for plugin-originated work. Treat network calls through indirect app features, resource resolution or subprocesses as equally out of scope. User-directed exceptions are user-picked remote volumes, explicit cloud hydration on a pick, and printing; a plugin never initiates any of them. Advertise an execution or presentation mode after verifying its boundary. Adobe binary and format compatibility and external distribution are outside the platform design.
+- Specs come before implementation. The owner's approval gates work from current main. A failed design review or unrun proof remains visible in the ledger. No repo or installed app changes are authorized during the workshop.
+
+Source of precedence is the owner addendum, workshop brief, and context decisions.

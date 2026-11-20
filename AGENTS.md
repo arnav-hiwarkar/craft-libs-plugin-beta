@@ -59,5 +59,7 @@ Shared Rust libraries for the Craft Apps.
   and lints, and are listed in `[workspace.dependencies]`. A new crate's `Cargo.toml` includes
   `[lints] workspace = true`.
 - **No app code.** A crate here must be useful to more than one app and must not depend on any app.
+- **Plugin platform contracts** live in `docs/plugin-platform/`, and `craft-plugin-conformance` checks
+  them. A PR that changes platform behaviour updates its contract in the same PR.
 - **Before merging:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
   `cargo test --workspace`.
