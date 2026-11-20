@@ -14,6 +14,7 @@ const T_995_LIMIT: f64 = 2.617;
 const MIN_UNITS_PER_STRATUM: usize = 2;
 const CONTRASTS: [(Arm, Arm); 3] = [(Arm::A, Arm::B), (Arm::A0, Arm::A), (Arm::A, Arm::AA)];
 const PARTS_PER_BILLION: f64 = 1e9;
+const Z_995: f64 = 2.576;
 
 enum Units {
     Latency { quantile: Quantile, cumulative: Vec<[Vec<u64>; 2]> },
@@ -37,6 +38,7 @@ pub(super) struct Pool<'a> {
     units: Units,
     strata: Vec<Range<usize>>,
     excluded_strata: usize,
+    seed: u64,
 }
 
 struct Estimate {
@@ -44,6 +46,7 @@ struct Estimate {
     test: f64,
     censored: bool,
     widening: f64,
+    sampling: f64,
 }
 
 type Digest<'a> = (&'a Ident, &'a Ident, &'a Ident, &'a Ident, &'a super::Workload, Gate, NonZeroU32);
@@ -52,13 +55,17 @@ fn digest(record: &RunRecord) -> Digest<'_> {
     (&record.test_id, &record.app_pin, &record.fw_rev, &record.os, &record.workload, record.gate, record.refresh_hz)
 }
 
-type Blocks<'a> = BTreeMap<(&'a Ident, &'a Ident), BTreeMap<u32, [Vec<&'a Samples>; 2]>>;
+type Blocks<'a> = BTreeMap<(&'a Ident, &'a Ident), BTreeMap<u32, [Vec<&'a RunRecord>; 2]>>;
 
 impl<'a> Pool<'a> {
     pub(super) fn new(records: &'a [RunRecord]) -> Result<Self, PairError> {
         let first = records.first().ok_or(PairError::NoRecords)?;
         if let Some(stray) = records.iter().find(|record| digest(record) != digest(first)) {
             return Err(PairError::MixedDigest { run_id: stray.run_id.clone() });
+        }
+        let mut run_ids = BTreeSet::new();
+        if let Some(repeat) = records.iter().find(|record| !run_ids.insert(&record.run_id)) {
+            return Err(PairError::DuplicateRun { run_id: repeat.run_id.clone() });
         }
         if let Some(stray) = records.iter().find(|record| !record.samples.fits(record.gate)) {
             return Err(PairError::SamplesKind { run_id: stray.run_id.clone() });
@@ -73,7 +80,7 @@ impl<'a> Pool<'a> {
         for record in records {
             let unit = blocks.entry((&record.night, &record.runner_image)).or_default().entry(record.block).or_default();
             if let Some(side) = unit.get_mut(usize::from(record.arm == test)) {
-                side.push(&record.samples);
+                side.push(record);
             }
         }
         let mut pool = Pool {
@@ -87,6 +94,7 @@ impl<'a> Pool<'a> {
             },
             strata: Vec::new(),
             excluded_strata: 0,
+            seed: seed(&blocks),
         };
         for ((night, image), stratum) in blocks {
             pool.add_stratum(night, image, stratum)?;
@@ -94,7 +102,7 @@ impl<'a> Pool<'a> {
         Ok(pool)
     }
 
-    fn add_stratum(&mut self, night: &Ident, image: &Ident, stratum: BTreeMap<u32, [Vec<&Samples>; 2]>) -> Result<(), PairError> {
+    fn add_stratum(&mut self, night: &Ident, image: &Ident, stratum: BTreeMap<u32, [Vec<&RunRecord>; 2]>) -> Result<(), PairError> {
         let unpaired = |block| PairError::Unpaired { night: night.clone(), runner_image: image.clone(), block };
         let start = self.units.len();
         let size = stratum.len();
@@ -141,12 +149,12 @@ impl<'a> Pool<'a> {
         self.nights.len()
     }
 
-    pub(super) fn measure(&self, seed: u64) -> Decision {
+    pub(super) fn measure(&self) -> Decision {
         let Some(point) = self.estimate(&vec![1.0; self.units.len()]) else {
             return Decision::Withheld(Doubt::Noisy);
         };
         let allow = self.gate.kind().allow(point.base.round() as u64, self.refresh_hz);
-        let mut rng = SplitMix64(seed);
+        let mut rng = SplitMix64(self.seed);
         let mut weights = vec![0.0; self.units.len()];
         let mut deltas = Vec::with_capacity(RESAMPLES);
         let mut censored = point.censored;
@@ -168,7 +176,8 @@ impl<'a> Pool<'a> {
             deltas.push(resample.test - resample.base);
         }
         let delta = point.test - point.base;
-        let spread = critical_t(self.units.len() - self.strata.len()) * standard_deviation(&deltas) + point.widening;
+        let bootstrap = critical_t(self.units.len() - self.strata.len()) * standard_deviation(&deltas);
+        let spread = (bootstrap * bootstrap + point.sampling * point.sampling).sqrt() + point.widening;
         Decision::Measured(Measurement {
             unit: self.gate.kind().unit(),
             allow,
@@ -204,37 +213,79 @@ impl<'a> Pool<'a> {
                     (Reading::At(value), width) => (value.as_nanos() as f64, width, false),
                     (Reading::Above, _) => (HIGHEST_NS as f64, 0.0, true),
                 };
-                Some(Estimate { base, test, censored, widening: base_width + test_width })
+                Some(Estimate { base, test, censored, widening: base_width + test_width, sampling: 0.0 })
             }
             Units::Rate(counts) => {
-                let rate = |arm: usize| {
+                let totals = |arm: usize| {
                     let (events, frames) = drawn()
                         .filter_map(|(index, weight)| Some((*weight, counts.get(index)?.get(arm)?)))
                         .fold((0.0, 0.0), |(events, frames), (weight, count)| {
                             (events + weight * count.events() as f64, frames + weight * count.frames() as f64)
                         });
-                    (frames > 0.0).then(|| PARTS_PER_BILLION * events / frames)
+                    (frames > 0.0).then_some((events, frames))
                 };
-                Some(Estimate { base: rate(0)?, test: rate(1)?, censored: false, widening: 0.0 })
+                let (base, test) = (totals(0)?, totals(1)?);
+                let sampling = Z_995 * PARTS_PER_BILLION * (wilson_variance(base) + wilson_variance(test)).sqrt();
+                Some(Estimate {
+                    base: PARTS_PER_BILLION * base.0 / base.1,
+                    test: PARTS_PER_BILLION * test.0 / test.1,
+                    censored: false,
+                    widening: 0.0,
+                    sampling,
+                })
             }
         }
     }
 }
 
-fn merged(samples: &[&Samples]) -> Hist {
+fn wilson_variance((events, frames): (f64, f64)) -> f64 {
+    let padded = frames + Z_995 * Z_995;
+    let rate = (events + Z_995 * Z_995 / 2.0) / padded;
+    rate * (1.0 - rate) / padded
+}
+
+fn seed(blocks: &Blocks) -> u64 {
+    let mut lines: Vec<String> = Vec::new();
+    for (stratum, units) in blocks.values().enumerate() {
+        for (unit, sides) in units.values().enumerate() {
+            for record in sides.iter().flatten() {
+                let workload = &record.workload;
+                lines.push(format!(
+                    "{stratum} {unit} {} {} {} {} {} {} {} {} {}",
+                    record.arm.name(),
+                    record.gate.name(),
+                    workload.fixture_hash,
+                    workload.mode,
+                    workload.backend,
+                    workload.load,
+                    workload.scale,
+                    record.refresh_hz,
+                    record.samples,
+                ));
+            }
+        }
+    }
+    lines.sort_unstable();
+    lines
+        .iter()
+        .flat_map(|line| line.bytes().chain(*b"\n"))
+        .fold(0xCBF2_9CE4_8422_2325, |hash, byte| (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01B3))
+}
+
+fn merged(records: &[&RunRecord]) -> Hist {
     let mut hist = Hist::new();
-    for sample in samples {
-        if let Samples::Latency(more) = sample {
+    for record in records {
+        if let Samples::Latency(more) = &record.samples {
             hist.merge(more);
         }
     }
     hist
 }
 
-fn summed(samples: &[&Samples]) -> Count {
+fn summed(records: &[&RunRecord]) -> Count {
     let mut total = Count::default();
-    for sample in samples {
-        if let Samples::Count(more) = sample {
+    for record in records {
+        if let Samples::Count(more) = &record.samples {
             total.add(more);
         }
     }

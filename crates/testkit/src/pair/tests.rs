@@ -4,8 +4,9 @@ use std::time::Duration;
 use super::bootstrap::SplitMix64;
 use super::gate::GATES;
 use super::{
-    AA_VERDICTS, Arm, Calibration, Controls, Count, Decision, Doubt, Eligibility, Gate, Hist, Ident, Kind, LOOKS, LineError, Measurement, PairError,
-    Problem, Quantile, Reading, RunRecord, Samples, Unit, Verdict, Workload, calibration_verdict, decide, parse_records, print_records,
+    AA_VERDICTS, Arm, Calibration, Controls, Count, Decision, Doubt, Eligibility, Gate, Hist, Ident, Kind, LOOKS, LineError, MAX_POOL_BYTES,
+    MAX_RECORDS, Measurement, PairError, Problem, Quantile, Reading, RunRecord, Samples, Unit, Verdict, Workload, calibration_verdict, decide,
+    parse_records, print_records,
 };
 
 const IMAGE: &str = "macos-15-arm64";
@@ -224,7 +225,7 @@ fn the_same_records_in_any_order_give_the_same_decision() {
     assert_eq!(decide(&records, &eligible()), decide(&reversed, &eligible()));
     assert_eq!(
         measured(&records),
-        Measurement { unit: Unit::Nanoseconds, allow: 1_000_000, delta: 344_064, low: 60_386, high: 627_742, excluded_strata: 0 }
+        Measurement { unit: Unit::Nanoseconds, allow: 1_000_000, delta: 344_064, low: 62_465, high: 625_663, excluded_strata: 0 }
     );
 }
 
@@ -249,6 +250,32 @@ fn rate_gates_compare_event_rates_in_parts_per_billion() {
     assert_eq!(regressed.verdict(), Verdict::Fail);
     let close = measured(&rates(5));
     assert_eq!((close.delta, close.verdict()), (500_000, Verdict::Pass));
+}
+
+#[test]
+fn renaming_runs_leaves_the_decision_bit_identical() {
+    let records = night(&mut SplitMix64(12), &STEADY, "2026-11-21", 4, Duration::from_micros(300));
+    let renamed: Vec<RunRecord> =
+        records.iter().map(|record| RunRecord { run_id: id(&format!("renamed-{}", record.run_id)), ..record.clone() }).collect();
+    assert_eq!(decide(&renamed, &eligible()), decide(&records, &eligible()));
+    let mut repeated = records.clone();
+    repeated[3].run_id = records[0].run_id.clone();
+    assert_eq!(decide(&repeated, &eligible()), Err(PairError::DuplicateRun { run_id: records[0].run_id.clone() }));
+}
+
+#[test]
+fn rate_intervals_carry_the_binomial_noise_of_few_events() {
+    let stalls = |frames: u64, plugin_events: u64, units: u32| {
+        quartets("2026-11-21", units, Gate::UiEqLongStalls, move |_, arm| {
+            Samples::Count(Count::new(if arm == Arm::B { plugin_events } else { 0 }, frames).unwrap())
+        })
+    };
+    let two_events = measured(&stalls(10_000, 1, 2));
+    assert_eq!((two_events.allow, two_events.delta), (100_000, 100_000));
+    assert_eq!(two_events.verdict(), Verdict::Inconclusive(Doubt::Noisy));
+    let regressed = measured(&stalls(100_000, 50, 4));
+    assert_eq!(regressed.delta, 500_000);
+    assert_eq!(regressed.verdict(), Verdict::Fail);
 }
 
 #[test]
@@ -422,6 +449,17 @@ fn malformed_lines_are_rejected_with_their_line_and_problem() {
     assert_eq!(parse_records(&format!("{good}\n\n{good}\n")), Err(LineError { line: 2, problem: Problem::EmptyLine }));
     assert_eq!(parse_records(&format!("{good}\n{}\n", edited("arm=A", "arm=Z"))), Err(LineError { line: 2, problem: Problem::Value("arm") }));
     assert_eq!(Ident::new(&"x".repeat(129)), None);
+}
+
+#[test]
+fn pools_past_the_record_or_byte_cap_are_rejected() {
+    let line = record("n1", 0, 0, Arm::A, Gate::UiEqMissed, Samples::Count(Count::new(1, 2).unwrap())).to_string();
+    let at_cap = format!("{line}\n").repeat(MAX_RECORDS);
+    assert_eq!(parse_records(&at_cap).map(|records| records.len()), Ok(MAX_RECORDS));
+    assert_eq!(parse_records(&format!("{at_cap}{line}\n")), Err(LineError { line: MAX_RECORDS + 1, problem: Problem::TooManyRecords }));
+    let mut oversized = "\n".repeat(3);
+    oversized.push_str(&"x".repeat(MAX_POOL_BYTES - 2));
+    assert_eq!(parse_records(&oversized), Err(LineError { line: 4, problem: Problem::PoolTooLarge }));
 }
 
 const NIGHTLY_STRESS: Load = Load { block_noise: 0.25, ..STEADY };

@@ -3,17 +3,20 @@ use std::num::NonZeroU32;
 use std::str::FromStr;
 
 use super::gate::GATES;
-use super::{Arm, Count, Hist, Ident, RunRecord, Samples, Workload};
+use super::{ARMS, Count, Hist, Ident, RunRecord, Samples, Workload};
 
 const VERSION: &str = "craft-pair/1";
 const MAX_LINE: usize = 64 * 1024;
-const ARMS: [(Arm, &str); 4] = [(Arm::A0, "A0"), (Arm::A, "A"), (Arm::B, "B"), (Arm::AA, "AA")];
+pub const MAX_RECORDS: usize = 20_000;
+pub const MAX_POOL_BYTES: usize = 64 * 1024 * 1024;
 const COUNT_PREFIX: &str = "count:";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Problem {
     Version,
     TooLong,
+    TooManyRecords,
+    PoolTooLarge,
     EmptyLine,
     Field(&'static str),
     Value(&'static str),
@@ -37,10 +40,6 @@ impl LineError {
 pub(super) fn number<T: FromStr>(text: &str) -> Option<T> {
     let canonical = !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit()) && (text == "0" || !text.starts_with('0'));
     canonical.then(|| text.parse().ok()).flatten()
-}
-
-fn arm_name(arm: Arm) -> &'static str {
-    ARMS.iter().find(|(known, _)| *known == arm).map_or("A", |(_, name)| name)
 }
 
 impl fmt::Display for Samples {
@@ -83,7 +82,7 @@ impl fmt::Display for RunRecord {
             self.runner_image,
             self.night,
             self.block,
-            arm_name(self.arm),
+            self.arm.name(),
             self.gate.name(),
             self.refresh_hz,
             self.samples,
@@ -140,7 +139,7 @@ impl FromStr for RunRecord {
                 scale: fields.ident("scale")?,
             },
             block: fields.parsed("block", number)?,
-            arm: fields.parsed("arm", |text| ARMS.iter().find(|(_, name)| *name == text).map(|(arm, _)| *arm))?,
+            arm: fields.parsed("arm", |text| ARMS.into_iter().find(|arm| arm.name() == text))?,
             gate: fields.parsed("gate", |text| GATES.into_iter().find(|gate| gate.name() == text))?,
             refresh_hz: fields.parsed("refresh_hz", |text| number::<u32>(text).and_then(NonZeroU32::new))?,
             samples: fields.value("samples")?.parse()?,
@@ -160,6 +159,10 @@ pub fn print_records(records: &[RunRecord]) -> String {
 }
 
 pub fn parse_records(text: &str) -> Result<Vec<RunRecord>, LineError> {
+    if let Some(within) = text.as_bytes().get(..MAX_POOL_BYTES).filter(|_| text.len() > MAX_POOL_BYTES) {
+        let line = within.iter().filter(|byte| **byte == b'\n').count() + 1;
+        return Err(LineError { line, problem: Problem::PoolTooLarge });
+    }
     let body = text.strip_suffix('\n').unwrap_or(text);
     if body.is_empty() {
         return Ok(Vec::new());
@@ -168,6 +171,9 @@ pub fn parse_records(text: &str) -> Result<Vec<RunRecord>, LineError> {
         .enumerate()
         .map(|(index, line)| {
             let problem = |problem| LineError { line: index + 1, problem };
+            if index >= MAX_RECORDS {
+                return Err(problem(Problem::TooManyRecords));
+            }
             if line.is_empty() {
                 return Err(problem(Problem::EmptyLine));
             }

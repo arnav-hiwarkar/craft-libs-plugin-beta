@@ -3,46 +3,28 @@ use std::time::Duration;
 
 use super::Quantile;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Gate {
-    UiEqCpu,
-    UiEqGpu,
-    UiEqLatency,
-    UiEqExtractionLatency,
-    UiEqMissed,
-    UiEqLongStalls,
-    UiLoadMissed,
-    UiLoadLatency,
-    UiLoadStrokeLatency,
-    OverheadCpu,
-    OverheadInterval,
-    PlaybackLate,
-    PlaybackSeek,
-    CommandWallMedian,
-    CommandWallTail,
-    ExportWall,
-    ExportGpu,
+named_variants! {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    pub enum Gate, GATES {
+        UiEqCpu,
+        UiEqGpu,
+        UiEqLatency,
+        UiEqExtractionLatency,
+        UiEqMissed,
+        UiEqLongStalls,
+        UiLoadMissed,
+        UiLoadLatency,
+        UiLoadStrokeLatency,
+        OverheadCpu,
+        OverheadInterval,
+        PlaybackLate,
+        PlaybackSeek,
+        CommandWallMedian,
+        CommandWallTail,
+        ExportWall,
+        ExportGpu,
+    }
 }
-
-pub(super) const GATES: [Gate; 17] = [
-    Gate::UiEqCpu,
-    Gate::UiEqGpu,
-    Gate::UiEqLatency,
-    Gate::UiEqExtractionLatency,
-    Gate::UiEqMissed,
-    Gate::UiEqLongStalls,
-    Gate::UiLoadMissed,
-    Gate::UiLoadLatency,
-    Gate::UiLoadStrokeLatency,
-    Gate::OverheadCpu,
-    Gate::OverheadInterval,
-    Gate::PlaybackLate,
-    Gate::PlaybackSeek,
-    Gate::CommandWallMedian,
-    Gate::CommandWallTail,
-    Gate::ExportWall,
-    Gate::ExportGpu,
-];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Floor {
@@ -90,28 +72,6 @@ impl Gate {
                 Kind::Latency { quantile: Quantile::P95, floor: ms(50), per_mille: 100, ceiling: Some(Duration::from_millis(100)) }
             }
             Gate::ExportWall | Gate::ExportGpu => latency(Quantile::P50, ms(0), 100),
-        }
-    }
-
-    pub(super) fn name(self) -> &'static str {
-        match self {
-            Gate::UiEqCpu => "UiEqCpu",
-            Gate::UiEqGpu => "UiEqGpu",
-            Gate::UiEqLatency => "UiEqLatency",
-            Gate::UiEqExtractionLatency => "UiEqExtractionLatency",
-            Gate::UiEqMissed => "UiEqMissed",
-            Gate::UiEqLongStalls => "UiEqLongStalls",
-            Gate::UiLoadMissed => "UiLoadMissed",
-            Gate::UiLoadLatency => "UiLoadLatency",
-            Gate::UiLoadStrokeLatency => "UiLoadStrokeLatency",
-            Gate::OverheadCpu => "OverheadCpu",
-            Gate::OverheadInterval => "OverheadInterval",
-            Gate::PlaybackLate => "PlaybackLate",
-            Gate::PlaybackSeek => "PlaybackSeek",
-            Gate::CommandWallMedian => "CommandWallMedian",
-            Gate::CommandWallTail => "CommandWallTail",
-            Gate::ExportWall => "ExportWall",
-            Gate::ExportGpu => "ExportGpu",
         }
     }
 }

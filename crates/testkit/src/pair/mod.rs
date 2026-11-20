@@ -1,3 +1,22 @@
+macro_rules! named_variants {
+    ($(#[$meta:meta])* pub enum $name:ident, $all:ident { $($variant:ident),+ $(,)? }) => {
+        $(#[$meta])*
+        pub enum $name {
+            $($variant),+
+        }
+
+        pub(crate) const $all: [$name; [$(stringify!($variant)),+].len()] = [$($name::$variant),+];
+
+        impl $name {
+            pub(crate) fn name(self) -> &'static str {
+                match self {
+                    $($name::$variant => stringify!($variant)),+
+                }
+            }
+        }
+    };
+}
+
 mod bootstrap;
 mod calibration;
 mod gate;
@@ -12,7 +31,7 @@ use std::num::NonZeroU32;
 pub use calibration::{AA_VERDICTS, Calibration, Controls, Eligibility};
 pub use gate::{Floor, Gate, Kind, Unit};
 pub use hist::{Hist, Quantile, Reading};
-pub use line::{LineError, Problem, parse_records, print_records};
+pub use line::{LineError, MAX_POOL_BYTES, MAX_RECORDS, Problem, parse_records, print_records};
 
 pub const RESAMPLES: usize = 10_000;
 pub const LOOKS: usize = 5;
@@ -46,12 +65,14 @@ pub struct Workload {
     pub scale: Ident,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Arm {
-    A0,
-    A,
-    B,
-    AA,
+named_variants! {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    pub enum Arm, ARMS {
+        A0,
+        A,
+        B,
+        AA,
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -164,6 +185,7 @@ impl Decision {
 pub enum PairError {
     NoRecords,
     MixedDigest { run_id: Ident },
+    DuplicateRun { run_id: Ident },
     SamplesKind { run_id: Ident },
     Arms(Vec<Arm>),
     Unpaired { night: Ident, runner_image: Ident, block: u32 },
@@ -177,18 +199,9 @@ pub fn decide(records: &[RunRecord], calibrations: &[Calibration]) -> Result<Dec
     if pool.looks() > LOOKS {
         return Ok(Decision::Withheld(Doubt::Budget));
     }
-    Ok(pool.measure(seed(records)))
+    Ok(pool.measure())
 }
 
 pub fn calibration_verdict(records: &[RunRecord]) -> Result<Verdict, PairError> {
-    Ok(bootstrap::Pool::new(records)?.measure(seed(records)).verdict())
-}
-
-fn seed(records: &[RunRecord]) -> u64 {
-    let mut lines: Vec<String> = records.iter().map(RunRecord::to_string).collect();
-    lines.sort_unstable();
-    lines
-        .iter()
-        .flat_map(|line| line.bytes().chain(*b"\n"))
-        .fold(0xCBF2_9CE4_8422_2325, |hash, byte| (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01B3))
+    Ok(bootstrap::Pool::new(records)?.measure().verdict())
 }
