@@ -9,7 +9,7 @@ mod run;
 #[cfg(test)]
 mod tests;
 
-pub use run::{DEFAULT_REFRESH_HZ, Opts, Run, clear, load_label};
+pub use run::{DEFAULT_REFRESH_HZ, Opts, Output, Provenance, Run, load_label};
 
 pub const CALIBRATE: &str = "CONF-calibrate";
 pub const ABBA: [Arm; 4] = [Arm::A, Arm::AA, Arm::AA, Arm::A];

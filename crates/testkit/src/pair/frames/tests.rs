@@ -3,8 +3,8 @@ use std::time::Duration;
 
 use super::super::{Arm, Count, Doubt, Gate, Verdict, Workload, parse_records, print_records};
 use super::{
-    Block, Cadence, DEFAULT_REFRESH_HZ, Frame, Heading, Identity, Opts, Probe, Run, Section, SeriesError, blocks, cadence, clear, ident, millis,
-    records, verdicts,
+    Block, Cadence, DEFAULT_REFRESH_HZ, Frame, Heading, Identity, Opts, Output, Probe, Provenance, Run, Section, SeriesError, blocks, cadence, ident,
+    millis, records, verdicts,
 };
 
 const FRAME_GATES: [Gate; 5] = [Gate::OverheadCpu, Gate::OverheadInterval, Gate::UiEqMissed, Gate::UiEqLongStalls, Gate::UiEqLatency];
@@ -227,7 +227,7 @@ fn starts_less_than_a_nanosecond_apart_give_a_one_nanosecond_interval_below_the_
 #[test]
 fn options_have_defaults_and_reject_what_cannot_run() {
     let workloads = ["hover", "paint"];
-    let o = Opts::parse(&[], &workloads).unwrap();
+    let o = Opts::parse(&[], &workloads, None).unwrap();
     assert_eq!(
         o,
         Opts {
@@ -236,48 +236,107 @@ fn options_have_defaults_and_reject_what_cannot_run() {
             frames: 3600,
             refresh_hz: DEFAULT_REFRESH_HZ,
             night: None,
-            runner_image: None,
+            runner_image: "local".into(),
             skip_build: false
         }
     );
+    assert_eq!(Opts::parse(&[], &workloads, Some("macos15-20251110.1")).unwrap().runner_image, "macos15-20251110.1");
     let args =
         ["--workload", "paint", "--units", "5", "--frames", "600", "--refresh-hz", "120", "--night", "n1", "--runner-image", "img", "--skip-build"];
-    let o = Opts::parse(&args, &workloads).unwrap();
+    let o = Opts::parse(&args, &workloads, Some("hosted")).unwrap();
     assert_eq!((o.workloads, o.units, o.frames, o.refresh_hz.get()), (vec!["paint".to_owned()], 5, 600, 120));
-    assert_eq!((o.night.as_deref(), o.runner_image.as_deref(), o.skip_build), (Some("n1"), Some("img"), true));
+    assert_eq!((o.night.as_deref(), o.runner_image.as_str(), o.skip_build), (Some("n1"), "img", true));
     for bad in [&["--units", "0"][..], &["--frames", "x"], &["--frames", "1"], &["--refresh-hz", "0"], &["--workload", "scroll"], &["--quick"]] {
-        assert!(Opts::parse(bad, &workloads).is_err(), "{bad:?}");
+        assert!(Opts::parse(bad, &workloads, None).is_err(), "{bad:?}");
     }
-    assert_eq!(Opts::parse(&["--quick"], &workloads), Err("unknown option `--quick`".into()));
+    assert_eq!(Opts::parse(&["--quick"], &workloads, None), Err("unknown option `--quick`".into()));
 }
 
 #[test]
 fn an_identity_names_a_dirty_or_unknown_commit_and_defaults_the_night_to_the_date() {
-    let o = Opts { runner_image: Some("img".into()), ..Opts::parse(&[], &["a"]).unwrap() };
-    let id = Identity::of(&o, "r1".into(), Some("abc"), true, Some("bafb4522"), "2026-11-21 10:00 UTC").unwrap();
+    let o = Opts::parse(&["--runner-image", "img"], &["a"], None).unwrap();
+    let provenance = Provenance { run: "r1".into(), commit: Some("abc"), dirty: true, framework: Some("bafb4522"), date: "2026-11-21 10:00 UTC" };
+    let id = Identity::of(&o, provenance.clone()).unwrap();
     let os = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
     assert_eq!(
         (id.app_pin.as_str(), id.fw_rev.as_str(), id.os.as_str(), id.runner_image.as_str(), id.night.as_str()),
         ("abc+dirty", "bafb4522", os.as_str(), "img", "2026-11-21")
     );
-    let id = Identity::of(&Opts { night: Some("n2".into()), ..o.clone() }, "r1".into(), Some(""), false, None, "2026").unwrap();
+    let unknown = Provenance { commit: Some(""), dirty: false, framework: None, ..provenance.clone() };
+    let id = Identity::of(&Opts { night: Some("n2".into()), ..o.clone() }, unknown).unwrap();
     assert_eq!((id.app_pin.as_str(), id.fw_rev.as_str(), id.night.as_str()), ("unknown", "unknown", "n2"));
-    assert_eq!(Identity::of(&o, "r1".into(), Some("a b"), false, None, "2026"), Err(SeriesError::Ident("a b".into())));
+    assert_eq!(Identity::of(&o, Provenance { commit: Some("a b"), ..provenance }), Err(SeriesError::Ident("a b+dirty".into())));
+}
+
+fn scratch(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("craft-testkit-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
 }
 
 #[test]
-fn clearing_removes_stale_records_and_block_reports() {
-    let dir = std::env::temp_dir().join(format!("craft-testkit-clear-{}", std::process::id()));
-    let records = dir.join("pair.records");
-    let reports = dir.join("pair");
-    std::fs::create_dir_all(&reports).unwrap();
-    std::fs::write(&records, "craft-pair/1 stale\n").unwrap();
-    std::fs::write(reports.join("paint-1-0.json"), "{}").unwrap();
-    for stale in [&records, &reports, &dir.join("pair-summary.md")] {
-        clear(stale).unwrap();
-    }
-    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
-    std::fs::remove_dir(&dir).unwrap();
+fn preparing_the_output_removes_stale_records_summary_and_block_reports() {
+    let dir = scratch("prepare");
+    let out = Output::new(dir.clone());
+    std::fs::create_dir_all(out.blocks()).unwrap();
+    std::fs::write(out.records(), "craft-pair/1 stale\n").unwrap();
+    std::fs::write(out.summary(), "stale").unwrap();
+    std::fs::write(out.blocks().join("paint-1-0.json"), "{}").unwrap();
+    out.prepare().unwrap();
+    let left: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    assert_eq!((left, std::fs::read_dir(out.blocks()).unwrap().count()), (vec!["pair".to_owned()], 0));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_run_measures_each_workload_in_each_abba_block_and_writes_its_records_and_summary() {
+    let o = Opts::parse(&["--units", "2", "--frames", "4"], &["hover", "paint"], None).unwrap();
+    let probe = Probe::of(&paint(), hz(60));
+    let mut calls = Vec::new();
+    let run = Run::drive(
+        &o,
+        &identity(),
+        |_| FRAME_GATES.to_vec(),
+        |name, block| {
+            calls.push(format!("{name}.{}.{:?}", block.unit, block.arm));
+            Ok((workload(), probe.clone()))
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        calls,
+        [
+            "hover.1.A",
+            "paint.1.A",
+            "hover.1.AA",
+            "paint.1.AA",
+            "hover.1.AA",
+            "paint.1.AA",
+            "hover.1.A",
+            "paint.1.A",
+            "hover.2.A",
+            "paint.2.A",
+            "hover.2.AA",
+            "paint.2.AA",
+            "hover.2.AA",
+            "paint.2.AA",
+            "hover.2.A",
+            "paint.2.A"
+        ]
+    );
+    assert_eq!(run.records().len(), 80);
+    let dir = scratch("write");
+    let out = Output::new(dir.clone());
+    out.prepare().unwrap();
+    let summary = run.write(&out, &identity(), "idle", &o, ["input", "ui_build", "command", "damage", "composite", "upload"]).unwrap();
+    assert_eq!(parse_records(&std::fs::read_to_string(out.records()).unwrap()), Ok(run.records()));
+    assert_eq!(std::fs::read_to_string(out.summary()).unwrap(), summary);
+    assert!(summary.contains(&format!("- 2 ABBA units of 4 frames per block at 60 Hz; records in `{}`\n", out.records().display())), "{summary}");
+    assert_eq!(summary.matches("\n### ").count(), 2);
+    std::fs::remove_dir_all(&dir).unwrap();
+    let failing = Run::<6>::drive(&o, &identity(), |_| FRAME_GATES.to_vec(), |name, _| Err(format!("{name} failed")));
+    assert_eq!(failing, Err("hover failed".into()));
 }
 
 #[test]
