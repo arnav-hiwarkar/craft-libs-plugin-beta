@@ -6,8 +6,8 @@ Planned cases for [RUN-05/SDK-02](../decisions/ADR-SDK-02.md). None has run. Eve
 
 | ID | Scenario | Expected result |
 |---|---|---|
-| CONF-calibrate / CONF-power / CONF-arm-identity | Run ≥59 A/A verdicts per (class, gate, image). Inject a CPU delay of 2× the allowance and a GPU-heavy canvas. Assert WorkMeter per arm. | Zero A/A Fail. Positive controls Fail and null Passes, or the gate is `Inconclusive(NoRunner)`. Arm identity holds. |
-| CONF-aa-sequential | Simulate pooled nightly verdicts with true Δ equal to 0 and to 1.2× the allowance. | False Fail ≤ 5% and false Pass ≤ 5% within five looks. |
+| CONF-calibrate / CONF-power / CONF-arm-identity | Run ≥59 A/A verdicts per (gate, runner image). Inject a CPU delay of 2× the allowance and a GPU-heavy canvas. Assert WorkMeter per arm. | Zero A/A Fail. Positive controls Fail and null Passes, or the gate is `Inconclusive(NoRunner)`. Arm identity holds. |
+| CONF-aa-sequential | Simulate pooled nightly verdicts with true Δ equal to 0 and to 1.2× the allowance, three units a night with 25% block noise, and with Δ equal to 2× the allowance, four units a night with 10% block noise, up to five nights each. | False Fail and false Pass each have a Clopper–Pearson 95% upper bound ≤ 5% within five looks, and at least 80% Fail at 2×. On 2026-11-21, in a local debug run: false Fail 0 of 300, false Pass 2 of 300, Fail at 2× 200 of 200. |
 | CONF-overhead | Compare A0 (host never started) with A at 0, 10 and 100 idle packages in both apps. | 15% p50 C and I gate. Zero wakeups and zero processes while disabled. |
 | CONF-cadence / CONF-latency / CONF-hitch / CONF-playback | Drag, animate, paint, scrub and play back with an SDK panel, tool and effect versus built-in equivalents. | Meet the UI-eq and Playback rows, including ≤1 long stall per 10k frames. |
 | CONF-cold | Spare bind, cold spawn, QuickJS image start, enable to first body. | Absolute limits in the contract. |

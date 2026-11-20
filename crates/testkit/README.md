@@ -216,6 +216,37 @@ Changes from `craft-media-testkit`'s `hammer`:
 - `parse` is owned and runs on a worker thread. A closure that borrows from the test needs its data
   moved or shared with an `Arc`.
 
+## pair
+
+`pair` decides paired performance verdicts: a native arm against a plugin arm of the same workload.
+The rules, the gate table and the record line format are in
+`docs/plugin-platform/contracts/conformance.md`. It has no dependencies and builds for `wasm32`.
+
+- `Hist` is a latency histogram from 1 µs to 60 s with 64 log-linear buckets per power of two. A
+  quantile is at most 0.78% from the sample's own. `underflow()` and `overflow()` count the samples
+  outside the range. A `Count` is events in frames, for the rate gates.
+- A `RunRecord` holds one arm's `Samples` (a `Hist` or a `Count`) for one block, with its identity,
+  `Workload`, `night`, `runner_image`, `block`, `arm` and `gate`. Identity values are `Ident`s.
+- `Gate::kind()` gives a gate's `Kind`: a latency quantile with its floor, fraction and ceiling, or a
+  rate with its floor in parts per billion. `Kind::allow(q_A, refresh_hz)` is the allowance.
+- `decide(records, calibrations)` returns `Decision::Measured(Measurement)` or
+  `Decision::Withheld(Doubt)`, and `Decision::verdict()` the `Verdict`. The bootstrap seed comes
+  from the records. `calibration_verdict(records)` decides an in-job A/A or control pool without the
+  eligibility check, and `Calibration::eligibility()` judges a (gate, runner image).
+- `print_records` and `parse_records` write and read a pool, one line per record. `RunRecord`,
+  `Samples` and `Hist` also implement `Display` and `FromStr`.
+
+```rust
+use craft_testkit::pair::{decide, parse_records, Verdict};
+
+let records = parse_records(&pool_text)?;
+let verdict = decide(&records, &calibrations)?.verdict();
+assert_ne!(verdict, Verdict::Fail);
+```
+
+The `CONF-aa-sequential` simulation runs up to 4,000 verdicts and is ignored by default; the CI job
+`testkit-simulation` runs it with `cargo test --release -p craft-testkit -- --ignored conf_aa_sequential`.
+
 ## Origin
 
 ### guards
