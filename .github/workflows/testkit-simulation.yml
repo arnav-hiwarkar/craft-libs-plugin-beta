@@ -1,0 +1,34 @@
+name: Testkit simulation
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, platform]
+    paths: ['crates/testkit/**', 'Cargo.lock', '.github/workflows/testkit-simulation.yml']
+  pull_request:
+    paths: ['crates/testkit/**', 'Cargo.lock', '.github/workflows/testkit-simulation.yml']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: testkit-simulation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  testkit-simulation:
+    name: Paired verdict error rates (CONF-aa-sequential)
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@v2.22.4
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: step-security/dtolnay-rust-toolchain@v1.0.0
+        with:
+          toolchain: stable
+      - run: cargo test --release --locked -p craft-testkit --lib -- --ignored --exact pair::tests::conf_aa_sequential_false_verdicts_and_power_within_five_looks
