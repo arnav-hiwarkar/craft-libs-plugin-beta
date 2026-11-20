@@ -58,7 +58,7 @@ The apps own their probes. PC extends `frame_stages.rs`. EC replaces its FPS EMA
 
 | Metric | Definition |
 |---|---|
-| C | UI-thread CPU per stage: input, ui_build, plugin_host[principal], command, damage, composite, upload |
+| C | UI-thread wall time per stage: input, ui_build, plugin_host[principal], command, damage, composite, upload. Stages do not overlap, and the frame-rate cap sleep belongs to no stage. Wall time rather than thread CPU time: blocking waits inside a stage delay the frame as much as computation does, and it needs no per-OS clock code in the apps. The C total is the sum of the stages |
 | I | Interval between `raw_input_hook`s under continuous drag, animation or playback. A frame is `missed` when I > 1.5 × period, and a `long stall` when I > max(4 × period, 50 ms). |
 | L | App-local stamp of synthetic input to the end of the pass that consumes it |
 | P | EC playback on-time ratio against the audio clock, and seek-to-viewer-frame latency |
