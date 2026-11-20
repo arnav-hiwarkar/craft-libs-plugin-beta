@@ -2,7 +2,10 @@ use std::num::NonZeroU32;
 use std::time::Duration;
 
 use super::super::{Arm, Count, Doubt, Gate, Verdict, Workload, parse_records, print_records};
-use super::{Block, Cadence, Frame, Heading, Identity, Probe, Section, SeriesError, blocks, cadence, ident, millis, records, verdicts};
+use super::{
+    Block, Cadence, DEFAULT_REFRESH_HZ, Frame, Heading, Identity, Opts, Probe, Run, Section, SeriesError, blocks, cadence, clear, ident, millis,
+    records, verdicts,
+};
 
 const FRAME_GATES: [Gate; 5] = [Gate::OverheadCpu, Gate::OverheadInterval, Gate::UiEqMissed, Gate::UiEqLongStalls, Gate::UiEqLatency];
 
@@ -210,5 +213,106 @@ fn the_summary_shows_each_stage_and_only_the_measured_metrics() {
         "## Paired frame probe: A/AA calibration (`CONF-calibrate`)\n\n\
          - Night `2026-11-21`, runner image `macos15-20251110.1`, os `macos-aarch64`, app `359051359`, framework `bafb4522`, load `idle`\n\
          - 3 ABBA units of 600 frames per block at 60 Hz; records in `target/perf/pair.records`\n\n"
+    );
+}
+
+#[test]
+fn starts_less_than_a_nanosecond_apart_give_a_one_nanosecond_interval_below_the_histogram() {
+    let frames: Vec<Frame<1>> = [0.000_000_4, 0.000_000_8].into_iter().map(|t| frame(t, [1.0])).collect();
+    assert_eq!(frames.iter().map(|f| f.start).collect::<Vec<_>>(), [Duration::ZERO, Duration::from_nanos(1)]);
+    let probe = Probe::of(&frames, hz(60));
+    assert_eq!((probe.intervals, probe.missed, probe.samples(Gate::OverheadInterval).map(|s| s.to_string())), (1, 0, Some("hist:0:1".to_owned())));
+}
+
+#[test]
+fn options_have_defaults_and_reject_what_cannot_run() {
+    let workloads = ["hover", "paint"];
+    let o = Opts::parse(&[], &workloads).unwrap();
+    assert_eq!(
+        o,
+        Opts {
+            workloads: vec!["hover".into(), "paint".into()],
+            units: 3,
+            frames: 3600,
+            refresh_hz: DEFAULT_REFRESH_HZ,
+            night: None,
+            runner_image: None,
+            skip_build: false
+        }
+    );
+    let args =
+        ["--workload", "paint", "--units", "5", "--frames", "600", "--refresh-hz", "120", "--night", "n1", "--runner-image", "img", "--skip-build"];
+    let o = Opts::parse(&args, &workloads).unwrap();
+    assert_eq!((o.workloads, o.units, o.frames, o.refresh_hz.get()), (vec!["paint".to_owned()], 5, 600, 120));
+    assert_eq!((o.night.as_deref(), o.runner_image.as_deref(), o.skip_build), (Some("n1"), Some("img"), true));
+    for bad in [&["--units", "0"][..], &["--frames", "x"], &["--frames", "1"], &["--refresh-hz", "0"], &["--workload", "scroll"], &["--quick"]] {
+        assert!(Opts::parse(bad, &workloads).is_err(), "{bad:?}");
+    }
+    assert_eq!(Opts::parse(&["--quick"], &workloads), Err("unknown option `--quick`".into()));
+}
+
+#[test]
+fn an_identity_names_a_dirty_or_unknown_commit_and_defaults_the_night_to_the_date() {
+    let o = Opts { runner_image: Some("img".into()), ..Opts::parse(&[], &["a"]).unwrap() };
+    let id = Identity::of(&o, "r1".into(), Some("abc"), true, Some("bafb4522"), "2026-11-21 10:00 UTC").unwrap();
+    let os = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
+    assert_eq!(
+        (id.app_pin.as_str(), id.fw_rev.as_str(), id.os.as_str(), id.runner_image.as_str(), id.night.as_str()),
+        ("abc+dirty", "bafb4522", os.as_str(), "img", "2026-11-21")
+    );
+    let id = Identity::of(&Opts { night: Some("n2".into()), ..o.clone() }, "r1".into(), Some(""), false, None, "2026").unwrap();
+    assert_eq!((id.app_pin.as_str(), id.fw_rev.as_str(), id.night.as_str()), ("unknown", "unknown", "n2"));
+    assert_eq!(Identity::of(&o, "r1".into(), Some("a b"), false, None, "2026"), Err(SeriesError::Ident("a b".into())));
+}
+
+#[test]
+fn clearing_removes_stale_records_and_block_reports() {
+    let dir = std::env::temp_dir().join(format!("craft-testkit-clear-{}", std::process::id()));
+    let records = dir.join("pair.records");
+    let reports = dir.join("pair");
+    std::fs::create_dir_all(&reports).unwrap();
+    std::fs::write(&records, "craft-pair/1 stale\n").unwrap();
+    std::fs::write(reports.join("paint-1-0.json"), "{}").unwrap();
+    for stale in [&records, &reports, &dir.join("pair-summary.md")] {
+        clear(stale).unwrap();
+    }
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+    std::fs::remove_dir(&dir).unwrap();
+}
+
+#[test]
+fn a_run_pools_each_workload_over_its_blocks_and_refuses_a_changed_workload() {
+    let probe = Probe::of(&paint(), hz(60));
+    let mut run = Run::default();
+    for block in blocks(3) {
+        run.add(&identity(), "paint", workload(), block, &probe, &FRAME_GATES).unwrap();
+    }
+    assert_eq!(run.records().len(), 60);
+    let changed = Workload { load: ident("contended").unwrap(), ..workload() };
+    let block = Block { unit: 4, position: 0, arm: Arm::A };
+    assert_eq!(run.add(&identity(), "paint", changed, block, &probe, &FRAME_GATES), Err(SeriesError::WorkloadChanged("paint".into())));
+    assert_eq!(run.records().len(), 60);
+    let heading = Heading { id: &identity(), load: "idle", units: 3, frames: 4, records: "pair.records" };
+    let stages = ["input", "ui_build", "command", "damage", "composite", "upload"];
+    assert_eq!(
+        run.summary(&heading, stages).unwrap(),
+        "## Paired frame probe: A/AA calibration (`CONF-calibrate`)\n\n\
+         - Night `2026-11-21`, runner image `macos15-20251110.1`, os `macos-aarch64`, app `359051359`, framework `bafb4522`, load `idle`\n\
+         - 3 ABBA units of 4 frames per block at 60 Hz; records in `pair.records`\n\n\
+         ### paint (cpu, 3000x2000@1920x1080)\n\n\
+         | Metric | n | p50 ms | p95 ms | p99 ms |\n|---|---:|---:|---:|---:|\n\
+         | C input | 48 | 0.50 | 0.50 | 0.50 |\n\
+         | C ui_build | 48 | 0.25 | 2.01 | 2.01 |\n\
+         | C command | 48 | < 0.001 | 30.0 | 30.0 |\n\
+         | C damage | 48 | < 0.001 | 1.00 | 1.00 |\n\
+         | C composite | 48 | 2.01 | 6.00 | 6.00 |\n\
+         | C upload | 48 | 0.25 | 0.50 | 0.50 |\n\
+         | C frame | 48 | 3.00 | 40.1 | 40.1 |\n\
+         | I | 36 | 16.7 | 41.7 | 41.7 |\n\
+         | L | 12 | 12.0 | 12.0 | 12.0 |\n\
+         \nMissed frames: 12 of 36. Long stalls: 0 of 36.\n\n\
+         | Gate | A/AA verdict |\n|---|---|\n\
+         | UiEqLatency | Pass |\n| UiEqMissed | Inconclusive (Noisy) |\n| UiEqLongStalls | Inconclusive (Noisy) |\n\
+         | OverheadCpu | Pass |\n| OverheadInterval | Pass |\n\n"
     );
 }

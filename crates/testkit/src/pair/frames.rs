@@ -5,8 +5,11 @@ use std::time::Duration;
 
 use super::{Arm, Count, Gate, Hist, Ident, PairError, Quantile, Reading, RunRecord, Samples, Verdict, Workload, calibration_verdict};
 
+mod run;
 #[cfg(test)]
 mod tests;
+
+pub use run::{DEFAULT_REFRESH_HZ, Opts, Run, clear, load_label};
 
 pub const CALIBRATE: &str = "CONF-calibrate";
 pub const ABBA: [Arm; 4] = [Arm::A, Arm::AA, Arm::AA, Arm::A];
@@ -139,6 +142,7 @@ pub enum SeriesError {
     Ident(String),
     Unmeasured(Gate),
     Pool(Gate, PairError),
+    WorkloadChanged(String),
 }
 
 impl fmt::Display for SeriesError {
@@ -147,6 +151,7 @@ impl fmt::Display for SeriesError {
             SeriesError::Ident(text) => write!(f, "`{text}` is not a record identity: 1 to 128 of A-Z a-z 0-9 . _ : / + @ -"),
             SeriesError::Unmeasured(gate) => write!(f, "{gate:?} is not measured by a frame series"),
             SeriesError::Pool(gate, error) => write!(f, "{gate:?}: {error:?}"),
+            SeriesError::WorkloadChanged(name) => write!(f, "{name}: the workload changed between blocks"),
         }
     }
 }
