@@ -216,6 +216,39 @@ Changes from `craft-media-testkit`'s `hammer`:
 - `parse` is owned and runs on a worker thread. A closure that borrows from the test needs its data
   moved or shared with an `Arc`.
 
+## pair
+
+`pair` decides paired performance verdicts: a native arm against a plugin arm of the same workload.
+The rules, and every number below, are those of `docs/plugin-platform/contracts/conformance.md`.
+It has no dependencies and builds for `wasm32`.
+
+- `Hist` is a latency histogram from 1 µs to 60 s with 64 log-linear buckets per power of two. A
+  quantile is at most 0.78% from the sample's own. `underflow()` and `overflow()` count the samples
+  outside the range, and `quantile` reads them as `Reading::Below` and `Reading::Above`.
+- A `RunRecord` holds one arm's `Hist` for one block, with its `night`, `runner_image`, `block`,
+  `arm` (`A0`, `A`, `B` or `AA`), `gate` and identity strings.
+- `Gate::spec()` gives a gate's quantile and `Allowance`; `Allowance::allow(q_A, refresh_hz)` is
+  `max(floor, fraction × q_A)`, lowered by the gate's ceiling.
+- `decide(records, calibrations, seed)` returns a `Decision`, and `Decision::verdict()` the
+  `Verdict`: `Pass`, `Fail` or `Inconclusive(Noisy | Budget | NoRunner)`. A pool whose runner image
+  has no eligible `Calibration` is `NoRunner`, a pool with more than five nights is `Budget`, and
+  otherwise a 10,000-resample block bootstrap, stratified by night and image, gives the interval.
+- `calibration_verdict(records, seed)` decides an in-job A/A or control pool without the
+  eligibility check. `Calibration::eligibility()` needs 59 A/A verdicts without a Fail, an injected
+  delay and a GPU-heavy canvas that Fail, and a null control that Passes.
+- Malformed pools are a `PairError`: no records, a mixed digest, arms that are not one contrast, or a
+  block missing an arm.
+
+```rust
+use craft_testkit::pair::{decide, Verdict};
+
+let verdict = decide(&records, &calibrations, run_seed)?.verdict();
+assert_ne!(verdict, Verdict::Fail);
+```
+
+The `CONF-aa-sequential` simulation runs 2,000 verdicts and is ignored by default:
+`cargo test -p craft-testkit -- --ignored conf_aa_sequential`.
+
 ## Origin
 
 ### guards

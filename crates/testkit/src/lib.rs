@@ -39,6 +39,7 @@
 pub mod deadline;
 pub mod guards;
 pub mod hostile;
+pub mod pair;
 pub mod sample_damage;
 
 #[cfg(not(target_arch = "wasm32"))]

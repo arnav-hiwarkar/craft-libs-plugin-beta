@@ -5,10 +5,11 @@ Designed in [RUN-05/SDK-02](../decisions/ADR-SDK-02.md). Nothing has run. All nu
 Related: [Evidence rules](../architecture/evidence-and-verification.md) · [Tests](../implementation/conformance-acceptance.md) · [Phases](../implementation/phases.md)
 
 ```text
-RunRecord = {test_id, run_id, app_pin, fw_rev, os, runner_image, class, mode, backend, fixture_hash,
+RunRecord = {test_id, run_id, app_pin, fw_rev, os, runner_image, night, class, gate, mode, backend, fixture_hash,
              arm: A0|A|B|AA, block, load, refresh_hz, metrics, work, outcome}
 Verdict   = Pass | Fail | Inconclusive(Noisy|Budget|NoRunner)
-allow     = max(floor[class], 0.10 × q_A)       Δq = q_B − q_A, seeded 10k block bootstrap
+allow     = max(floor[gate], fraction[gate] × q_A), capped by ceiling[gate]
+Δq        = q_B − q_A, seeded 10k block bootstrap
 ```
 
 ## Harness and probes
@@ -17,6 +18,19 @@ allow     = max(floor[class], 0.10 × q_A)       Δq = q_B − q_A, seeded 10k b
 - log-bucket histograms, 1 µs to 60 s, with at most 1% error;
 - pairing and the block bootstrap;
 - the verdict.
+
+### The pair engine
+
+`craft_testkit::pair` reads these fields of a `RunRecord`: the identity strings `test_id`, `run_id`, `app_pin`, `fw_rev`, `os` and `runner_image`, plus `night`, `block`, `arm`, `gate`, `refresh_hz` and one latency histogram of the gate's metric. One record holds one arm's samples from one block.
+
+- **Histogram.** Log-linear buckets from 1 µs to 60 s inclusive: 64 buckets per power of two, 1,728 buckets in all, each read at its midpoint, so a quantile is at most 0.78% from the sample's own. Samples below 1 µs count as underflow and samples above 60 s as overflow. A quantile is the nearest-rank sample, at rank ⌈p × n⌉.
+- **Pool.** Every record of one verdict shares `test_id`, `app_pin`, `fw_rev`, `os`, `gate` and `refresh_hz`: that is the digest. The arms are exactly one contrast: A against B, A0 against A, or A against AA, the first named being the base. Anything else is an error, not a verdict.
+- **Units and strata.** Records with the same `night`, `runner_image` and `block` form one unit, normally one ABBA quartet, and a unit needs samples in both arms. The units of one `night` and `runner_image` form a stratum. A stratum with fewer than two units is `Inconclusive(Noisy)`, because one unit cannot show its own noise.
+- **Bootstrap.** 10,000 resamples from a SplitMix64 generator seeded by the caller. Each resample draws n − 1 units with replacement from every stratum of n units and takes Δq of the merged histograms. Drawing n − 1 rather than n keeps the bootstrap variance unbiased when a stratum holds only a few units.
+- **Interval.** Δ̂ ± t × s, where Δ̂ is Δq of the whole pool, s is the standard deviation of the 10,000 resampled Δq, and t is Student's two-sided 99% point with (units − strata) degrees of freedom. 99% is 1 − 0.05/K with K = 5 looks. A percentile interval was rejected: with three units a night it gave 23 false Passes in 200 trials of `CONF-aa-sequential`.
+- **Readings.** A quantile in the underflow reads as 0. A quantile in the overflow, in the pool or in any resample, makes the verdict `Inconclusive(Noisy)`.
+- **Looks.** Each distinct `night` in the pool is one look. A pool with a sixth night is `Inconclusive(Budget)`.
+- **Allowance.** `allow` comes from the base quantile of the whole pool and the gate's row of the [gate table](#tolerances). The interval never changes it.
 
 The apps own their probes. PC extends `frame_stages.rs`. EC replaces its FPS EMA at `app/frame.rs:318` and stamps synthetic input on its own control queue. Runs are driven by PC `xtask perf --pair` and EC `bench --pair`.
 
@@ -36,7 +50,7 @@ A (class, gate, runner image) is eligible when:
 - at least 59 in-job A/A verdicts show zero Fail, an upper 95% bound of 5%;
 - its positive controls behave: an injected CPU delay of 2× the allowance and a GPU-heavy canvas must Fail, and the null case must Pass.
 
-Any image change requires recalibration.
+Any image change requires recalibration. In-job A/A verdicts and control verdicts come from the same engine without the eligibility check. An `Inconclusive` A/A verdict counts toward the 59, because it is not a Fail. A pool is `Inconclusive(NoRunner)` unless every runner image in it has an eligible calibration for the pool's gate.
 
 | Result | Condition |
 |---|---|
@@ -69,6 +83,23 @@ Pooled nights allow at most five looks per digest, at level 1 − 0.05/K, with t
 | Command/commit | Wall p50 and p95 | 50 ms, with B p95 ≤ 100 ms whenever A p95 ≤ 100 ms |
 | Export/batch/throughput, GPU route | Wall, gpu_ns | 10% |
 | Kernel | SDK versus native throughput | Not gated; below 0.6× opens a `DEFECT` |
+
+`pair` implements the latency-quantile gates of this table. Its floors, fractions and ceilings:
+
+| Gate | Row | Quantile | Floor | Fraction of q_A | Ceiling |
+|---|---|---|---|---|---|
+| `UiEqCpu` | UI-eq, C plugin | p95 | 1 ms | 10% | none |
+| `UiEqLatency` | UI-eq, L | p95 | one refresh | 10% | none |
+| `UiEqExtractionLatency` | UI-eq, L of an extraction | p95 | 2 ms | 10% | none |
+| `UiLoadLatency` | UI-load, L | p95 | one refresh | 10% | none |
+| `UiLoadStrokeLatency` | UI-load, PC stroke L | p95 | 2 ms | 10% | none |
+| `OverheadCpu` / `OverheadInterval` | Overhead, C and I | p50 | none | 15% | none |
+| `PlaybackSeek` | Playback, seek | p95 | 50 ms | 10% | none |
+| `CommandWallMedian` | Command/commit, wall | p50 | 50 ms | 10% | none |
+| `CommandWallTail` | Command/commit, wall | p95 | 50 ms | 10% | 100 ms |
+| `ExportWall` / `ExportGpu` | Export/batch/throughput, GPU route | p50 | none | 10% | none |
+
+One refresh is 1 s divided by `refresh_hz`, rounded down to the nanosecond. A ceiling c applies when q_A ≤ c and lowers `allow` to at most c − q_A, which is the row's rule that B p95 stays at or below 100 ms whenever A p95 does. The rate gates (I missed Δ, long stalls, P on-time Δ) and UI-eq leaf gpu_ns, whose row gives no floor, are not `pair` gates yet.
 
 Each verdict runs at 6 MP and 1080p. One confirmation pair at 24 MP and 4K must not Fail.
 
