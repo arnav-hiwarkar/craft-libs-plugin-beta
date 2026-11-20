@@ -1,6 +1,6 @@
 # Persistent extension document acceptance
 
-These are planned app fixtures for the persistent object review (DOC-02 Q record). Run against both pinned apps and both legacy and new files. Compare the complete saved payload, typed model, undo history and render result where relevant.
+These are planned app fixtures for the persistent object review (review record kept outside this repository). Run against both pinned apps and both legacy and new files. Compare the complete saved payload, typed model, undo history and render result where relevant.
 
 | ID | Action | Expected outcome |
 |---|---|---|
@@ -13,7 +13,7 @@ These are planned app fixtures for the persistent object review (DOC-02 Q record
 | DOC-invalidate | Change a local asset, animated property or input filter. Reopen after plugin bytes change. Seek in reverse order. Add a same-time dependency cycle, a lawful finite previous-frame recurrence and a dynamic expression recursion. | Invalidate all and only safe affected extents/intervals. Provider digest changes invalidate reused filter stages. Cycles and budget errors report a bounded fault. Exact rendering never silently skips an unavailable stage. |
 | DOC-legacy | Alias of `RET-*`; budget per conformance tolerance table. | |
 
-Fixture source anchors are the native format and filter traces (DOC-02 Q record) and [legacy inventory](legacy-inventory.md). For large assets, record stored bytes, retained snapshot bytes, decompressed payload bytes, filter work, and both preview and final latencies.
+Fixture source anchors are the native format and filter traces (review record kept outside this repository) and [legacy inventory](legacy-inventory.md). For large assets, record stored bytes, retained snapshot bytes, decompressed payload bytes, filter work, and both preview and final latencies.
 
 ## Existing fixtures to extend
 

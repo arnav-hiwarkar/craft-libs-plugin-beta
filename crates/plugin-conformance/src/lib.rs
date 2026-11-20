@@ -20,6 +20,7 @@ pub enum Finding {
     IllFormedId { at: Location, text: String },
     DuplicateId { id: TestId, first: Location, again: Location },
     UndefinedId { at: Location, id: TestId },
+    UnmarkedReference { at: Location, id: TestId },
     EmptyWildcard { at: Location, pattern: String },
     OpenQuestion { at: Location, question: String },
     UnlinkedClosure { at: Location, question: String, missing: ClosureLink },
@@ -36,6 +37,8 @@ pub enum ClosureLink {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LinkFault {
+    Absolute,
+    OutsideDocs,
     MissingFile,
     MissingAnchor,
 }
@@ -52,6 +55,10 @@ pub enum Error {
     Read { path: PathBuf, source: std::io::Error },
     #[error("the doc set has no {0}")]
     MissingDocument(PathBuf),
+    #[error("{file} has no table with a {header} header and at least one row")]
+    MissingTable { file: PathBuf, header: &'static str },
+    #[error("the doc set has no implementation/*-acceptance.md")]
+    NoAcceptanceFiles,
 }
 
 pub fn check(docs_root: &Path) -> Result<Vec<Finding>, Error> {

@@ -627,7 +627,7 @@ Every slice is one reviewable PR from the pinned baseline. It goes into your `ar
 **Review independence.**
 - UI-01 through RENDER-03 ran on GPT-6.2 Sol.
 - IO-01 onward ran on Claude Opus 5.5, after Sol's usage limit. Each role ran in a separate context, but not across model families. The same applies to the final review that produced 24 corrections, all applied.
-- Full trail: the workshop records, not in this repository.
+- Full trail: the workshop records kept outside this repository.
 
 ---
 
@@ -667,4 +667,4 @@ Approving this spec authorises implementation to start at phase 0a under the rul
 **Ledgers:**
 - [question closure](question-closure.md): every bank question mapped to its decision and tests;
 - [conflicts and supersessions](cross-topic-conflicts.md);
-- final review and corrections (workshop records, not in this repository).
+- final review and corrections (workshop records kept outside this repository).

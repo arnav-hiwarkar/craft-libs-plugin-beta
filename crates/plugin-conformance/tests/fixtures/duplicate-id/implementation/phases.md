@@ -2,4 +2,4 @@
 
 | ID | Exit |
 |---|---|
-| RUN-dup | Listed, not defined. |
+| `RUN-dup` | Listed, not defined. |

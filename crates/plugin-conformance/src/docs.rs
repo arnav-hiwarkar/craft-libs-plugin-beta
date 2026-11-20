@@ -2,17 +2,17 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-use crate::Error;
 use crate::markdown::{self, Document};
+use crate::{Error, LinkFault};
 
 pub(crate) struct DocSet {
-    root: PathBuf,
     pub(crate) docs: BTreeMap<PathBuf, Document>,
 }
 
-pub(crate) struct Target {
-    pub(crate) path: PathBuf,
-    pub(crate) anchor: Option<String>,
+pub(crate) enum Resolution<'a> {
+    External,
+    Doc { path: &'a Path, document: &'a Document, anchor: Option<&'a str> },
+    Broken(LinkFault),
 }
 
 impl DocSet {
@@ -29,11 +29,13 @@ impl DocSet {
                 if kind.is_dir() {
                     pending.push(relative);
                 } else if kind.is_file() && relative.extension().is_some_and(|ext| ext == "md") {
-                    docs.insert(relative, read(&entry.path())?);
+                    let path = entry.path();
+                    let text = fs::read_to_string(&path).map_err(|source| Error::Read { path, source })?;
+                    docs.insert(relative, markdown::parse(&text));
                 }
             }
         }
-        Ok(DocSet { root: root.to_owned(), docs })
+        Ok(DocSet { docs })
     }
 
     pub(crate) fn require(&self, path: &str) -> Result<(&Path, &Document), Error> {
@@ -43,49 +45,40 @@ impl DocSet {
             .ok_or_else(|| Error::MissingDocument(PathBuf::from(path)))
     }
 
-    pub(crate) fn resolve(&self, from: &Path, dest: &str) -> Option<Target> {
+    pub(crate) fn resolve<'a>(&'a self, from: &'a Path, dest: &'a str) -> Resolution<'a> {
         let before_path_end = dest.split(['/', '#', '?']).next().unwrap_or_default();
         if before_path_end.contains(':') {
-            return None;
+            return Resolution::External;
         }
         let (path, anchor) = match dest.split_once('#') {
-            Some((path, anchor)) => (path, Some(anchor.to_owned())),
+            Some((path, anchor)) => (path, Some(anchor)),
             None => (dest, None),
         };
-        let path = if path.is_empty() { from.to_owned() } else { normalize(&from.parent().unwrap_or(Path::new("")).join(path)) };
-        Some(Target { path, anchor })
-    }
-
-    pub(crate) fn exists(&self, path: &Path) -> bool {
-        self.docs.contains_key(path) || self.root.join(path).exists()
-    }
-
-    pub(crate) fn has_anchor(&self, path: &Path, anchor: &str) -> Result<bool, Error> {
-        if let Some(document) = self.docs.get(path) {
-            return Ok(document.anchors.contains(anchor));
+        if path.starts_with('/') {
+            return Resolution::Broken(LinkFault::Absolute);
         }
-        if path.extension().is_some_and(|ext| ext == "md") {
-            return Ok(read(&self.root.join(path))?.anchors.contains(anchor));
+        let target = if path.is_empty() { Some(from.to_owned()) } else { within_docs(&from.parent().unwrap_or(Path::new("")).join(path)) };
+        let Some(target) = target else {
+            return Resolution::Broken(LinkFault::OutsideDocs);
+        };
+        match self.docs.get_key_value(&target) {
+            Some((path, document)) => Resolution::Doc { path, document, anchor },
+            None => Resolution::Broken(LinkFault::MissingFile),
         }
-        Ok(true)
     }
 }
 
-fn read(path: &Path) -> Result<Document, Error> {
-    let text = fs::read_to_string(path).map_err(|source| Error::Read { path: path.to_owned(), source })?;
-    Ok(markdown::parse(&text))
-}
-
-fn normalize(path: &Path) -> PathBuf {
+fn within_docs(path: &Path) -> Option<PathBuf> {
     let mut parts: Vec<Component> = Vec::new();
     for component in path.components() {
         match component {
             Component::CurDir => {}
-            Component::ParentDir if matches!(parts.last(), Some(Component::Normal(_))) => {
-                parts.pop();
+            Component::Normal(_) => parts.push(component),
+            Component::ParentDir => {
+                parts.pop()?;
             }
-            other => parts.push(other),
+            Component::RootDir | Component::Prefix(_) => return None,
         }
     }
-    parts.iter().collect()
+    Some(parts.iter().collect())
 }

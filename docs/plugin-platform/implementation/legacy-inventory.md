@@ -12,7 +12,7 @@ This is the input to the migration design. Retire a legacy execution route only 
 | Beta framework renderer and app-independent float wrapper | Reuse valid fixtures for revisions, fallbacks, canvas events and focus; migrate stored named panel placement where the ID and geometry are recoverable. Preserve only one dock in each target app. |
 | Beta native and proprietary format hosts, store, and web modes | Inventory projects that refer to these contributions. Missing dependencies retain their data and report why. Local loader and offline approved providers follow present scope; catalogue delivery and Adobe host execution are excluded. |
 
-Source anchors are in the [inventory](../source-inventory.md) and UI-01 source investigation (UI-01 Q record). Historical scope and test coverage are recorded in the beta status.
+Source anchors are in the [inventory](../source-inventory.md) and UI-01 source investigation (review record kept outside this repository). Historical scope and test coverage are recorded in the beta status.
 
 ## Dispositions (RUN-05/SDK-02)
 

@@ -6,7 +6,14 @@ pub(crate) struct Document {
     pub(crate) anchors: HashSet<String>,
     pub(crate) links: Vec<Link>,
     pub(crate) code_spans: Vec<CodeSpan>,
+    pub(crate) prose: Vec<Prose>,
     pub(crate) tables: Vec<Table>,
+}
+
+pub(crate) struct Prose {
+    pub(crate) line: usize,
+    pub(crate) text: String,
+    pub(crate) first_cell_of_table: Option<usize>,
 }
 
 pub(crate) struct Link {
@@ -59,7 +66,8 @@ impl Row {
 pub(crate) fn parse(text: &str) -> Document {
     let line_starts: Vec<usize> = text.match_indices('\n').map(|(offset, _)| offset).collect();
     let line_of = |offset: usize| line_starts.partition_point(|&newline| newline < offset) + 1;
-    let mut document = Document { anchors: HashSet::new(), links: Vec::new(), code_spans: Vec::new(), tables: Vec::new() };
+    let mut document = Document { anchors: HashSet::new(), links: Vec::new(), code_spans: Vec::new(), prose: Vec::new(), tables: Vec::new() };
+    let mut in_code_block = false;
     let mut heading: Option<String> = None;
     let mut table: Option<Table> = None;
     let mut row: Option<Row> = None;
@@ -81,6 +89,8 @@ pub(crate) fn parse(text: &str) -> Document {
                     table.header = row.cells;
                 }
             }
+            Event::Start(Tag::CodeBlock(_)) => in_code_block = true,
+            Event::End(TagEnd::CodeBlock) => in_code_block = false,
             Event::End(TagEnd::TableRow) => {
                 if let (Some(table), Some(row)) = (table.as_mut(), row.take()) {
                     table.rows.push(row);
@@ -102,8 +112,17 @@ pub(crate) fn parse(text: &str) -> Document {
                 push_text(&mut heading, &mut cell, &code);
                 document.code_spans.push(CodeSpan { line, text: code.to_string() });
             }
-            Event::Text(text) => push_text(&mut heading, &mut cell, &text),
+            Event::Text(text) => {
+                push_text(&mut heading, &mut cell, &text);
+                if !in_code_block {
+                    let in_body = table.as_ref().is_some_and(|table| !table.header.is_empty());
+                    let first_cell = in_body && row.as_ref().is_some_and(|row| row.cells.is_empty()) && cell.is_some();
+                    let first_cell_of_table = first_cell.then_some(document.tables.len());
+                    document.prose.push(Prose { line, text: text.to_string(), first_cell_of_table });
+                }
+            }
             Event::SoftBreak | Event::HardBreak => push_text(&mut heading, &mut cell, " "),
+            Event::InlineHtml(_) => push_text(&mut None, &mut cell, " "),
             _ => {}
         }
     }

@@ -165,11 +165,17 @@ Cells are fault class × mode {Wasm, Job, Native, HTML, Host} × OS. They are ge
 
 ## Coverage matrix and registry
 
-The registry and lint live in CL `plugin-conformance`. The canonical design docs move to CL `docs/plugin-platform/` in phase 0a. Until then the lead runs the lint read-only on this workspace.
+The registry and lint live in CL `plugin-conformance`. The canonical design docs move to CL `docs/plugin-platform/` in phase 0a.
 
 Test IDs match `^(T|[A-Z][A-Z0-9]*)-[a-z][a-z0-9]*(-[a-z0-9]+)*$`. Topic IDs such as `UI-01` are a separate namespace. Each ID has one definition and is never reused; a rename keeps `alias_of`. Slash-joined headings expand to separate IDs, and a wildcard expands to at least one ID, all of which must pass.
 
-A test ID is defined by the first cell of a body row in a table whose first header cell is `ID`, in `implementation/*-acceptance.md`. A test ID is referenced by an inline code span holding exactly one ID or one wildcard, such as `RUN-sink` or `PAR-*`. Prose words such as UI-thread are never IDs, because they are not code spans.
+A test ID is defined by the first cell of a body row in a table whose first header cell is `ID`, in `implementation/*-acceptance.md`. A test ID is referenced by an inline code span holding exactly one ID or one wildcard, such as `RUN-sink` or `PAR-*`. Prose words such as UI-thread are never IDs, because they are not code spans. A bare word outside a code span that equals a defined ID is reported as an unmarked reference, except in its defining cell. Every acceptance file needs at least one `ID` table row.
+
+A question is open when the first word of its `Closure` cell, without punctuation or markup, is `Open`. A closed question links a document under `decisions/` and one under `contracts/`. [Question closure](../question-closure.md) needs at least one `Closure` row.
+
+A proof row is a body row of a table whose first header cell is `ID`, in [the proof inventory](../implementation/proof-inventory.md), whose first cell starts with `REF-`. Its `Target` cell must contain `EC`, `PC` or `Both` as a word. The inventory needs at least one proof row.
+
+A relative link must resolve, after `..` is applied inside `docs/plugin-platform/`, to a Markdown file of that set, with the exact case. Its anchor must match a heading slug of the target by GitHub's rules. Absolute paths and links that leave the set are reported. Links with a URL scheme are not checked.
 
 Each row is generated from [question closure](../question-closure.md) and the registry:
 
