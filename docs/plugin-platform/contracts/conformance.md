@@ -19,7 +19,17 @@ allow     = latency gate: max(floor[gate], fraction[gate] × q_A), capped by cei
 `pair` lives in CL `testkit`, and both apps take it as a dev-dependency. It owns:
 - log-bucket histograms, 1 µs to 60 s, with at most 1% error;
 - pairing and the block bootstrap;
-- the verdict.
+- the verdict;
+- the frame series (`pair::frames`), which every app shares.
+
+### Frame series
+
+An app stamps its own frame loop and hands `pair::frames` one `Frame` per frame: its start (the `raw_input_hook`), the wall time of each of its C stages, the L of an input the frame consumed, the P playback count the frame closed, and the P seek latency the frame ended. The module turns a series into what the gates read:
+- C per stage, and the C total as the sum of the stages;
+- I from consecutive starts, each interval classed `on time`, `missed` or `long stall` by exact integer comparison: missed when 2 × I × hz > 3 s, long stall when I × hz > 4 s and I > 50 ms;
+- one `RunRecord` per gate the workload names and per block, with test id `CONF-calibrate`, for `OverheadCpu`, `OverheadInterval`, `UiEqMissed`, `UiEqLongStalls`, `UiEqLatency`, `PlaybackLate` and `PlaybackSeek`; any other gate is an error;
+- ABBA blocks labelled A, AA, AA, A, the A/A calibration of one binary;
+- the A/AA verdict per gate and a Markdown summary of each stage's p50, p95 and p99.
 
 ### The pair engine
 
@@ -61,7 +71,7 @@ The apps own their probes. PC extends `frame_stages.rs`. EC replaces its FPS EMA
 | C | UI-thread wall time per stage: input, ui_build, plugin_host[principal], command, damage, composite, upload. Stages do not overlap, and the frame-rate cap sleep belongs to no stage. Wall time rather than thread CPU time: blocking waits inside a stage delay the frame as much as computation does, and it needs no per-OS clock code in the apps. The C total is the sum of the stages |
 | I | Interval between `raw_input_hook`s under continuous drag, animation or playback. A frame is `missed` when I > 1.5 × period, and a `long stall` when I > max(4 × period, 50 ms). |
 | L | App-local stamp of synthetic input to the end of the pass that consumes it |
-| P | EC playback on-time ratio against the audio clock, and seek-to-viewer-frame latency |
+| P | EC playback on-time ratio against the audio clock, and seek-to-viewer-frame latency. Each comp frame the audio clock passes during playback counts once, and it is late unless the viewer showed it while the clock was on it. A seek runs from the start of the frame whose input moved the current time while paused to the end of the frame whose viewer shows the new time's frame; a later seek replaces one still waiting |
 | gpu_ns | Timestamp queries on AppDevice routes and the plugin leaf |
 
 The A and B arms run in one binary under distinct ids until cutover. B ids exist only under a dev cfg, and release `engine.lock` refuses to persist them. Blocks of about 60 s run ABBA. Each arm needs at least 10k frames or 30 render repetitions. Records assert WorkMeter(B) > 0 and WorkMeter(A) = 0. An A0 arm, with the host never started, is compared with 0, 10 and 100 idle packages.

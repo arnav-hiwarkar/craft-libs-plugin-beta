@@ -19,6 +19,7 @@ macro_rules! named_variants {
 
 mod bootstrap;
 mod calibration;
+pub mod frames;
 mod gate;
 mod hist;
 mod line;
