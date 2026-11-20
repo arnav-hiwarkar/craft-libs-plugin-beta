@@ -219,35 +219,33 @@ Changes from `craft-media-testkit`'s `hammer`:
 ## pair
 
 `pair` decides paired performance verdicts: a native arm against a plugin arm of the same workload.
-The rules, and every number below, are those of `docs/plugin-platform/contracts/conformance.md`.
-It has no dependencies and builds for `wasm32`.
+The rules, the gate table and the record line format are in
+`docs/plugin-platform/contracts/conformance.md`. It has no dependencies and builds for `wasm32`.
 
 - `Hist` is a latency histogram from 1 µs to 60 s with 64 log-linear buckets per power of two. A
   quantile is at most 0.78% from the sample's own. `underflow()` and `overflow()` count the samples
-  outside the range, and `quantile` reads them as `Reading::Below` and `Reading::Above`.
-- A `RunRecord` holds one arm's `Hist` for one block, with its `night`, `runner_image`, `block`,
-  `arm` (`A0`, `A`, `B` or `AA`), `gate` and identity strings.
-- `Gate::spec()` gives a gate's quantile and `Allowance`; `Allowance::allow(q_A, refresh_hz)` is
-  `max(floor, fraction × q_A)`, lowered by the gate's ceiling.
-- `decide(records, calibrations, seed)` returns a `Decision`, and `Decision::verdict()` the
-  `Verdict`: `Pass`, `Fail` or `Inconclusive(Noisy | Budget | NoRunner)`. A pool whose runner image
-  has no eligible `Calibration` is `NoRunner`, a pool with more than five nights is `Budget`, and
-  otherwise a 10,000-resample block bootstrap, stratified by night and image, gives the interval.
-- `calibration_verdict(records, seed)` decides an in-job A/A or control pool without the
-  eligibility check. `Calibration::eligibility()` needs 59 A/A verdicts without a Fail, an injected
-  delay and a GPU-heavy canvas that Fail, and a null control that Passes.
-- Malformed pools are a `PairError`: no records, a mixed digest, arms that are not one contrast, or a
-  block missing an arm.
+  outside the range. A `Count` is events in frames, for the rate gates.
+- A `RunRecord` holds one arm's `Samples` (a `Hist` or a `Count`) for one block, with its identity,
+  `Workload`, `night`, `runner_image`, `block`, `arm` and `gate`. Identity values are `Ident`s.
+- `Gate::kind()` gives a gate's `Kind`: a latency quantile with its floor, fraction and ceiling, or a
+  rate with its floor in parts per billion. `Kind::allow(q_A, refresh_hz)` is the allowance.
+- `decide(records, calibrations)` returns `Decision::Measured(Measurement)` or
+  `Decision::Withheld(Doubt)`, and `Decision::verdict()` the `Verdict`. The bootstrap seed comes
+  from the records. `calibration_verdict(records)` decides an in-job A/A or control pool without the
+  eligibility check, and `Calibration::eligibility()` judges a (gate, runner image).
+- `print_records` and `parse_records` write and read a pool, one line per record. `RunRecord`,
+  `Samples` and `Hist` also implement `Display` and `FromStr`.
 
 ```rust
-use craft_testkit::pair::{decide, Verdict};
+use craft_testkit::pair::{decide, parse_records, Verdict};
 
-let verdict = decide(&records, &calibrations, run_seed)?.verdict();
+let records = parse_records(&pool_text)?;
+let verdict = decide(&records, &calibrations)?.verdict();
 assert_ne!(verdict, Verdict::Fail);
 ```
 
-The `CONF-aa-sequential` simulation runs 2,000 verdicts and is ignored by default:
-`cargo test -p craft-testkit -- --ignored conf_aa_sequential`.
+The `CONF-aa-sequential` simulation runs up to 4,000 verdicts and is ignored by default; the CI job
+`testkit-simulation` runs it with `cargo test --release -p craft-testkit -- --ignored conf_aa_sequential`.
 
 ## Origin
 
