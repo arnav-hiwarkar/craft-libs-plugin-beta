@@ -1,0 +1,16 @@
+[package]
+name = "craft-plugin-conformance"
+description = "The coverage lint for the plugin platform contracts in docs/plugin-platform: test-id registry, references, question closure, links and anchors, proof targets and defect rows."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+pulldown-cmark = { version = "0.13", default-features = false }
+thiserror = { workspace = true }
