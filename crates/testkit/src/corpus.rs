@@ -98,7 +98,9 @@ impl fmt::Display for Drift {
             Drift::Changed { path, on_disk, expected } => write!(f, "changed: {path} is {on_disk}, expected {expected}"),
             Drift::Stray(path) => write!(f, "stray: {path} is not a corpus file"),
             Drift::Manifest => write!(f, "changed: {MANIFEST} differs from the generated listing"),
-            Drift::Rewritten(member) => write!(f, "rewritten: member {member} has other files or digests than {MANIFEST} lists"),
+            Drift::Rewritten(member) => {
+                write!(f, "rewritten: member {member} differs from its {MANIFEST} row (kind, app, expected behaviour, files or digests)")
+            }
         }
     }
 }
@@ -192,7 +194,7 @@ impl Corpus {
         for old in committed.into_iter().flat_map(|m| &m.member) {
             match generated.entry(&old.name) {
                 None => plan.frozen.push(old.clone()),
-                Some(new) if new.files != old.files => plan.breaches.push(Drift::Rewritten(old.name.clone())),
+                Some(new) if new != old => plan.breaches.push(Drift::Rewritten(old.name.clone())),
                 Some(_) => {}
             }
         }

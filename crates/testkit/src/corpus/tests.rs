@@ -98,7 +98,7 @@ fn check_fails_on_an_empty_folder_and_on_an_edited_listing() {
     );
     corpus.write(dir.path()).unwrap();
     fs::write(dir.path().join("corpus.toml"), SAMPLE_TOML.replace("lists one module", "lists two modules")).unwrap();
-    assert_eq!(corpus.check(dir.path()).unwrap(), vec![Drift::Manifest]);
+    assert_eq!(corpus.check(dir.path()).unwrap(), vec![Drift::Manifest, Drift::Rewritten("folder".into())]);
 }
 
 #[test]
@@ -161,7 +161,7 @@ fn committed_members_are_append_only_and_a_dropped_member_stays_frozen() {
     assert_eq!(grown.check(dir.path()).unwrap(), vec![]);
     assert_eq!(
         Error::AppendOnly(Drift::Rewritten("module".into())).to_string(),
-        "rewritten: member module has other files or digests than corpus.toml lists: committed members are append-only: stop generating the member so it stays as committed, and generate the new content as a new member"
+        "rewritten: member module differs from its corpus.toml row (kind, app, expected behaviour, files or digests): committed members are append-only: stop generating the member so it stays as committed, and generate the new content as a new member"
     );
 }
 
@@ -299,4 +299,43 @@ fn limits_hold_at_their_exact_boundaries() {
         let r = corpus.add(&format!("path{n}"), "k", "e", files(&[(path.as_str(), b"")]));
         assert_eq!(r.is_ok(), ok, "{} parts, {} bytes", path.split('/').count(), path.len());
     }
+}
+
+#[test]
+fn a_changed_kind_app_or_expectation_rewrites_a_committed_member() {
+    let dir = tempfile::tempdir().unwrap();
+    sample().write(dir.path()).unwrap();
+    let with = |kind: &str, expect: &str| {
+        let mut corpus = Corpus::new("demo").unwrap();
+        corpus.add("module", "abi-one", "loads and doubles \"red\"", files(&[("m.wat", b"abc"), ("sub/x.bin", b"")])).unwrap();
+        corpus.add("folder", kind, expect, files(&[("Plug-ins/One Module.wasm", b"abc")])).unwrap();
+        corpus
+    };
+    let rewritten = Err(Error::AppendOnly(Drift::Rewritten("folder".into())));
+    assert_eq!(with("plugin-dir-two", "lists one module").write(dir.path()), rewritten);
+    assert_eq!(with("plugin-dir", "lists two modules").write(dir.path()), rewritten);
+    assert_eq!(with("plugin-dir-two", "lists one module").check(dir.path()).unwrap(), vec![Drift::Manifest, Drift::Rewritten("folder".into())]);
+    let mut other_app = Corpus::new("other").unwrap();
+    other_app.add("module", "abi-one", "loads and doubles \"red\"", files(&[("m.wat", b"abc"), ("sub/x.bin", b"")])).unwrap();
+    other_app.add("folder", "plugin-dir", "lists one module", files(&[("Plug-ins/One Module.wasm", b"abc")])).unwrap();
+    assert_eq!(other_app.write(dir.path()), Err(Error::AppendOnly(Drift::Rewritten("folder".into()))));
+    assert_eq!(with("plugin-dir", "lists one module").write(dir.path()), Ok(()));
+}
+
+#[test]
+fn unread_names_the_members_no_caller_has_read() {
+    let dir = tempfile::tempdir().unwrap();
+    sample().write(dir.path()).unwrap();
+    let committed = open(dir.path()).unwrap();
+    assert_eq!(committed.unread(), vec!["folder".to_owned(), "module".to_owned()]);
+    committed.manifest();
+    assert_eq!(committed.bytes("nope", "a"), Err(Error::NoMember("nope".into())));
+    assert_eq!(committed.unread(), vec!["folder".to_owned(), "module".to_owned()]);
+    committed.path("module", "m.wat").unwrap();
+    assert_eq!(committed.unread(), vec!["folder".to_owned()]);
+    committed.copy_member("folder", &dir.path().join("copy")).unwrap();
+    assert_eq!(committed.unread(), Vec::<String>::new());
+    let fresh = open(dir.path()).unwrap();
+    fresh.dir("folder").unwrap();
+    assert_eq!(fresh.unread(), vec!["module".to_owned()]);
 }

@@ -1,6 +1,8 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
 
 use super::manifest::Manifest;
 use super::{Error, MANIFEST, MAX_FILE_BYTES, MAX_MANIFEST_BYTES, sha256_hex};
@@ -70,10 +72,11 @@ pub(super) fn write_if_changed(path: &Path, bytes: &[u8]) -> Result<(), Error> {
     fs::write(path, bytes).map_err(|e| io(path, &e))
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Committed {
     root: PathBuf,
     manifest: Manifest,
+    read: Mutex<BTreeSet<String>>,
 }
 
 pub fn open(root: &Path) -> Result<Committed, Error> {
@@ -81,10 +84,10 @@ pub fn open(root: &Path) -> Result<Committed, Error> {
     let bytes = read_bounded(&manifest_path, MAX_MANIFEST_BYTES)?
         .ok_or_else(|| Error::Io { path: manifest_path.clone(), message: "not found".to_owned() })?;
     let text = String::from_utf8(bytes).map_err(|_| Error::Manifest("not UTF-8".to_owned()))?;
-    let committed = Committed { root: root.to_owned(), manifest: Manifest::parse(&text)? };
+    let committed = Committed { root: root.to_owned(), manifest: Manifest::parse(&text)?, read: Mutex::new(BTreeSet::new()) };
     for entry in &committed.manifest.member {
         for file in &entry.files {
-            committed.bytes(&entry.name, &file.path)?;
+            committed.verified(&entry.name, &file.path)?;
         }
     }
     Ok(committed)
@@ -95,8 +98,19 @@ impl Committed {
         &self.manifest
     }
 
+    pub fn unread(&self) -> Vec<String> {
+        let read = self.read.lock().unwrap_or_else(PoisonError::into_inner);
+        self.manifest.member.iter().map(|entry| entry.name.clone()).filter(|name| !read.contains(name)).collect()
+    }
+
+    fn mark(&self, member: &str) {
+        self.read.lock().unwrap_or_else(PoisonError::into_inner).insert(member.to_owned());
+    }
+
     pub fn dir(&self, member: &str) -> Result<PathBuf, Error> {
-        self.manifest.entry(member).map(|entry| self.root.join(&entry.name)).ok_or_else(|| Error::NoMember(member.to_owned()))
+        let dir = self.manifest.entry(member).map(|entry| self.root.join(&entry.name)).ok_or_else(|| Error::NoMember(member.to_owned()))?;
+        self.mark(member);
+        Ok(dir)
     }
 
     fn listed(&self, member: &str, file: &str) -> Result<(PathBuf, &str), Error> {
@@ -106,10 +120,18 @@ impl Committed {
     }
 
     pub fn path(&self, member: &str, file: &str) -> Result<PathBuf, Error> {
-        self.listed(member, file).map(|(path, _)| path)
+        let path = self.listed(member, file).map(|(path, _)| path)?;
+        self.mark(member);
+        Ok(path)
     }
 
     pub fn bytes(&self, member: &str, file: &str) -> Result<Vec<u8>, Error> {
+        let bytes = self.verified(member, file)?;
+        self.mark(member);
+        Ok(bytes)
+    }
+
+    fn verified(&self, member: &str, file: &str) -> Result<Vec<u8>, Error> {
         let (path, listed) = self.listed(member, file)?;
         let bytes = read_bounded(&path, MAX_FILE_BYTES)?.ok_or_else(|| Error::Io { path: path.clone(), message: "not found".to_owned() })?;
         let actual = sha256_hex(&bytes);

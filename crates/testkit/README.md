@@ -263,7 +263,8 @@ against the exact bytes. The plugin platform's slice 0f uses it for each app's
   the bytes) and every file under `root/<member>/`, and never deletes a file. A root without
   `corpus.toml` must be absent or empty, so a mistyped root is refused with `NotACorpus` before
   anything is written. Over an existing listing, committed members are append-only: a member whose
-  files or digests would change is refused with `AppendOnly`, new members are added, and a member
+  listing row would change in any field (kind, app, expected behaviour, files or digests) is
+  refused with `AppendOnly`, new members are added, and a member
   the generator no longer makes stays frozen in the listing with its committed digests, so a
   writer that changes keeps its old output under the old name and adds the new one under a new
   name. Files that already hold their bytes are not rewritten.
@@ -276,7 +277,9 @@ against the exact bytes. The plugin platform's slice 0f uses it for each app's
   digests that are not lower-case hex, and reads every listed file, failing on one that is missing
   or differs from its digest. `Committed::bytes`, `path` and `dir` then give a member's files to a
   test, and `bytes` checks the digest again. `Committed::copy_member(member, to)` writes a member's
-  verified files into a scratch folder, for code that writes next to the files it reads.
+  verified files into a scratch folder, for code that writes next to the files it reads. `Committed::unread()`
+  names the members no `bytes`, `path`, `dir` or `copy_member` call has read, so a parity suite
+  can prove it read every committed member, frozen ones included.
 - `Manifest::coverage(kinds)` returns a `Gap` for each kind without a member and each member whose
   kind is not in `kinds`. An empty `kinds` is an error, so a coverage test cannot pass by listing
   nothing.
