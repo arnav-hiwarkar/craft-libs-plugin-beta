@@ -10,6 +10,9 @@ description = "Crash-safe atomic file writing and replacement for the Craft suit
 [lints]
 workspace = true
 
+[dependencies]
+log = { workspace = true }
+
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1.1", default-features = false, features = ["std", "fs"] }
 

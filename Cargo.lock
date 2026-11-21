@@ -1608,6 +1608,7 @@ name = "craft-atomic"
 version = "0.1.0"
 dependencies = [
  "exacl",
+ "log",
  "rustix 1.1.5",
  "winsafe",
 ]
@@ -2424,6 +2425,7 @@ name = "craft-ipc"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "craft-atomic",
  "getrandom 0.2.17",
  "interprocess",
  "jsonschema",
@@ -3349,6 +3351,7 @@ dependencies = [
 name = "craft-suite-account"
 version = "0.1.0"
 dependencies = [
+ "craft-atomic",
  "dirs",
  "keyring",
  "keyring-core",

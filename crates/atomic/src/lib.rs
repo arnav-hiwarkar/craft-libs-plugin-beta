@@ -37,6 +37,13 @@ impl Receipt {
             Self::Unchanged(error) | Self::Displaced { error, .. } => Err(error),
         }
     }
+    pub fn durable(self) -> io::Result<()> {
+        match self {
+            Self::Durable => Ok(()),
+            Self::VisibleUnconfirmed(u) => Err(io::Error::new(u.error.kind(), u.to_string())),
+            Self::Unchanged(error) | Self::Displaced { error, .. } => Err(error),
+        }
+    }
 }
 
 #[derive(Debug)]

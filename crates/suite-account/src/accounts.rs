@@ -282,61 +282,9 @@ pub fn write(path: &Path, accounts: &Accounts) -> Result<(), Error> {
         )));
     }
     std::fs::create_dir_all(dir).map_err(|e| Error::Io(format!("couldn't create {} ({e})", dir.display())))?;
-    use std::io::Write;
-
-    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-    let pid = std::process::id();
-    let tmp = dir.join(format!(".{}.{}.{}.tmp", path.file_name().and_then(|n| n.to_str()).unwrap_or("accounts"), stamp, pid));
-    #[cfg(unix)]
-    {
-        use std::fs::OpenOptions;
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&tmp)
-            .map_err(|e| Error::Io(format!("couldn't create {} ({e})", tmp.display())))?;
-        file.write_all(&json).map_err(|e| Error::Io(format!("couldn't write {} ({e})", tmp.display())))?;
-        file.sync_all().map_err(|e| Error::Io(format!("couldn't flush {} ({e})", tmp.display())))?;
-    }
-    #[cfg(not(unix))]
-    {
-        use std::fs::OpenOptions;
-        let mut file =
-            OpenOptions::new().write(true).create_new(true).open(&tmp).map_err(|e| Error::Io(format!("couldn't create {} ({e})", tmp.display())))?;
-        file.write_all(&json).map_err(|e| Error::Io(format!("couldn't write {} ({e})", tmp.display())))?;
-        file.sync_all().map_err(|e| Error::Io(format!("couldn't flush {} ({e})", tmp.display())))?;
-        restrict(&tmp)?;
-    }
-    std::fs::rename(&tmp, path).map_err(|e| Error::Io(format!("couldn't replace {} ({e})", path.display())))?;
-    // The flush above persisted the file's bytes. The rename changed a directory entry, and that
-    // entry has its own durability: on Linux, power loss after this function returned could
-    // otherwise resurrect the older list, losing a tombstone a discard already reported written.
-    // Directories open and sync on unix only; elsewhere the rename's own guarantees stand alone.
-    #[cfg(unix)]
-    {
-        if let Some(parent) = path.parent() {
-            let dir = std::fs::File::open(parent).map_err(|e| Error::Io(format!("couldn't open {} ({e})", parent.display())))?;
-            dir.sync_all().map_err(|e| Error::Io(format!("couldn't flush {} ({e})", parent.display())))?;
-        }
-    }
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn restrict(_path: &Path) -> Result<(), Error> {
-    // A no-op today. That is a real gap this comment used to paper over. A new file in the
-    // platform configuration folder (the default `paths::Rule::Platform` home) inherits that
-    // folder's own, profile-scoped access rules. The account list is this user's alone there.
-    // `paths::Rule::Portable` and `paths::Rule::EnvVar` point `write` at whatever folder the
-    // caller named. A new file there inherits that folder's own Windows access control list,
-    // whatever it is. A shared or loosely permissioned folder in either of those two cases
-    // leaves the account list (subjects, display names, emails, never a token) readable by
-    // anyone else with access to it. Narrowing that needs a per-user Windows DACL on the file,
-    // set through the Win32 authorization API. Every binding for that API is an `unsafe fn`.
-    // This workspace forbids `unsafe_code` outright. Closing this for real needs either a
-    // maintainer-approved exception for one call site or a vetted dependency that wraps that API
-    // safely. Both are decisions for a dedicated PR. See `paths::Rule`.
-    Ok(())
+    craft_atomic::WriteOptions::default()
+        .with_new_file_permissions(craft_atomic::NewFilePermissions::Private)
+        .write(path, &json)
+        .durable()
+        .map_err(|e| Error::Io(format!("couldn't save {} ({e})", path.display())))
 }

@@ -142,7 +142,9 @@ impl<'fs> Stage<'fs> {
                     Err(ReplaceFailure::Kept(e)) => return Receipt::Unchanged(rename_error(e, &path, existed)),
                     #[cfg(any(windows, test))]
                     Err(ReplaceFailure::Displaced { completion, restoration, original }) => {
-                        return Receipt::Displaced { error: displaced_error(&path, &completion, &restoration, &original), original };
+                        let error = displaced_error(&path, &completion, &restoration, &original);
+                        log::error!("{error}");
+                        return Receipt::Displaced { error, original };
                     }
                 }
             }
@@ -157,7 +159,7 @@ impl<'fs> Stage<'fs> {
             },
         }
         drop(tmp);
-        settle(fs, &dir, content)
+        settle(fs, &path, &dir, content)
     }
 }
 
@@ -183,11 +185,11 @@ fn worse(a: Flush, b: Flush) -> Flush {
     }
 }
 
-fn settle(fs: &dyn AtomicFs, dir: &Path, content: Flush) -> Receipt {
-    confirm(fs, content, fs.open_dir(dir))
+fn settle(fs: &dyn AtomicFs, path: &Path, dir: &Path, content: Flush) -> Receipt {
+    confirm(fs, path, content, fs.open_dir(dir))
 }
 
-pub fn confirm(fs: &dyn AtomicFs, content: Flush, folder: io::Result<File>) -> Receipt {
+pub fn confirm(fs: &dyn AtomicFs, path: &Path, content: Flush, folder: io::Result<File>) -> Receipt {
     let unconfirmed = |reason, error| Some(Unconfirmed { reason, error });
     let folder = match folder {
         Err(e) if e.kind() == io::ErrorKind::PermissionDenied => unconfirmed(Reason::DirOpenDenied, e),
@@ -200,11 +202,13 @@ pub fn confirm(fs: &dyn AtomicFs, content: Flush, folder: io::Result<File>) -> R
             Err(e) => unconfirmed(Reason::DirSyncFailed, e),
         },
     };
-    match (folder, content) {
-        (Some(u), _) => Receipt::VisibleUnconfirmed(u),
-        (None, Flush::Plain { refused }) => Receipt::VisibleUnconfirmed(Unconfirmed { reason: Reason::FullFlushRefused, error: refused }),
-        (None, Flush::Full) => Receipt::Durable,
-    }
+    let unconfirmed = match (folder, content) {
+        (Some(u), _) => u,
+        (None, Flush::Plain { refused }) => Unconfirmed { reason: Reason::FullFlushRefused, error: refused },
+        (None, Flush::Full) => return Receipt::Durable,
+    };
+    log::warn!("{}: {unconfirmed}", path.display());
+    Receipt::VisibleUnconfirmed(unconfirmed)
 }
 
 fn swap(options: WriteOptions<'_>, from: &Path, to: &Path, windows_replace: bool) -> Result<(), ReplaceFailure> {

@@ -297,7 +297,11 @@ fn unconfirmed_receipts_still_count_as_visible() {
     let Receipt::VisibleUnconfirmed(u) = receipt else { panic!("a failed folder flush is unconfirmed") };
     assert_eq!(u.reason.id(), "dir-sync-failed");
     assert!(u.to_string().starts_with("the file is in place, but flushing its folder failed"), "{u}");
+    let refused =
+        Receipt::VisibleUnconfirmed(Unconfirmed { reason: u.reason, error: io::Error::from_raw_os_error(5) }).durable().err().map(|e| e.to_string());
+    assert!(refused.as_deref().is_some_and(|m| m.starts_with("the file is in place, but flushing its folder failed")), "{refused:?}");
     assert!(Receipt::VisibleUnconfirmed(u).visible().is_ok());
+    assert!(Receipt::Durable.durable().is_ok());
     assert!(Receipt::Durable.visible().is_ok());
     assert_eq!(Receipt::Unchanged(io::ErrorKind::StorageFull.into()).visible().map_err(|e| e.kind()), Err(io::ErrorKind::StorageFull));
 }
@@ -617,14 +621,14 @@ fn identity_tells_a_replaced_file_from_the_same_one() {
 #[test]
 fn a_handle_relative_writer_gets_the_same_receipt() {
     let d = TempDir::new("confirm");
-    assert!(durable(confirm(&RealFs, Flush::Full, RealFs.open_dir(&d.0))));
+    assert!(durable(confirm(&RealFs, &d.0, Flush::Full, RealFs.open_dir(&d.0))));
     assert_eq!(
-        reason(confirm(&RealFs, Flush::Plain { refused: io::Error::from_raw_os_error(45) }, RealFs.open_dir(&d.0))),
+        reason(confirm(&RealFs, &d.0, Flush::Plain { refused: io::Error::from_raw_os_error(45) }, RealFs.open_dir(&d.0))),
         Some(Reason::FullFlushRefused)
     );
-    assert_eq!(reason(confirm(&RealFs, Flush::Full, Err(io::ErrorKind::PermissionDenied.into()))), Some(Reason::DirOpenDenied));
-    assert_eq!(reason(confirm(&RealFs, Flush::Full, Err(io::ErrorKind::Unsupported.into()))), Some(Reason::DirSyncUnsupported));
-    assert_eq!(reason(confirm(&RealFs, Flush::Full, Err(io::Error::from_raw_os_error(5)))), Some(Reason::DirSyncFailed));
+    assert_eq!(reason(confirm(&RealFs, &d.0, Flush::Full, Err(io::ErrorKind::PermissionDenied.into()))), Some(Reason::DirOpenDenied));
+    assert_eq!(reason(confirm(&RealFs, &d.0, Flush::Full, Err(io::ErrorKind::Unsupported.into()))), Some(Reason::DirSyncUnsupported));
+    assert_eq!(reason(confirm(&RealFs, &d.0, Flush::Full, Err(io::Error::from_raw_os_error(5)))), Some(Reason::DirSyncFailed));
 }
 
 #[test]

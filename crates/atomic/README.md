@@ -15,7 +15,9 @@ never claims more durability than the flushes delivered.
 
 The reasons are `FullFlushRefused` (Apple `F_FULLFSYNC` refused, plain `fsync` done),
 `DirOpenDenied`, `DirSyncUnsupported` and `DirSyncFailed`. `Receipt::visible` turns a receipt into
-`io::Result<()>` for callers that only need the file in place.
+`io::Result<()>` for callers that only need the file in place, and `Receipt::durable` for callers that
+need a confirmed flush. Every unconfirmed receipt is also logged at `warn`, and a displaced one at
+`error`, so no caller drops a reason silently.
 
 ## Writing
 

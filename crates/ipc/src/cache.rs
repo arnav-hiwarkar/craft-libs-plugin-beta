@@ -9,7 +9,6 @@
 //! `$HOME/.cache/artcraft/link`. A leaf name `sub` is added under the chosen directory.
 
 use std::collections::BTreeMap;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::error::LinkError;
@@ -79,24 +78,7 @@ pub fn write_private(dir: &Path, name: &str, bytes: &[u8]) -> Result<(), LinkErr
     if name.is_empty() || name.contains(['/', '\\', '\0']) || name.starts_with('.') {
         return Err(refused(&dir.join(name), "file name must be one plain component"));
     }
-    let mut rand = [0u8; 8];
-    getrandom::getrandom(&mut rand).map_err(LinkError::io)?;
-    let tmp = dir.join(format!(".{name}.{}.tmp", crate::auth::encode_hex(&rand)));
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(&tmp)?;
-    let written = file.write_all(bytes).and_then(|()| file.sync_all());
-    drop(file);
-    if let Err(err) = written.and_then(|()| std::fs::rename(&tmp, dir.join(name))) {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(err.into());
-    }
-    Ok(())
+    crate::private_options().write(&dir.join(name), bytes).visible().map_err(LinkError::from)
 }
 
 /// Read `<dir>/<name>` when it is a regular file (not a symlink) that this user owns and no one
