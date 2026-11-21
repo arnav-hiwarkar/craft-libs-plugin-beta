@@ -6,7 +6,7 @@ use std::sync::atomic::AtomicU32;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::fs::or_plain_fsync;
-use crate::meta::{ReplaceFailure, recover_moved_replacement};
+use crate::meta::recover_moved_replacement;
 use crate::publish::displaced_error;
 use crate::*;
 
@@ -63,6 +63,7 @@ struct Faulty {
     locked_renames: AtomicU32,
     replaced_during_sync: Option<PathBuf>,
     created_meanwhile: Option<PathBuf>,
+    displaced: bool,
     #[cfg(unix)]
     fixed_mode: Option<u32>,
 }
@@ -89,6 +90,33 @@ fn error(inject: Inject) -> io::Error {
 }
 
 impl AtomicFs for Faulty {
+    fn entry(&self, path: &Path) -> io::Result<Entry> {
+        RealFs.entry(path)
+    }
+    fn read_link(&self, path: &Path) -> io::Result<PathBuf> {
+        RealFs.read_link(path)
+    }
+    fn open_read(&self, path: &Path) -> io::Result<File> {
+        RealFs.open_read(path)
+    }
+    fn open_write(&self, path: &Path) -> io::Result<File> {
+        RealFs.open_write(path)
+    }
+    fn copy_acl(&self, from: &Path, to: &Path) {
+        RealFs.copy_acl(from, to);
+    }
+    fn replace_existing(&self, from: &Path, to: &Path) -> Result<(), ReplaceFailure> {
+        if !self.displaced {
+            return self.rename(from, to).map_err(ReplaceFailure::Kept);
+        }
+        let backup = to.with_file_name(temp_name("backup"));
+        std::fs::rename(to, &backup).map_err(ReplaceFailure::Kept)?;
+        recover_moved_replacement(
+            || Err(io::Error::other("injected: completing the save failed")),
+            || Err(io::Error::other("injected: restoring the backup failed")),
+            backup,
+        )
+    }
     fn create_new(&self, path: &Path, permissions: NewFilePermissions) -> io::Result<File> {
         if let Some(i) = self.step(Step::Create) {
             return Err(error(i));
@@ -179,9 +207,9 @@ fn unchanged_kind(receipt: Receipt) -> Option<io::ErrorKind> {
     }
 }
 
-fn reason(receipt: Receipt) -> Option<Reason> {
+fn reasons(receipt: Receipt) -> Option<Vec<Reason>> {
     match receipt {
-        Receipt::VisibleUnconfirmed(u) => Some(u.reason),
+        Receipt::VisibleUnconfirmed(u) => Some(u.reasons().iter().collect()),
         _ => None,
     }
 }
@@ -261,28 +289,28 @@ fn a_destination_created_while_staging_is_not_replaced() {
     let d = TempDir::new("identity-new");
     let p = d.0.join("doc.craft");
     let fs = Faulty { replaced_during_sync: Some(p.clone()), ..Default::default() };
-    assert_eq!(unchanged_kind(options(&fs).write(&p, b"mine")), Some(io::ErrorKind::Other));
+    assert_eq!(unchanged_kind(options(&fs).write(&p, b"mine")), Some(io::ErrorKind::AlreadyExists));
     assert_eq!(std::fs::read(&p).ok(), Some(b"another program's file".to_vec()));
 }
 
 #[test]
 fn each_unconfirmed_reason_is_reported_after_the_file_is_in_place() {
     let cases = [
-        (vec![(Step::SyncFile, Inject::Plain)], Reason::FullFlushRefused),
-        (vec![(Step::SyncDir, Inject::Plain)], Reason::FullFlushRefused),
-        (vec![(Step::OpenDir, Inject::Kind(io::ErrorKind::PermissionDenied))], Reason::DirOpenDenied),
-        (vec![(Step::OpenDir, Inject::Kind(io::ErrorKind::Unsupported))], Reason::DirSyncUnsupported),
-        (vec![(Step::OpenDir, Inject::Kind(io::ErrorKind::NotFound))], Reason::DirSyncFailed),
-        (vec![(Step::SyncDir, Inject::Os(22))], Reason::DirSyncUnsupported),
-        (vec![(Step::SyncDir, Inject::Os(5))], Reason::DirSyncFailed),
-        (vec![(Step::SyncFile, Inject::Plain), (Step::SyncDir, Inject::Os(5))], Reason::DirSyncFailed),
+        (vec![(Step::SyncFile, Inject::Plain)], vec![Reason::FullFlushRefused]),
+        (vec![(Step::SyncDir, Inject::Plain)], vec![Reason::FullFlushRefused]),
+        (vec![(Step::OpenDir, Inject::Kind(io::ErrorKind::PermissionDenied))], vec![Reason::DirOpenDenied]),
+        (vec![(Step::OpenDir, Inject::Kind(io::ErrorKind::Unsupported))], vec![Reason::DirSyncUnsupported]),
+        (vec![(Step::OpenDir, Inject::Kind(io::ErrorKind::NotFound))], vec![Reason::DirSyncFailed]),
+        (vec![(Step::SyncDir, Inject::Os(22))], vec![Reason::DirSyncUnsupported]),
+        (vec![(Step::SyncDir, Inject::Os(5))], vec![Reason::DirSyncFailed]),
+        (vec![(Step::SyncFile, Inject::Plain), (Step::SyncDir, Inject::Os(5))], vec![Reason::FullFlushRefused, Reason::DirSyncFailed]),
     ];
     for (faults, expected) in cases {
         let d = TempDir::new("unconfirmed");
         let p = d.0.join("doc.craft");
         std::fs::write(&p, ORIGINAL).ok();
         let fs = Faulty::with(&faults);
-        assert_eq!(reason(options(&fs).write(&p, b"new bytes")), Some(expected), "{faults:?}");
+        assert_eq!(reasons(options(&fs).write(&p, b"new bytes")), Some(expected), "{faults:?}");
         assert_eq!(std::fs::read(&p).ok(), Some(b"new bytes".to_vec()), "{faults:?}");
         assert_eq!(d.names(), ["doc.craft"], "{faults:?}");
     }
@@ -295,13 +323,10 @@ fn unconfirmed_receipts_still_count_as_visible() {
     let fs = Faulty::with(&[(Step::SyncDir, Inject::Os(5))]);
     let receipt = options(&fs).write(&p, b"x");
     let Receipt::VisibleUnconfirmed(u) = receipt else { panic!("a failed folder flush is unconfirmed") };
-    assert_eq!(u.reason.id(), "dir-sync-failed");
+    assert_eq!(u.reasons().ids(), ["dir-sync-failed"]);
     assert!(u.to_string().starts_with("the file is in place, but flushing its folder failed"), "{u}");
-    let refused =
-        Receipt::VisibleUnconfirmed(Unconfirmed { reason: u.reason, error: io::Error::from_raw_os_error(5) }).durable().err().map(|e| e.to_string());
-    assert!(refused.as_deref().is_some_and(|m| m.starts_with("the file is in place, but flushing its folder failed")), "{refused:?}");
-    assert!(Receipt::VisibleUnconfirmed(u).visible().is_ok());
-    assert!(Receipt::Durable.durable().is_ok());
+    assert_eq!(Receipt::VisibleUnconfirmed(u).published().ok().flatten().map(Reasons::ids), Some(vec!["dir-sync-failed"]));
+    assert_eq!(Receipt::Durable.published().ok(), Some(None));
     assert!(Receipt::Durable.visible().is_ok());
     assert_eq!(Receipt::Unchanged(io::ErrorKind::StorageFull.into()).visible().map_err(|e| e.kind()), Err(io::ErrorKind::StorageFull));
 }
@@ -332,13 +357,13 @@ fn a_dropped_stage_removes_only_its_own_file() {
     std::fs::write(&p, ORIGINAL).ok();
     let fs = Faulty::default();
     let mut stage = options(&fs).stage(&p).ok().unwrap_or_else(|| panic!("stage"));
-    stage.file().write_all(b"partial frames").ok();
+    stage.write_all(b"partial frames").ok();
     assert_eq!(d.names().len(), 2);
     drop(stage);
     assert_eq!(std::fs::read(&p).ok(), Some(ORIGINAL.to_vec()));
     assert_eq!(d.names(), ["movie.mp4"]);
     let mut stage = options(&fs).stage(&p).ok().unwrap_or_else(|| panic!("stage"));
-    stage.file().write_all(b"whole movie").ok();
+    stage.write_all(b"whole movie").ok();
     assert!(durable(stage.publish()));
     assert_eq!(std::fs::read(&p).ok(), Some(b"whole movie".to_vec()));
     assert_eq!(d.names(), ["movie.mp4"]);
@@ -611,24 +636,61 @@ fn identity_tells_a_replaced_file_from_the_same_one() {
     let d = TempDir::new("identity-type");
     let p = d.0.join("frame.png");
     std::fs::write(&p, b"one").ok();
-    let first = Identity::at(&p).ok();
-    assert_eq!(Identity::at(&p).ok(), first);
+    let identity = |p: &Path| RealFs.entry(p).ok().map(|e| e.identity);
+    let first = identity(&p);
+    assert_eq!(identity(&p), first);
     assert!(write(&p, b"two, longer").visible().is_ok());
     assert!(first.is_some());
-    assert_ne!(Identity::at(&p).ok(), first);
+    assert_ne!(identity(&p), first);
 }
 
 #[test]
-fn a_handle_relative_writer_gets_the_same_receipt() {
-    let d = TempDir::new("confirm");
-    assert!(durable(confirm(&RealFs, &d.0, Flush::Full, RealFs.open_dir(&d.0))));
-    assert_eq!(
-        reason(confirm(&RealFs, &d.0, Flush::Plain { refused: io::Error::from_raw_os_error(45) }, RealFs.open_dir(&d.0))),
-        Some(Reason::FullFlushRefused)
-    );
-    assert_eq!(reason(confirm(&RealFs, &d.0, Flush::Full, Err(io::ErrorKind::PermissionDenied.into()))), Some(Reason::DirOpenDenied));
-    assert_eq!(reason(confirm(&RealFs, &d.0, Flush::Full, Err(io::ErrorKind::Unsupported.into()))), Some(Reason::DirSyncUnsupported));
-    assert_eq!(reason(confirm(&RealFs, &d.0, Flush::Full, Err(io::Error::from_raw_os_error(5)))), Some(Reason::DirSyncFailed));
+fn a_replacement_that_cannot_finish_or_restore_names_where_the_original_survives() {
+    let d = TempDir::new("displaced");
+    let p = d.0.join("doc.psd");
+    std::fs::write(&p, ORIGINAL).ok();
+    let fs = Faulty { displaced: true, ..Default::default() };
+    let Receipt::Displaced { error, original } = options(&fs).write(&p, b"new") else { panic!("displaced") };
+    assert_eq!(std::fs::read(&original).ok(), Some(ORIGINAL.to_vec()));
+    assert!(error.to_string().contains(&format!("your document survives at {}", original.display())), "{error}");
+    assert!(!p.exists());
+    assert_eq!(d.names().len(), 1);
+}
+
+#[test]
+fn a_file_created_while_a_new_one_is_staged_is_never_replaced() {
+    let d = TempDir::new("new-race-write");
+    let p = d.0.join("doc.craft");
+    let fs = Faulty { created_meanwhile: Some(p.clone()), ..Default::default() };
+    assert_eq!(unchanged_kind(options(&fs).write(&p, b"mine")), Some(io::ErrorKind::AlreadyExists));
+    assert_eq!(std::fs::read(&p).ok(), Some(ORIGINAL.to_vec()));
+    assert_eq!(d.names(), ["doc.craft"]);
+}
+
+#[test]
+fn a_stage_left_after_a_hard_link_is_reported() {
+    let d = TempDir::new("stage-left");
+    let p = d.0.join("export.png");
+    let fs =
+        Faulty::with(&[(Step::NoReplace, Inject::Kind(io::ErrorKind::Unsupported)), (Step::Remove, Inject::Kind(io::ErrorKind::PermissionDenied))]);
+    assert_eq!(reasons(options(&fs).write_new(&p, b"linked")), Some(vec![Reason::StageRemovalFailed]));
+    assert_eq!(std::fs::read(&p).ok(), Some(b"linked".to_vec()));
+}
+
+#[test]
+fn a_stage_says_whether_it_replaces_a_file_and_receipts_combine() {
+    let d = TempDir::new("replaces");
+    let p = d.0.join("frame.png");
+    let fs = Faulty::default();
+    assert!(options(&fs).stage(&p).is_ok_and(|s| !s.replaces()));
+    std::fs::write(&p, ORIGINAL).ok();
+    assert!(options(&fs).stage(&p).is_ok_and(|s| s.replaces()));
+    let folder = || options(&Faulty::with(&[(Step::SyncDir, Inject::Os(5))])).write(&d.0.join("a"), b"a");
+    let content = || options(&Faulty::with(&[(Step::SyncFile, Inject::Plain)])).write(&d.0.join("b"), b"b");
+    assert_eq!(reasons(folder().and(content())), Some(vec![Reason::FullFlushRefused, Reason::DirSyncFailed]));
+    assert_eq!(reasons(Receipt::Durable.and(folder())), Some(vec![Reason::DirSyncFailed]));
+    assert!(matches!(folder().and(Receipt::Unchanged(io::ErrorKind::Other.into())), Receipt::Unchanged(_)));
+    assert!(matches!(Receipt::Durable.and(Receipt::Durable), Receipt::Durable));
 }
 
 #[test]

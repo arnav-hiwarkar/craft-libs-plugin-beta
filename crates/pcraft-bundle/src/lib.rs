@@ -324,6 +324,17 @@ pub struct DirectoryStats {
     pub written_objects: Vec<String>,
     /// Canonical object paths reused after verification or a matching cached signature.
     pub reused_objects: Vec<String>,
+    pub unconfirmed: Option<craft_atomic::Reasons>,
+}
+
+impl DirectoryStats {
+    fn publish(&mut self, target: &Path, bytes: &[u8]) -> Result<()> {
+        if let Some(reasons) = craft_atomic::write(target, bytes).published().map_err(io_error)? {
+            self.unconfirmed = Some(self.unconfirmed.map_or(reasons, |seen| seen.union(reasons)));
+        }
+        self.written = self.written.saturating_add(1);
+        Ok(())
+    }
 }
 
 /// Incremental directory-bundle persistence with bounded rolling object verification.
@@ -435,11 +446,10 @@ impl DirectoryBundleWriter {
                 }
             }
             let _ = decode_object(path, bytes, 1 << 30)?;
-            craft_atomic::write(&target, bytes).visible().map_err(io_error)?;
+            stats.publish(&target, bytes)?;
             if let Some(signature) = file_signature(&target)? {
                 self.verified.insert(path.clone(), CachedFile { signature, checked_at: generation });
             }
-            stats.written = stats.written.saturating_add(1);
             stats.written_objects.push(path.clone());
         }
 
@@ -449,14 +459,12 @@ impl DirectoryBundleWriter {
                 ensure_directory(parent)?;
             }
             refuse_symlink(&target)?;
-            craft_atomic::write(&target, bytes).visible().map_err(io_error)?;
-            stats.written = stats.written.saturating_add(1);
+            stats.publish(&target, bytes)?;
         }
 
         let manifest = bundle.entries.get(craft_pcraft_format::MANIFEST).ok_or_else(|| Error::InvalidBundle("manifest not set".into()))?;
         refuse_symlink(&manifest_path)?;
-        craft_atomic::write(&manifest_path, manifest).visible().map_err(io_error)?;
-        stats.written = stats.written.saturating_add(1);
+        stats.publish(&manifest_path, manifest)?;
 
         // The durable manifest is the commit boundary. Cleanup owns only canonical regular
         // object files and previews; leave unsafe, inaccessible or locked leftovers for later.

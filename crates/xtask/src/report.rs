@@ -62,13 +62,32 @@ fn write_with(options: WriteOptions<'_>, path: &Path, records: &[StepRecord]) ->
 mod tests {
     use super::*;
     use crate::runner::{Error, RunOptions, Step, run_steps_to};
-    use craft_atomic::{AtomicFs, Flush, NewFilePermissions, RealFs, RenameRetry};
+    use craft_atomic::{AtomicFs, Entry, Flush, NewFilePermissions, RealFs, RenameRetry, ReplaceFailure};
     use std::fs::{File, Permissions};
+    use std::path::PathBuf;
 
     /// The real file system with every rename failing.
     struct FailingRename;
 
     impl AtomicFs for FailingRename {
+        fn entry(&self, path: &Path) -> io::Result<Entry> {
+            RealFs.entry(path)
+        }
+        fn read_link(&self, path: &Path) -> io::Result<PathBuf> {
+            RealFs.read_link(path)
+        }
+        fn open_read(&self, path: &Path) -> io::Result<File> {
+            RealFs.open_read(path)
+        }
+        fn open_write(&self, path: &Path) -> io::Result<File> {
+            RealFs.open_write(path)
+        }
+        fn replace_existing(&self, from: &Path, to: &Path) -> Result<(), ReplaceFailure> {
+            self.rename(from, to).map_err(ReplaceFailure::Kept)
+        }
+        fn copy_acl(&self, from: &Path, to: &Path) {
+            RealFs.copy_acl(from, to);
+        }
         fn create_new(&self, path: &Path, permissions: NewFilePermissions) -> io::Result<File> {
             RealFs.create_new(path, permissions)
         }

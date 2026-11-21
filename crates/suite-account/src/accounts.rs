@@ -285,6 +285,6 @@ pub fn write(path: &Path, accounts: &Accounts) -> Result<(), Error> {
     craft_atomic::WriteOptions::default()
         .with_new_file_permissions(craft_atomic::NewFilePermissions::Private)
         .write(path, &json)
-        .durable()
+        .visible()
         .map_err(|e| Error::Io(format!("couldn't save {} ({e})", path.display())))
 }

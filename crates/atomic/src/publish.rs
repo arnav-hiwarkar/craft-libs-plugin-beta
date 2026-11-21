@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::fs::{dir_sync_unsupported, is_transient_lock, rename_noreplace_unsupported, retry_when};
 use crate::meta::ReplaceFailure;
-use crate::{AtomicFs, Flush, Links, Metadata, NewFilePermissions, Reason, Receipt, Unconfirmed, WriteOptions, temp_name};
+use crate::{AtomicFs, Entry, EntryKind, Flush, Links, Metadata, NewFilePermissions, Reason, Receipt, Unconfirmed, WriteOptions, temp_name};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Identity {
@@ -21,20 +21,14 @@ pub struct Identity {
 }
 
 impl Identity {
-    pub fn of(metadata: &std::fs::Metadata) -> Self {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            Self { dev: metadata.dev(), ino: metadata.ino() }
-        }
-        #[cfg(not(unix))]
-        {
-            Self { len: metadata.len(), modified: metadata.modified().ok(), created: metadata.created().ok() }
-        }
+    #[cfg(unix)]
+    pub const fn new(dev: u64, ino: u64) -> Self {
+        Self { dev, ino }
     }
 
-    pub fn at(path: &Path) -> io::Result<Self> {
-        std::fs::symlink_metadata(path).map(|m| Self::of(&m))
+    #[cfg(not(unix))]
+    pub const fn new(len: u64, modified: Option<std::time::SystemTime>, created: Option<std::time::SystemTime>) -> Self {
+        Self { len, modified, created }
     }
 }
 
@@ -49,13 +43,8 @@ pub struct Stage<'fs> {
 }
 
 enum Kind {
-    Replace(Option<Replaced>),
+    Replace(Option<Entry>),
     New,
-}
-
-struct Replaced {
-    identity: Identity,
-    metadata: std::fs::Metadata,
 }
 
 struct TempGuard<'fs> {
@@ -72,75 +61,81 @@ impl Drop for TempGuard<'_> {
     }
 }
 
+impl TempGuard<'_> {
+    fn remove(mut self) -> io::Result<()> {
+        self.armed = false;
+        match self.fs.remove(&self.path) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        }
+    }
+}
+
 impl<'fs> Stage<'fs> {
     pub(crate) fn replace(options: WriteOptions<'fs>, path: &Path) -> io::Result<Self> {
-        let target = resolve(options.links, path)?;
+        let fs = options.fs;
+        let target = resolve(fs, options.links, path)?;
         let (dir, name) = split(&target, path)?;
-        let replaced = std::fs::symlink_metadata(&target).ok().map(|metadata| Replaced { identity: Identity::of(&metadata), metadata });
-        if replaced.as_ref().is_some_and(|r| r.metadata.is_file()) {
-            check_writable(&target).map_err(|e| read_only_error(e, path))?;
+        let replaced = fs.entry(&target).ok();
+        if let Some(entry) = replaced.filter(|e| e.kind == EntryKind::File) {
+            check_writable(fs, &target, &entry).map_err(|e| read_only_error(e, path))?;
         }
         let creation = if replaced.is_some() { NewFilePermissions::Private } else { options.new_file_permissions };
-        let existed = replaced.is_some();
-        let (tmp, file) = create_stage(options.fs, &dir, &name, creation).map_err(|e| write_error(e, path, &dir, existed))?;
+        let (tmp, file) = create_stage(fs, &dir, &name, creation).map_err(|e| write_error(e, path, &dir, replaced.is_some()))?;
         Ok(Self { options, path: path.to_path_buf(), target, dir, file, tmp, kind: Kind::Replace(replaced) })
     }
 
     pub(crate) fn create_new(options: WriteOptions<'fs>, path: &Path) -> io::Result<Self> {
-        let target = resolve(options.links, path)?;
+        let fs = options.fs;
+        let target = resolve(fs, options.links, path)?;
         let (dir, name) = split(&target, path)?;
-        if std::fs::symlink_metadata(&target).is_ok() {
+        if fs.entry(&target).is_ok() {
             return Err(write_error(io::ErrorKind::AlreadyExists.into(), path, &dir, true));
         }
-        let (tmp, file) = create_stage(options.fs, &dir, &name, options.new_file_permissions).map_err(|e| write_error(e, path, &dir, false))?;
+        let (tmp, file) = create_stage(fs, &dir, &name, options.new_file_permissions).map_err(|e| write_error(e, path, &dir, false))?;
         Ok(Self { options, path: path.to_path_buf(), target, dir, file, tmp, kind: Kind::New })
     }
 
-    pub fn file(&mut self) -> &mut File {
-        &mut self.file
+    pub fn replaces(&self) -> bool {
+        matches!(self.kind, Kind::Replace(Some(_)))
     }
 
     pub(crate) fn fill_and_publish(mut self, fill: impl FnOnce(&mut File) -> io::Result<()>) -> Receipt {
         match fill(&mut self.file) {
             Ok(()) => self.publish(),
-            Err(e) => Receipt::Unchanged(write_error(e, &self.path, &self.dir, self.existed())),
+            Err(e) => Receipt::Unchanged(write_error(e, &self.path, &self.dir, self.replaces())),
         }
     }
 
-    fn existed(&self) -> bool {
-        matches!(self.kind, Kind::Replace(Some(_)))
-    }
-
     pub fn publish(self) -> Receipt {
-        let existed = self.existed();
+        let existed = self.replaces();
         let Stage { options, path, target, dir, file, mut tmp, kind } = self;
         let fs = options.fs;
         let seal = |file: File| -> Result<Flush, Receipt> {
-            if let Kind::Replace(Some(replaced)) = &kind
-                && replaced.metadata.is_file()
+            if let Kind::Replace(Some(entry)) = &kind
+                && entry.kind == EntryKind::File
             {
                 if options.metadata == Metadata::Carry {
-                    crate::meta::carry(&target, &file, &tmp.path);
+                    crate::meta::carry(fs, &target, &file, &tmp.path);
                 }
-                keep_mode(fs, &file, &replaced.metadata).map_err(|e| Receipt::Unchanged(permissions_error(e, &path)))?;
+                keep_mode(fs, &file, entry).map_err(|e| Receipt::Unchanged(permissions_error(e, &path)))?;
             }
             fs.sync(&file).map_err(|e| Receipt::Unchanged(write_error(e, &path, &dir, existed)))
         };
-        let mut content = match seal(file) {
-            Ok(flush) => flush,
+        let mut causes = Causes::default();
+        match seal(file) {
+            Ok(flush) => causes.flush(flush),
             Err(receipt) => return receipt,
-        };
-        match kind {
-            Kind::Replace(replaced) => {
-                let now = std::fs::symlink_metadata(&target).ok().map(|m| Identity::of(&m));
-                if now != replaced.as_ref().map(|r| r.identity) {
+        }
+        let placed = match kind {
+            Kind::Replace(Some(entry)) => {
+                if fs.entry(&target).ok().map(|now| now.identity) != Some(entry.identity) {
                     return Receipt::Unchanged(changed_error(&path));
                 }
-                let windows_replace = replaced.as_ref().is_some_and(|r| r.metadata.is_file()) && options.metadata == Metadata::Carry;
-                match swap(options, &tmp.path, &target, windows_replace) {
-                    Ok(()) => tmp.armed = false,
+                let carry = entry.kind == EntryKind::File && options.metadata == Metadata::Carry;
+                match swap(options, &tmp.path, &target, carry) {
+                    Ok(()) => Placed::Renamed,
                     Err(ReplaceFailure::Kept(e)) => return Receipt::Unchanged(rename_error(e, &path, existed)),
-                    #[cfg(any(windows, test))]
                     Err(ReplaceFailure::Displaced { completion, restoration, original }) => {
                         let error = displaced_error(&path, &completion, &restoration, &original);
                         log::error!("{error}");
@@ -148,18 +143,24 @@ impl<'fs> Stage<'fs> {
                     }
                 }
             }
-            Kind::New => match place_new(options, &tmp.path, &target) {
-                Ok(Placed::Renamed) => tmp.armed = false,
-                Ok(Placed::Linked) => {}
-                Ok(Placed::Copied(flush)) => content = worse(content, flush),
+            Kind::Replace(None) | Kind::New => match place_new(options, &tmp.path, &target) {
+                Ok(placed) => placed,
                 Err(e) => {
                     let taken = e.kind() == io::ErrorKind::AlreadyExists;
                     return Receipt::Unchanged(write_error(e, &path, &dir, taken));
                 }
             },
+        };
+        match placed {
+            Placed::Renamed => tmp.armed = false,
+            Placed::Linked => causes.stage_removal(tmp.remove()),
+            Placed::Copied(flush) => {
+                causes.flush(flush);
+                causes.stage_removal(tmp.remove());
+            }
         }
-        drop(tmp);
-        settle(fs, &path, &dir, content)
+        causes.folder(fs, &dir);
+        causes.receipt(&path)
     }
 }
 
@@ -178,48 +179,53 @@ impl io::Seek for Stage<'_> {
     }
 }
 
-fn worse(a: Flush, b: Flush) -> Flush {
-    match (a, b) {
-        (Flush::Full, other) | (other, Flush::Full) => other,
-        (plain, Flush::Plain { .. }) => plain,
+#[derive(Default)]
+struct Causes(Vec<(Reason, io::Error)>);
+
+impl Causes {
+    fn flush(&mut self, flush: Flush) {
+        if let Flush::Plain { refused } = flush
+            && !self.0.iter().any(|(r, _)| *r == Reason::FullFlushRefused)
+        {
+            self.0.push((Reason::FullFlushRefused, refused));
+        }
+    }
+
+    fn stage_removal(&mut self, removed: io::Result<()>) {
+        if let Err(e) = removed {
+            self.0.push((Reason::StageRemovalFailed, e));
+        }
+    }
+
+    fn folder(&mut self, fs: &dyn AtomicFs, dir: &Path) {
+        match fs.open_dir(dir) {
+            Err(e) if e.kind() == io::ErrorKind::PermissionDenied => self.0.push((Reason::DirOpenDenied, e)),
+            Err(e) if dir_sync_unsupported(&e) => self.0.push((Reason::DirSyncUnsupported, e)),
+            Err(e) => self.0.push((Reason::DirSyncFailed, e)),
+            Ok(handle) => match fs.sync(&handle) {
+                Ok(flush) => self.flush(flush),
+                Err(e) if dir_sync_unsupported(&e) => self.0.push((Reason::DirSyncUnsupported, e)),
+                Err(e) => self.0.push((Reason::DirSyncFailed, e)),
+            },
+        }
+    }
+
+    fn receipt(self, path: &Path) -> Receipt {
+        let mut causes = self.0.into_iter();
+        let Some(first) = causes.next() else { return Receipt::Durable };
+        let unconfirmed = Unconfirmed::new(first, causes.collect());
+        log::warn!("{}: {unconfirmed}", path.display());
+        Receipt::VisibleUnconfirmed(unconfirmed)
     }
 }
 
-fn settle(fs: &dyn AtomicFs, path: &Path, dir: &Path, content: Flush) -> Receipt {
-    confirm(fs, path, content, fs.open_dir(dir))
-}
-
-pub fn confirm(fs: &dyn AtomicFs, path: &Path, content: Flush, folder: io::Result<File>) -> Receipt {
-    let unconfirmed = |reason, error| Some(Unconfirmed { reason, error });
-    let folder = match folder {
-        Err(e) if e.kind() == io::ErrorKind::PermissionDenied => unconfirmed(Reason::DirOpenDenied, e),
-        Err(e) if dir_sync_unsupported(&e) => unconfirmed(Reason::DirSyncUnsupported, e),
-        Err(e) => unconfirmed(Reason::DirSyncFailed, e),
-        Ok(handle) => match fs.sync(&handle) {
-            Ok(Flush::Full) => None,
-            Ok(Flush::Plain { refused }) => unconfirmed(Reason::FullFlushRefused, refused),
-            Err(e) if dir_sync_unsupported(&e) => unconfirmed(Reason::DirSyncUnsupported, e),
-            Err(e) => unconfirmed(Reason::DirSyncFailed, e),
-        },
-    };
-    let unconfirmed = match (folder, content) {
-        (Some(u), _) => u,
-        (None, Flush::Plain { refused }) => Unconfirmed { reason: Reason::FullFlushRefused, error: refused },
-        (None, Flush::Full) => return Receipt::Durable,
-    };
-    log::warn!("{}: {unconfirmed}", path.display());
-    Receipt::VisibleUnconfirmed(unconfirmed)
-}
-
-fn swap(options: WriteOptions<'_>, from: &Path, to: &Path, windows_replace: bool) -> Result<(), ReplaceFailure> {
-    #[cfg(windows)]
-    if windows_replace {
+fn swap(options: WriteOptions<'_>, from: &Path, to: &Path, carry: bool) -> Result<(), ReplaceFailure> {
+    let fs = options.fs;
+    if carry {
         let transient = |e: &ReplaceFailure| matches!(e, ReplaceFailure::Kept(e) if is_transient_lock(e));
-        return retry_when(options.retry, transient, || crate::meta::replace_file(from, to));
+        return retry_when(options.retry, transient, || fs.replace_existing(from, to));
     }
-    #[cfg(not(windows))]
-    let _ = windows_replace;
-    retry_when(options.retry, is_transient_lock, || options.fs.rename(from, to)).map_err(ReplaceFailure::Kept)
+    retry_when(options.retry, is_transient_lock, || fs.rename(from, to)).map_err(ReplaceFailure::Kept)
 }
 
 enum Placed {
@@ -244,7 +250,7 @@ fn place_new(options: WriteOptions<'_>, tmp: &Path, target: &Path) -> io::Result
 
 fn copy_new(fs: &dyn AtomicFs, tmp: &Path, target: &Path, permissions: NewFilePermissions) -> io::Result<Flush> {
     let mut to = fs.create_new(target, permissions)?;
-    let copied = File::open(tmp).and_then(move |mut from| {
+    let copied = fs.open_read(tmp).and_then(move |mut from| {
         #[cfg(unix)]
         let final_permissions = {
             use std::os::unix::fs::PermissionsExt;
@@ -288,19 +294,18 @@ fn create_stage<'fs>(fs: &'fs dyn AtomicFs, dir: &Path, name: &str, permissions:
 }
 
 #[cfg(unix)]
-fn keep_mode(fs: &dyn AtomicFs, file: &File, replaced: &std::fs::Metadata) -> io::Result<()> {
+fn keep_mode(fs: &dyn AtomicFs, file: &File, replaced: &Entry) -> io::Result<()> {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
-    let wanted = replaced.permissions();
     let staged = file.metadata()?;
-    if staged.permissions().mode() & 0o7777 == wanted.mode() & 0o7777 {
+    if staged.permissions().mode() & 0o7777 == replaced.mode & 0o7777 {
         return Ok(());
     }
-    let perms = adopt_group(fs, file, staged.gid(), replaced.gid(), wanted);
+    let perms = adopt_group(fs, file, staged.gid(), replaced.gid, std::fs::Permissions::from_mode(replaced.mode & 0o7777));
     fs.set_permissions(file, perms)
 }
 
 #[cfg(not(unix))]
-fn keep_mode(_fs: &dyn AtomicFs, _file: &File, _replaced: &std::fs::Metadata) -> io::Result<()> {
+fn keep_mode(_fs: &dyn AtomicFs, _file: &File, _replaced: &Entry) -> io::Result<()> {
     Ok(())
 }
 
@@ -316,33 +321,33 @@ pub(crate) fn adopt_group(fs: &dyn AtomicFs, file: &File, stage_gid: u32, replac
 }
 
 #[cfg(unix)]
-fn check_writable(target: &Path) -> io::Result<()> {
-    std::fs::OpenOptions::new().write(true).open(target).map(drop)
+fn check_writable(fs: &dyn AtomicFs, target: &Path, _entry: &Entry) -> io::Result<()> {
+    fs.open_write(target).map(drop)
 }
 
 #[cfg(not(unix))]
-fn check_writable(target: &Path) -> io::Result<()> {
-    if std::fs::metadata(target)?.permissions().readonly() {
+fn check_writable(_fs: &dyn AtomicFs, _target: &Path, entry: &Entry) -> io::Result<()> {
+    if entry.readonly {
         return Err(io::Error::new(io::ErrorKind::PermissionDenied, "the file is marked read-only"));
     }
     Ok(())
 }
 
-fn resolve(links: Links, path: &Path) -> io::Result<PathBuf> {
+fn resolve(fs: &dyn AtomicFs, links: Links, path: &Path) -> io::Result<PathBuf> {
     match links {
-        Links::Follow => resolve_links(path),
+        Links::Follow => resolve_links(fs, path),
         Links::Replace => Ok(path.to_path_buf()),
     }
 }
 
 const MAX_LINKS: usize = 40;
 
-fn resolve_links(path: &Path) -> io::Result<PathBuf> {
+fn resolve_links(fs: &dyn AtomicFs, path: &Path) -> io::Result<PathBuf> {
     let mut p = path.to_path_buf();
     for _ in 0..MAX_LINKS {
-        match std::fs::symlink_metadata(&p) {
-            Ok(m) if m.file_type().is_symlink() => {
-                let to = std::fs::read_link(&p).map_err(|e| io::Error::new(e.kind(), format!("cannot save {}: {e}", path.display())))?;
+        match fs.entry(&p) {
+            Ok(e) if e.kind == EntryKind::Link => {
+                let to = fs.read_link(&p).map_err(|e| io::Error::new(e.kind(), format!("cannot save {}: {e}", path.display())))?;
                 p = match p.parent() {
                     Some(dir) if to.is_relative() => dir.join(to),
                     _ => to,
@@ -415,7 +420,6 @@ fn rename_error(e: io::Error, path: &Path, existed: bool) -> io::Error {
     io::Error::new(e.kind(), msg)
 }
 
-#[cfg(any(windows, test))]
 pub(crate) fn displaced_error(path: &Path, completion: &io::Error, restoration: &io::Error, original: &Path) -> io::Error {
     let msg = if restoration.kind() == io::ErrorKind::NotFound {
         format!(

@@ -1,20 +1,69 @@
 use std::fs::{File, OpenOptions};
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use crate::{NewFilePermissions, RenameRetry};
+use crate::meta::ReplaceFailure;
+use crate::{Identity, NewFilePermissions, RenameRetry};
 
 pub trait AtomicFs: Sync {
+    fn entry(&self, path: &Path) -> io::Result<Entry>;
+    fn read_link(&self, path: &Path) -> io::Result<PathBuf>;
+    fn open_read(&self, path: &Path) -> io::Result<File>;
+    fn open_write(&self, path: &Path) -> io::Result<File>;
     fn create_new(&self, path: &Path, permissions: NewFilePermissions) -> io::Result<File>;
     fn sync(&self, file: &File) -> io::Result<Flush>;
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()>;
+    fn replace_existing(&self, from: &Path, to: &Path) -> Result<(), ReplaceFailure>;
     fn rename_noreplace(&self, from: &Path, to: &Path) -> io::Result<()>;
     fn hard_link(&self, from: &Path, to: &Path) -> io::Result<()>;
     fn remove(&self, path: &Path) -> io::Result<()>;
     fn open_dir(&self, dir: &Path) -> io::Result<File>;
+    fn copy_acl(&self, from: &Path, to: &Path);
     fn set_permissions(&self, file: &File, perms: std::fs::Permissions) -> io::Result<()>;
     #[cfg(unix)]
     fn set_group(&self, file: &File, gid: u32) -> io::Result<()>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntryKind {
+    File,
+    Link,
+    Other,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Entry {
+    pub kind: EntryKind,
+    pub identity: Identity,
+    #[cfg(unix)]
+    pub mode: u32,
+    #[cfg(unix)]
+    pub gid: u32,
+    #[cfg(not(unix))]
+    pub readonly: bool,
+}
+
+impl Entry {
+    pub fn of(metadata: &std::fs::Metadata) -> Self {
+        let kind = match metadata.file_type() {
+            t if t.is_symlink() => EntryKind::Link,
+            t if t.is_file() => EntryKind::File,
+            _ => EntryKind::Other,
+        };
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            Self { kind, identity: Identity::new(metadata.dev(), metadata.ino()), mode: metadata.mode(), gid: metadata.gid() }
+        }
+        #[cfg(not(unix))]
+        {
+            Self {
+                kind,
+                identity: Identity::new(metadata.len(), metadata.modified().ok(), metadata.created().ok()),
+                readonly: metadata.permissions().readonly(),
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -27,6 +76,22 @@ pub enum Flush {
 pub struct RealFs;
 
 impl AtomicFs for RealFs {
+    fn entry(&self, path: &Path) -> io::Result<Entry> {
+        std::fs::symlink_metadata(path).map(|m| Entry::of(&m))
+    }
+
+    fn read_link(&self, path: &Path) -> io::Result<PathBuf> {
+        std::fs::read_link(path)
+    }
+
+    fn open_read(&self, path: &Path) -> io::Result<File> {
+        File::open(path)
+    }
+
+    fn open_write(&self, path: &Path) -> io::Result<File> {
+        OpenOptions::new().write(true).open(path)
+    }
+
     fn create_new(&self, path: &Path, permissions: NewFilePermissions) -> io::Result<File> {
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
@@ -51,6 +116,17 @@ impl AtomicFs for RealFs {
         std::fs::rename(from, to)
     }
 
+    fn replace_existing(&self, from: &Path, to: &Path) -> Result<(), ReplaceFailure> {
+        #[cfg(windows)]
+        {
+            crate::meta::replace_file(from, to)
+        }
+        #[cfg(not(windows))]
+        {
+            std::fs::rename(from, to).map_err(ReplaceFailure::Kept)
+        }
+    }
+
     fn rename_noreplace(&self, from: &Path, to: &Path) -> io::Result<()> {
         native_rename_noreplace(from, to)
     }
@@ -67,6 +143,10 @@ impl AtomicFs for RealFs {
         open_dir_for_sync(dir)
     }
 
+    fn copy_acl(&self, from: &Path, to: &Path) {
+        crate::meta::copy_acl(from, to);
+    }
+
     fn set_permissions(&self, file: &File, perms: std::fs::Permissions) -> io::Result<()> {
         file.set_permissions(perms)
     }
@@ -77,7 +157,7 @@ impl AtomicFs for RealFs {
     }
 }
 
-pub fn sync_file(file: &File) -> io::Result<Flush> {
+fn sync_file(file: &File) -> io::Result<Flush> {
     #[cfg(target_vendor = "apple")]
     {
         or_plain_fsync(file.sync_all(), || rustix::fs::fsync(file).map_err(io::Error::from))
@@ -178,10 +258,6 @@ pub(crate) fn rename_noreplace_unsupported(error: &io::Error) -> bool {
 }
 
 const MAX_RETRY_DELAY_MS: u64 = 200;
-
-pub fn retry_rename(retry: RenameRetry, rename: impl FnMut() -> io::Result<()>) -> io::Result<()> {
-    retry_when(retry, is_transient_lock, rename)
-}
 
 pub(crate) fn retry_when<E>(retry: RenameRetry, transient: impl Fn(&E) -> bool, mut op: impl FnMut() -> Result<(), E>) -> Result<(), E> {
     let mut delay = retry.first_delay_ms.min(MAX_RETRY_DELAY_MS);

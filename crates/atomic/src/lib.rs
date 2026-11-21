@@ -16,9 +16,9 @@ use std::fs::File;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-pub use fs::{AtomicFs, Flush, RealFs, retry_rename, sync_file};
-pub use meta::{copy_created, copy_xattrs};
-pub use publish::{Identity, Stage, confirm};
+pub use fs::{AtomicFs, Entry, EntryKind, Flush, RealFs};
+pub use meta::ReplaceFailure;
+pub use publish::{Identity, Stage};
 pub use temp::{temp_name, temp_owner};
 
 #[must_use]
@@ -32,35 +32,57 @@ pub enum Receipt {
 
 impl Receipt {
     pub fn visible(self) -> io::Result<()> {
+        self.published().map(drop)
+    }
+
+    pub fn published(self) -> io::Result<Option<Reasons>> {
         match self {
-            Self::Durable | Self::VisibleUnconfirmed(_) => Ok(()),
+            Self::Durable => Ok(None),
+            Self::VisibleUnconfirmed(u) => Ok(Some(u.reasons())),
             Self::Unchanged(error) | Self::Displaced { error, .. } => Err(error),
         }
     }
-    pub fn durable(self) -> io::Result<()> {
-        match self {
-            Self::Durable => Ok(()),
-            Self::VisibleUnconfirmed(u) => Err(io::Error::new(u.error.kind(), u.to_string())),
-            Self::Unchanged(error) | Self::Displaced { error, .. } => Err(error),
+
+    pub fn and(self, other: Receipt) -> Receipt {
+        match (self, other) {
+            (failed @ (Self::Unchanged(_) | Self::Displaced { .. }), _) | (_, failed @ (Self::Unchanged(_) | Self::Displaced { .. })) => failed,
+            (Self::VisibleUnconfirmed(a), Self::VisibleUnconfirmed(b)) => Self::VisibleUnconfirmed(a.merge(b)),
+            (unconfirmed @ Self::VisibleUnconfirmed(_), Self::Durable) | (Self::Durable, unconfirmed) => unconfirmed,
         }
     }
 }
 
 #[derive(Debug)]
 pub struct Unconfirmed {
-    pub reason: Reason,
-    pub error: io::Error,
+    first: (Reason, io::Error),
+    rest: Vec<(Reason, io::Error)>,
+}
+
+impl Unconfirmed {
+    pub(crate) fn new(first: (Reason, io::Error), rest: Vec<(Reason, io::Error)>) -> Self {
+        Self { first, rest }
+    }
+
+    pub fn causes(&self) -> impl Iterator<Item = (Reason, &io::Error)> {
+        std::iter::once(&self.first).chain(&self.rest).map(|(r, e)| (*r, e))
+    }
+
+    pub fn reasons(&self) -> Reasons {
+        self.causes().fold(Reasons(0), |set, (r, _)| set.with(r))
+    }
+
+    fn merge(mut self, other: Unconfirmed) -> Self {
+        self.rest.push(other.first);
+        self.rest.extend(other.rest);
+        self
+    }
 }
 
 impl fmt::Display for Unconfirmed {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let what = match self.reason {
-            Reason::FullFlushRefused => "the disk refused a full flush, so only an ordinary flush was done",
-            Reason::DirOpenDenied => "its folder could not be opened to flush it",
-            Reason::DirSyncUnsupported => "its file system cannot flush folders",
-            Reason::DirSyncFailed => "flushing its folder failed",
-        };
-        write!(f, "the file is in place, but {what}, so it may not survive a power loss or crash ({})", self.error)
+        let what: Vec<&str> = self.reasons().iter().map(Reason::what).collect();
+        let errors: Vec<String> = self.causes().map(|(_, e)| e.to_string()).collect();
+        write!(f, "the file is in place, but {}, so it may not survive a power loss or crash ({})", what.join(" and "), errors.join("; "))
     }
 }
 
@@ -70,16 +92,66 @@ pub enum Reason {
     DirOpenDenied,
     DirSyncUnsupported,
     DirSyncFailed,
+    StageRemovalFailed,
 }
 
 impl Reason {
+    pub const ALL: [Reason; 5] =
+        [Self::FullFlushRefused, Self::DirOpenDenied, Self::DirSyncUnsupported, Self::DirSyncFailed, Self::StageRemovalFailed];
+
     pub const fn id(self) -> &'static str {
         match self {
             Self::FullFlushRefused => "full-flush-refused",
             Self::DirOpenDenied => "dir-open-denied",
             Self::DirSyncUnsupported => "dir-sync-unsupported",
             Self::DirSyncFailed => "dir-sync-failed",
+            Self::StageRemovalFailed => "stage-removal-failed",
         }
+    }
+
+    const fn what(self) -> &'static str {
+        match self {
+            Self::FullFlushRefused => "the disk refused a full flush, so only an ordinary flush was done",
+            Self::DirOpenDenied => "its folder could not be opened to flush it",
+            Self::DirSyncUnsupported => "its file system cannot flush folders",
+            Self::DirSyncFailed => "flushing its folder failed",
+            Self::StageRemovalFailed => "its temporary file could not be removed",
+        }
+    }
+
+    const fn bit(self) -> u8 {
+        1 << self as u8
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Reasons(u8);
+
+impl Reasons {
+    const fn with(self, reason: Reason) -> Self {
+        Self(self.0 | reason.bit())
+    }
+
+    pub const fn contains(self, reason: Reason) -> bool {
+        self.0 & reason.bit() != 0
+    }
+
+    pub const fn union(self, other: Reasons) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    pub fn iter(self) -> impl Iterator<Item = Reason> {
+        Reason::ALL.into_iter().filter(move |r| self.contains(*r))
+    }
+
+    pub fn ids(self) -> Vec<&'static str> {
+        self.iter().map(Reason::id).collect()
+    }
+}
+
+impl fmt::Display for Reasons {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.ids().join(", "))
     }
 }
 

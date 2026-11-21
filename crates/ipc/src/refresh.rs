@@ -242,7 +242,7 @@ pub fn is_temp_name(name: &str) -> bool {
 }
 
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<Fingerprint, LinkError> {
-    craft_atomic::WriteOptions::default().with_links(craft_atomic::Links::Replace).write(path, bytes).durable()?;
+    craft_atomic::WriteOptions::default().with_links(craft_atomic::Links::Replace).write(path, bytes).visible()?;
     fingerprint(path)
 }
 

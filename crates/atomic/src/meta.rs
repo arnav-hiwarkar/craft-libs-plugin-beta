@@ -9,15 +9,15 @@ const MAX_XATTR_VALUE: usize = 16 << 20;
 #[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
 const XATTR_CHUNK: usize = 4 << 10;
 
-pub(crate) fn carry(replaced: &Path, stage: &File, stage_path: &Path) {
-    let Ok(old) = File::open(replaced) else { return };
+pub(crate) fn carry(fs: &dyn crate::AtomicFs, replaced: &Path, stage: &File, stage_path: &Path) {
+    let Ok(old) = fs.open_read(replaced) else { return };
     let _ = copy_xattrs(&old, stage);
     let _ = copy_created(&old, stage);
-    copy_acl(replaced, stage_path);
+    fs.copy_acl(replaced, stage_path);
 }
 
 #[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
-pub fn copy_xattrs(from: &File, to: &File) -> io::Result<()> {
+fn copy_xattrs(from: &File, to: &File) -> io::Result<()> {
     use rustix::fs::{XattrFlags, fsetxattr};
     for name in list_xattrs(from)?.split(|b| *b == 0) {
         if name.is_empty() || name == b"com.apple.decmpfs" {
@@ -30,7 +30,7 @@ pub fn copy_xattrs(from: &File, to: &File) -> io::Result<()> {
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "android", target_vendor = "apple")))]
-pub fn copy_xattrs(_from: &File, _to: &File) -> io::Result<()> {
+fn copy_xattrs(_from: &File, _to: &File) -> io::Result<()> {
     Ok(())
 }
 
@@ -68,7 +68,7 @@ fn read_xattr(file: &File, name: &[u8]) -> Option<Vec<u8>> {
     }
 }
 
-pub fn copy_created(from: &File, to: &File) -> io::Result<()> {
+fn copy_created(from: &File, to: &File) -> io::Result<()> {
     #[cfg(target_os = "macos")]
     {
         use std::os::macos::fs::FileTimesExt;
@@ -83,7 +83,7 @@ pub fn copy_created(from: &File, to: &File) -> io::Result<()> {
 }
 
 #[cfg(target_os = "macos")]
-fn copy_acl(from: &Path, to: &Path) {
+pub(crate) fn copy_acl(from: &Path, to: &Path) {
     if let Ok(entries) = exacl::getfacl(from, None)
         && !entries.is_empty()
     {
@@ -92,17 +92,12 @@ fn copy_acl(from: &Path, to: &Path) {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn copy_acl(_from: &Path, _to: &Path) {}
+pub(crate) fn copy_acl(_from: &Path, _to: &Path) {}
 
 #[derive(Debug)]
-pub(crate) enum ReplaceFailure {
+pub enum ReplaceFailure {
     Kept(io::Error),
-    #[cfg(any(windows, test))]
-    Displaced {
-        completion: io::Error,
-        restoration: io::Error,
-        original: std::path::PathBuf,
-    },
+    Displaced { completion: io::Error, restoration: io::Error, original: std::path::PathBuf },
 }
 
 #[cfg(any(windows, test))]

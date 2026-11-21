@@ -10,14 +10,14 @@ never claims more durability than the flushes delivered.
 |---|---|
 | `Unchanged(error)` | Nothing was published. The destination keeps its bytes and the staging file is removed. |
 | `Displaced { error, original }` | Windows only: `ReplaceFileW` moved the original to its backup name and could neither finish nor restore it. The original survives at `original`. |
-| `VisibleUnconfirmed(Unconfirmed { reason, error })` | The new file is in place, but a flush did not confirm it. |
+| `VisibleUnconfirmed(Unconfirmed)` | The new file is in place, but a flush or cleanup did not confirm it. `Unconfirmed` carries every reason and its error. |
 | `Durable` | The content and the folder entry were fully flushed. |
 
 The reasons are `FullFlushRefused` (Apple `F_FULLFSYNC` refused, plain `fsync` done),
-`DirOpenDenied`, `DirSyncUnsupported` and `DirSyncFailed`. `Receipt::visible` turns a receipt into
-`io::Result<()>` for callers that only need the file in place, and `Receipt::durable` for callers that
-need a confirmed flush. Every unconfirmed receipt is also logged at `warn`, and a displaced one at
-`error`, so no caller drops a reason silently.
+`DirOpenDenied`, `DirSyncUnsupported`, `DirSyncFailed` and `StageRemovalFailed`. `Receipt::published`
+returns the `Reasons` set of a visible file, `Receipt::visible` drops it, and `Receipt::and` combines
+the receipts of several files. Every unconfirmed receipt is logged at `warn`, and a displaced one at
+`error`.
 
 ## Writing
 
@@ -35,9 +35,10 @@ let created = craft_atomic::write_new(Path::new("export.png"), b"image");
 - an injected `AtomicFs` and `RenameRetry` for failure injection.
 
 `WriteOptions::stage` returns a `Stage` for a writer that streams over time (an export). Dropping
-an unpublished stage removes only its own temporary file. `Stage::publish` returns the receipt.
-`confirm` gives a writer that renames through its own handles (a capability directory) the same
-receipt from its content `Flush` and its folder handle.
+an unpublished stage removes only its own temporary file. A stage is `Write + Seek`, `Stage::replaces`
+says whether a file already existed, and `Stage::publish` returns the receipt. Every filesystem step,
+including `ReplaceFileW`, goes through `AtomicFs`, so a writer confined to a directory handle supplies
+its own implementation.
 
 ## Guarantees
 
@@ -46,7 +47,7 @@ receipt from its content `Flush` and its folder handle.
   DACL and named streams.
 - A read-only destination is refused before anything is written.
 - A destination replaced by another program while staging is left alone (`Unchanged`).
-- `write_new` never replaces a file: an exclusive rename where the platform has one, then a hard
+- A write with no existing destination, and `write_new`, never replace a file that appears meanwhile: an exclusive rename where the platform has one, then a hard
   link, then an exclusive copy.
 - A missing folder is an error; no folder is created.
 - Temporary files are named `<name>.<pid>-<n>.craft_tmp`, not dot-named, so an SMB server that
