@@ -304,6 +304,29 @@ files = [
 ]
 ```
 
+## lockcheck
+
+`lockcheck`, behind the `lockcheck` feature, checks that an app's `Cargo.lock` takes every
+craft-libs package from one git source, as the "One framework source" rule in
+`docs/plugin-platform/contracts/conformance.md` says. It reads no files and builds for `wasm32`.
+
+- `check(lock_text, &policy)` returns the `Finding`s, or an `Error` for an empty lock, a lock with
+  no craft-libs package outside the exceptions, text that is not a lock, a craft-libs source
+  without a full commit, or a lock over 16 MiB. No findings is the only pass.
+- `Policy::default()` has no exceptions. `Policy::except(package, reason)` names one, and refuses
+  a blank or multi-line reason and a package named twice.
+- A `Finding` is `Duplicate` (a package from more than one source), `Stray` (a package from a
+  source other than the framework source), `UnusedException` or `Tied` (no source holds more
+  packages than every other). `Display` prints each with the full sources.
+
+```rust
+use craft_testkit::lockcheck::{Policy, check};
+
+let policy = Policy::default().except("craft-ui", "EffectCraft keeps craft-ui 5a7a63a until EC-UI-PORT")?;
+let findings = check(include_str!("../Cargo.lock"), &policy)?;
+assert!(findings.is_empty(), "{}", findings.iter().map(|f| f.to_string()).collect::<Vec<_>>().join("\n"));
+```
+
 ## Origin
 
 ### guards

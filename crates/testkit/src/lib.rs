@@ -41,6 +41,8 @@ pub mod corpus;
 pub mod deadline;
 pub mod guards;
 pub mod hostile;
+#[cfg(feature = "lockcheck")]
+pub mod lockcheck;
 pub mod pair;
 pub mod sample_damage;
 

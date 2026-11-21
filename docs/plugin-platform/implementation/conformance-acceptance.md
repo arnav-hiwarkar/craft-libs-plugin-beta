@@ -11,6 +11,7 @@ Planned cases for [RUN-05/SDK-02](../decisions/ADR-SDK-02.md). None has run. Eve
 | CONF-overhead | Compare A0 (host never started) with A at 0, 10 and 100 idle packages in both apps. | 15% p50 C and I gate. Zero wakeups and zero processes while disabled. |
 | CONF-cadence / CONF-latency / CONF-hitch / CONF-playback | Drag, animate, paint, scrub and play back with an SDK panel, tool and effect versus built-in equivalents. | Meet the UI-eq and Playback rows, including ≤1 long stall per 10k frames. |
 | CONF-cold | Spare bind, cold spawn, QuickJS image start, enable to first body. | Absolute limits in the contract. |
+| CONF-one-source | Run `craft_testkit::lockcheck::check` on each app's `Cargo.lock` with its named exceptions, as the [one framework source](../contracts/conformance.md#one-framework-source) rule says. | No findings. On 2026-11-21, before the 0h repins, PhotoCraft's `platform` lock fails with two `craft-atomic` copies (the fork's and upstream `bafb4522`) among 19 findings, and EffectCraft's with 53. |
 | CONF-probe-continuity | Run the EC UI port and the PC framework updates. | Stage names and counts unchanged. |
 | CI-trigger-lint | Scan every workflow that can reach a self-hosted runner. | No `pull_request*` triggers, no secrets, and an approval reference on each schedule. |
 | COV-matrix | Run the lint on today's docs, then on fixtures. | It fails on today's defects, including undefined IDs and duplicates. It passes on fixed fixtures. Negative fixtures cover forged records, wildcards and facade cells. |
