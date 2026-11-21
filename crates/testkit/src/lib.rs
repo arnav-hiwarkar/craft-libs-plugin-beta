@@ -35,6 +35,8 @@
 //! under foreign host environments. They are lightweight syntactic regression gates designed to complement,
 //! rather than replace, platform integration tests and CI execution.
 
+#[cfg(all(feature = "corpus", not(target_arch = "wasm32")))]
+pub mod corpus;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod deadline;
 pub mod guards;
