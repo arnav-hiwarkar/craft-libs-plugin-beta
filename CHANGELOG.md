@@ -2,6 +2,15 @@
 
 All crates share the workspace version. See [the versioning policy](docs/versioning.md).
 
+## Unreleased
+
+- **craft-atomic:** every write returns a typed `Receipt` (`Unchanged`, `Displaced`,
+  `VisibleUnconfirmed(reason)` or `Durable`). A refused full flush and every folder-flush failure
+  are reported instead of counted as success. PhotoCraft's writer moved in: metadata carry-over,
+  `ReplaceFileW`, exclusive rename for new files, a destination identity check and visible
+  temporary names. `atomic_write*` and `write_new_with*` are replaced by `write`, `write_new`,
+  `WriteOptions` and `Stage`; callers migrate with `Receipt::visible`.
+
 ## v0.1.0 — 2026-10-12
 
 First coordinated Git release of craft-libs. Applications can pin a named baseline instead of

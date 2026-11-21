@@ -754,7 +754,7 @@ impl FontStore {
 
     pub(crate) fn write_file(&self, name: &str, bytes: &[u8]) -> Result<(), Error> {
         std::fs::create_dir_all(&self.dir).map_err(io("creating the font store folder"))?;
-        craft_atomic::atomic_write(&self.dir.join(name), bytes).map_err(io(format!("saving {name}")))
+        craft_atomic::write(&self.dir.join(name), bytes).visible().map_err(io(format!("saving {name}")))
     }
 
     pub(crate) fn sweep_staging(&self) {

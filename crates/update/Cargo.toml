@@ -20,6 +20,7 @@ local-mirror = []
 snapshot = ["egui", "egui_kittest/wgpu"]
 
 [dependencies]
+craft-atomic = { workspace = true }
 egui = { workspace = true, optional = true }
 # Decodes the app icon the startup prompt shows (`App::icon_png`); PNG only.
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }

@@ -115,5 +115,5 @@ pub fn set(path: &Path, id: &str, on: bool) -> Result<(), FlagError> {
     if text.len() as u64 > MAX_FILE_BYTES {
         return Err(FlagError::Unreadable(format!("the flags file would grow past {MAX_FILE_BYTES} bytes")));
     }
-    craft_atomic::atomic_write(path, text.as_bytes()).map_err(FlagError::Io)
+    craft_atomic::write(path, text.as_bytes()).visible().map_err(FlagError::Io)
 }

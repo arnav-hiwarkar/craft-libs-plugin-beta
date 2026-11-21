@@ -10,5 +10,11 @@ description = "Crash-safe atomic file writing and replacement for the Craft suit
 [lints]
 workspace = true
 
-[target.'cfg(target_vendor = "apple")'.dependencies]
+[target.'cfg(unix)'.dependencies]
 rustix = { version = "1.1", default-features = false, features = ["std", "fs"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+exacl = "0.13"
+
+[target.'cfg(windows)'.dependencies]
+winsafe = { version = "0.0.29", features = ["kernel"] }

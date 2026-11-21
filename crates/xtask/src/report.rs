@@ -23,7 +23,7 @@
 use std::io;
 use std::path::Path;
 
-use craft_atomic::{AtomicFs, RealFs, RenameRetry};
+use craft_atomic::WriteOptions;
 use serde_json::{Value, json};
 
 use crate::runner::StepRecord;
@@ -49,20 +49,20 @@ pub fn to_json(records: &[StepRecord]) -> Value {
 
 /// Writes the report of `records` to `path`, replacing any earlier report atomically.
 pub fn write(path: &Path, records: &[StepRecord]) -> io::Result<()> {
-    write_custom(&RealFs, RenameRetry::platform(), path, records)
+    write_with(WriteOptions::default(), path, records)
 }
 
-fn write_custom(fs: &dyn AtomicFs, retry: RenameRetry, path: &Path, records: &[StepRecord]) -> io::Result<()> {
+fn write_with(options: WriteOptions<'_>, path: &Path, records: &[StepRecord]) -> io::Result<()> {
     let mut bytes = serde_json::to_vec_pretty(&to_json(records)).map_err(io::Error::other)?;
     bytes.push(b'\n');
-    craft_atomic::atomic_write_custom(fs, retry, path, &bytes)
+    options.write(path, &bytes).visible()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::runner::{Error, RunOptions, Step, run_steps_to};
-    use craft_atomic::NewFilePermissions;
+    use craft_atomic::{AtomicFs, Flush, NewFilePermissions, RealFs, RenameRetry};
     use std::fs::{File, Permissions};
 
     /// The real file system with every rename failing.
@@ -72,11 +72,14 @@ mod tests {
         fn create_new(&self, path: &Path, permissions: NewFilePermissions) -> io::Result<File> {
             RealFs.create_new(path, permissions)
         }
-        fn sync(&self, file: &File) -> io::Result<()> {
+        fn sync(&self, file: &File) -> io::Result<Flush> {
             RealFs.sync(file)
         }
         fn rename(&self, _from: &Path, _to: &Path) -> io::Result<()> {
             Err(io::Error::other("injected rename failure"))
+        }
+        fn rename_noreplace(&self, from: &Path, to: &Path) -> io::Result<()> {
+            RealFs.rename_noreplace(from, to)
         }
         fn hard_link(&self, from: &Path, to: &Path) -> io::Result<()> {
             RealFs.hard_link(from, to)
@@ -84,8 +87,8 @@ mod tests {
         fn remove(&self, path: &Path) -> io::Result<()> {
             RealFs.remove(path)
         }
-        fn sync_dir(&self, dir: &Path) -> io::Result<()> {
-            RealFs.sync_dir(dir)
+        fn open_dir(&self, dir: &Path) -> io::Result<File> {
+            RealFs.open_dir(dir)
         }
         fn set_permissions(&self, file: &File, perms: Permissions) -> io::Result<()> {
             RealFs.set_permissions(file, perms)
@@ -140,8 +143,7 @@ mod tests {
 
         // A failed replacement keeps the previous complete report and returns the error.
         let records = vec![StepRecord { step: "fmt".into(), command: None, status: crate::runner::Status::Ok, duration: None }];
-        let no_retry = RenameRetry { attempts: 0, first_delay_ms: 0 };
-        assert!(write_custom(&FailingRename, no_retry, &path, &records).is_err());
+        assert!(write_with(WriteOptions::default().with_fs(&FailingRename).with_retry(RenameRetry::NONE), &path, &records).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), written);
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1, "a staging file was left behind");
     }

@@ -580,7 +580,7 @@ fn structure_err(path: &str, e: &serde_json::Error) -> DocError {
 /// File helpers: errors keep the path so the message names the file.
 pub fn save_to(doc: &Document, path: &str) -> Result<(), DocError> {
     let json = doc.save_json()?;
-    craft_atomic::atomic_write(std::path::Path::new(path), json.as_bytes()).map_err(|source| DocError::Io { path: path.to_string(), source })
+    craft_atomic::write(std::path::Path::new(path), json.as_bytes()).visible().map_err(|source| DocError::Io { path: path.to_string(), source })
 }
 
 pub fn load_from(path: &str) -> Result<Document, DocError> {

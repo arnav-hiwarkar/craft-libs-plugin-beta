@@ -435,7 +435,7 @@ impl DirectoryBundleWriter {
                 }
             }
             let _ = decode_object(path, bytes, 1 << 30)?;
-            craft_atomic::atomic_write(&target, bytes).map_err(io_error)?;
+            craft_atomic::write(&target, bytes).visible().map_err(io_error)?;
             if let Some(signature) = file_signature(&target)? {
                 self.verified.insert(path.clone(), CachedFile { signature, checked_at: generation });
             }
@@ -449,13 +449,13 @@ impl DirectoryBundleWriter {
                 ensure_directory(parent)?;
             }
             refuse_symlink(&target)?;
-            craft_atomic::atomic_write(&target, bytes).map_err(io_error)?;
+            craft_atomic::write(&target, bytes).visible().map_err(io_error)?;
             stats.written = stats.written.saturating_add(1);
         }
 
         let manifest = bundle.entries.get(craft_pcraft_format::MANIFEST).ok_or_else(|| Error::InvalidBundle("manifest not set".into()))?;
         refuse_symlink(&manifest_path)?;
-        craft_atomic::atomic_write(&manifest_path, manifest).map_err(io_error)?;
+        craft_atomic::write(&manifest_path, manifest).visible().map_err(io_error)?;
         stats.written = stats.written.saturating_add(1);
 
         // The durable manifest is the commit boundary. Cleanup owns only canonical regular

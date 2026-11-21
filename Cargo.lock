@@ -1607,7 +1607,9 @@ dependencies = [
 name = "craft-atomic"
 version = "0.1.0"
 dependencies = [
+ "exacl",
  "rustix 1.1.5",
+ "winsafe",
 ]
 
 [[package]]
@@ -3507,6 +3509,7 @@ name = "craft-update"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "craft-atomic",
  "dunce",
  "egui",
  "egui_kittest",
@@ -4882,6 +4885,18 @@ checksum = "8be9f3dfaaffdae2972880079a491a1a8bb7cbed0b8dd7a347f668b4150a3b93"
 dependencies = [
  "event-listener",
  "pin-project-lite",
+]
+
+[[package]]
+name = "exacl"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8de9e551ced9d700a31dacb8b168129640240fcd7a279a3fa4d59608b84ebcae"
+dependencies = [
+ "bitflags 2.13.2",
+ "log",
+ "scopeguard",
+ "uuid",
 ]
 
 [[package]]
