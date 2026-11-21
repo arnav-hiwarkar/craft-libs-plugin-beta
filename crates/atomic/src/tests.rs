@@ -678,19 +678,19 @@ fn a_stage_left_after_a_hard_link_is_reported() {
 }
 
 #[test]
-fn a_stage_says_whether_it_replaces_a_file_and_receipts_combine() {
+fn a_stage_says_whether_it_replaces_a_file_and_durability_names_its_reasons() {
     let d = TempDir::new("replaces");
     let p = d.0.join("frame.png");
     let fs = Faulty::default();
     assert!(options(&fs).stage(&p).is_ok_and(|s| !s.replaces()));
     std::fs::write(&p, ORIGINAL).ok();
     assert!(options(&fs).stage(&p).is_ok_and(|s| s.replaces()));
-    let folder = || options(&Faulty::with(&[(Step::SyncDir, Inject::Os(5))])).write(&d.0.join("a"), b"a");
-    let content = || options(&Faulty::with(&[(Step::SyncFile, Inject::Plain)])).write(&d.0.join("b"), b"b");
-    assert_eq!(reasons(folder().and(content())), Some(vec![Reason::FullFlushRefused, Reason::DirSyncFailed]));
-    assert_eq!(reasons(Receipt::Durable.and(folder())), Some(vec![Reason::DirSyncFailed]));
-    assert!(matches!(folder().and(Receipt::Unchanged(io::ErrorKind::Other.into())), Receipt::Unchanged(_)));
-    assert!(matches!(Receipt::Durable.and(Receipt::Durable), Receipt::Durable));
+    let folder = options(&Faulty::with(&[(Step::SyncDir, Inject::Os(5))])).write(&d.0.join("a"), b"a").published().ok().flatten();
+    assert_eq!(Durability::of(folder).id(), "dir-sync-failed");
+    assert_eq!(Durability::of(folder).unconfirmed(), folder);
+    assert_eq!(Durability::of(None).id(), "durable");
+    assert_eq!(Durability::NotMeasured.id(), "not-measured");
+    assert_eq!(Durability::NotMeasured.unconfirmed(), None);
 }
 
 #[test]

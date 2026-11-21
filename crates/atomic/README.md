@@ -15,8 +15,8 @@ never claims more durability than the flushes delivered.
 
 The reasons are `FullFlushRefused` (Apple `F_FULLFSYNC` refused, plain `fsync` done),
 `DirOpenDenied`, `DirSyncUnsupported`, `DirSyncFailed` and `StageRemovalFailed`. `Receipt::published`
-returns the `Reasons` set of a visible file, `Receipt::visible` drops it, and `Receipt::and` combines
-the receipts of several files. Every unconfirmed receipt is logged at `warn`, and a displaced one at
+returns the `Reasons` set of a visible file, and `Receipt::visible` drops it. `Durability` (durable, the
+reasons, or not measured) is the value apps report, with `id()` for automation output. Every unconfirmed receipt is logged at `warn`, and a displaced one at
 `error`.
 
 ## Writing

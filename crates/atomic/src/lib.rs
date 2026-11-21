@@ -42,14 +42,6 @@ impl Receipt {
             Self::Unchanged(error) | Self::Displaced { error, .. } => Err(error),
         }
     }
-
-    pub fn and(self, other: Receipt) -> Receipt {
-        match (self, other) {
-            (failed @ (Self::Unchanged(_) | Self::Displaced { .. }), _) | (_, failed @ (Self::Unchanged(_) | Self::Displaced { .. })) => failed,
-            (Self::VisibleUnconfirmed(a), Self::VisibleUnconfirmed(b)) => Self::VisibleUnconfirmed(a.merge(b)),
-            (unconfirmed @ Self::VisibleUnconfirmed(_), Self::Durable) | (Self::Durable, unconfirmed) => unconfirmed,
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -69,12 +61,6 @@ impl Unconfirmed {
 
     pub fn reasons(&self) -> Reasons {
         self.causes().fold(Reasons(0), |set, (r, _)| set.with(r))
-    }
-
-    fn merge(mut self, other: Unconfirmed) -> Self {
-        self.rest.push(other.first);
-        self.rest.extend(other.rest);
-        self
     }
 }
 
@@ -121,6 +107,34 @@ impl Reason {
 
     const fn bit(self) -> u8 {
         1 << self as u8
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Durability {
+    Durable,
+    Unconfirmed(Reasons),
+    NotMeasured,
+}
+
+impl Durability {
+    pub fn of(unconfirmed: Option<Reasons>) -> Self {
+        unconfirmed.map_or(Self::Durable, Self::Unconfirmed)
+    }
+
+    pub fn unconfirmed(self) -> Option<Reasons> {
+        match self {
+            Self::Unconfirmed(reasons) => Some(reasons),
+            Self::Durable | Self::NotMeasured => None,
+        }
+    }
+
+    pub fn id(self) -> String {
+        match self {
+            Self::Durable => "durable".into(),
+            Self::NotMeasured => "not-measured".into(),
+            Self::Unconfirmed(reasons) => reasons.ids().join("+"),
+        }
     }
 }
 
