@@ -79,6 +79,17 @@ The apps own their probes. PC extends `frame_stages.rs`. EC replaces its FPS EMA
 
 The A and B arms run in one binary under distinct ids until cutover. B ids exist only under a dev cfg, and release `engine.lock` refuses to persist them. Blocks of about 60 s run ABBA. Each arm needs at least 10k frames or 30 render repetitions. Records assert WorkMeter(B) > 0 and WorkMeter(A) = 0. An A0 arm, with the host never started, is compared with 0, 10 and 100 idle packages.
 
+### One framework source
+
+Every package of the craft-libs workspace resolves from one git source in an app's `Cargo.lock`, so a framework crate cannot quietly use an old upstream copy of something the platform replaced. `craft_testkit::lockcheck`, behind the `lockcheck` feature, checks it, and each app runs it as `CONF-one-source`.
+
+- A craft-libs package is one whose source is `git+` on `github.com/storytold/craft-libs` or `github.com/arnav-hiwarkar/craft-libs-plugin-beta`, whatever the scheme, case, `.git` suffix or trailing `/`. Names are not used.
+- A source is the repo, the requested reference (`rev=`, `branch=` or `tag=`) and the full resolved commit, as Cargo keys it. The same commit from the other repo, or under another reference, is another source.
+- The framework source is the one that holds the most craft-libs packages outside the exceptions.
+- An exception is a package and a one-line reason. It lets that package resolve from another single source.
+- The check reports a package that resolves from more than one source (an exception does not excuse this), a package from a source other than the framework source, an exception that matches nothing outside the framework source, and an even split with no framework source.
+- An empty lock, a lock with no craft-libs package outside the exceptions, text that is not a lock, a craft-libs source without a full commit and a lock over 16 MiB are errors, never a pass.
+
 ## Eligibility and verdicts
 
 A (gate, runner image) is eligible when:
