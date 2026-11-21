@@ -26,6 +26,13 @@ pub mod trust;
 pub mod watch;
 pub mod wire;
 
+fn private_options() -> craft_atomic::WriteOptions<'static> {
+    craft_atomic::WriteOptions::default()
+        .with_new_file_permissions(craft_atomic::NewFilePermissions::Private)
+        .with_links(craft_atomic::Links::Replace)
+        .with_metadata(craft_atomic::Metadata::ModeOnly)
+}
+
 /// Unit tests that hold a discovery lock take `read`. Unit tests that start a
 /// child process take `write`. A forked child owns a copy of every open file
 /// until it calls exec, and a `flock` lock lives until the last copy closes.

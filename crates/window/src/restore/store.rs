@@ -52,7 +52,7 @@ pub fn write_pending(pending: &Pending) -> io::Result<()> {
     if let Some(dir) = pending.path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    WriteOptions::default().with_new_file_permissions(NewFilePermissions::Private).atomic_write(&pending.path, &pending.bytes)
+    WriteOptions::default().with_new_file_permissions(NewFilePermissions::Private).write(&pending.path, &pending.bytes).visible()
 }
 
 /// The saved placements of an app's windows.

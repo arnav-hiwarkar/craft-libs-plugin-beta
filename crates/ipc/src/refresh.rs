@@ -11,10 +11,9 @@
 //! | `Modified` | the disk differs from what the consumer loaded; the epoch went up |
 //! | `Missing` | the file does not exist |
 
-use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
+use std::fs::File;
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::UNIX_EPOCH;
 
 use sha2::{Digest, Sha256};
@@ -242,46 +241,15 @@ pub fn is_temp_name(name: &str) -> bool {
     name.starts_with('.') && name.ends_with(".tmp")
 }
 
-static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-/// Write `bytes` to `path` so a reader sees the old file or the new file.
-///
-/// The bytes go to `.<name>.<pid>.<n>.tmp` in the same directory, are flushed,
-/// and are renamed over `path`. The directory is flushed on Unix.
-///
-/// An error before the rename removes the temporary file and leaves `path` as it was. The
-/// directory flush and the final fingerprint run after the rename, so an error from either can
-/// come back while `path` already holds the new bytes. Such an error means the write is not
-/// confirmed durable or not fingerprinted, not that `path` is unchanged.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<Fingerprint, LinkError> {
-    let name = path.file_name().and_then(|n| n.to_str()).ok_or_else(|| LinkError::Invalid(format!("{} has no file name", path.display())))?;
-    let dir = match path.parent() {
-        Some(parent) if !parent.as_os_str().is_empty() => parent,
-        _ => Path::new("."),
-    };
-    let tmp = dir.join(format!(".{name}.{}.{}.tmp", std::process::id(), TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)));
-    let written = write_and_rename(&tmp, path, bytes);
-    if written.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
-    written?;
-    #[cfg(unix)]
-    File::open(dir)?.sync_all()?;
+    craft_atomic::WriteOptions::default().with_links(craft_atomic::Links::Replace).write(path, bytes).visible()?;
     fingerprint(path)
-}
-
-fn write_and_rename(tmp: &Path, path: &Path, bytes: &[u8]) -> Result<(), LinkError> {
-    let mut file = OpenOptions::new().write(true).create_new(true).open(tmp)?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    drop(file);
-    std::fs::rename(tmp, path)?;
-    Ok(())
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
+    use std::fs::OpenOptions;
     use std::time::Duration;
 
     use super::*;

@@ -42,11 +42,15 @@ Watch events carry only beneath-grant relative paths, and nameless `MovedIn/Move
 
 ## Publication
 
-`craft-files` owns staging, identity, exchange or replace, the receipt journal and handle-relative rename, delete and trash. It absorbs and replaces CL's existing `craft-atomic`, so there is one atomic writer crate; `craft-atomic` callers migrate in FILES-SINK. Temp files are dot-named and hidden.
+The sink is CL `craft-atomic`, the one atomic writer (FILES-SINK). It stages beside the destination, carries the replaced file's mode, group, extended attributes, creation time and ACL, rechecks the destination's identity, publishes with one rename (`ReplaceFileW` on Windows; an exclusive rename for a new file) and returns the `Receipt`. PhotoCraft's `atomic.rs` and `noreplace.rs` moved into it. `craft-files` arrives in phase 2 for grants, handle-relative rename, delete and trash, the receipt journal and exchange, built on `craft-atomic` and returning the same `Receipt`. Temp files are named `<name>.<pid>-<n>.craft_tmp` and are not dot-named: an SMB server that hides dot files keeps the hidden flag through the rename.
 
-On Unix, publish exchanges the staged and destination files and verifies the swapped-out identity, swapping back on mismatch. The exchange is journaled, so recovery restores a non-owned inode. Volumes without exchange get `Refused(NoAtomicPublish)` unless the user consents to verify-then-rename. Windows verifies identity and then calls `ReplaceFileW`; the remaining window is an open verification item.
+Today's sink is verify-then-rename: it rechecks the destination's identity, then renames, and publishes a file with no destination through an exclusive rename. Phase-2 `craft-files` adds the journaled exchange: on Unix, publish exchanges the staged and destination files and verifies the swapped-out identity, swapping back on mismatch, so recovery restores a non-owned inode. Volumes without exchange then get `Refused(NoAtomicPublish)` unless the user consents to verify-then-rename. Both are phase-2 items. Windows verifies identity and then calls `ReplaceFileW`; the remaining window is an open verification item.
 
-Durability is typed. `VisibleUnconfirmed` names `FullFlushRefused`, `DirOpenDenied`, `DirSyncUnsupported`, `DirSyncFailed` or `Browser`. A directory-sync failure is never ignored: it yields `VisibleUnconfirmed(DirSyncFailed)`. `Receipt` is the only publication outcome type; document writers return it too ([document contract](document.md#open-migrate-and-write)). A batch is `Durable` only after a covering full flush on the same device, issued after the directory flushes.
+Durability is typed. `Durable` needs a full content flush and a full flush of the folder after the rename. `VisibleUnconfirmed` carries every reason that applied, not only the first: `FullFlushRefused` (Apple `F_FULLFSYNC` refused, plain `fsync` done), `DirOpenDenied`, `DirSyncUnsupported`, `DirSyncFailed`, `StageRemovalFailed` (the published file is complete but its temporary name could not be removed) or `Browser`. `craft-atomic` logs every unconfirmed receipt. A directory-sync failure is never ignored: it yields `VisibleUnconfirmed(DirSyncFailed)`. A failure before the rename yields `Unchanged` with the destination's bytes intact. A destination replaced by another program while staging is left alone and yields `Unchanged`. On Windows, a `ReplaceFileW` that moved the original to its backup name and could neither finish nor restore yields `Displaced`, naming where the original survives. `Receipt` is the only publication outcome type; document writers return it too ([document contract](document.md#open-migrate-and-write)). Each app reads a receipt through one policy function:
+- PhotoCraft (`photocraft_format::settle`): `DirSyncFailed` fails the save, so the document stays unsaved and its recovery data is kept. Every other reason is a save warning, and automation results carry `"durability"`.
+- EffectCraft: export and project save never fail on an unconfirmed receipt. Render queue results list `unconfirmed` files, and project save reports `"durability"`.
+
+A batch is `Durable` only after a covering full flush on the same device, issued after the directory flushes.
 
 `AllThenPublish` validates the complete set before the first rename. `PerArtifact` reports each file independently. The web offers only downloads or Chromium handle writes, each reporting `VisibleUnconfirmed(Browser)`, and no `AllThenPublish`.
 
@@ -112,8 +116,8 @@ Models are parsed only in HostNative, with operators and dimensions bounded befo
 | `fingerprint(snapshot, ReadKey)` | `raster/src/lib.rs:612–643` `Surface::generation` and tile digests; `PartialEq` on small fields | `analysis/frames_key.rs`, layer/group/footage stamps, handle identity for media |
 | `scratch_session()` | `Session::new()` as in `file_cmds/batch_run.rs` | Hidden project session |
 | Native job registration | `engine/src/jobs.rs` state machine and slot cap move to the shared service. `edit_job` and `lock_document` stay for native jobs only. | `background/jobs.rs:118–197` admission and epoch cancel, no UI-thread joins. `analysis/roto.rs` cache moves to `cache.put`. |
-| Sink adoption | Save, autosave, export through `craft-files` | Config, export pipeline and Render Queue output modules through `craft-files` |
-| `craft-atomic` callers | Migrate to `craft-files` in FILES-SINK | Migrate to `craft-files` in FILES-SINK |
+| Sink adoption | Save, autosave, export through `craft-atomic` (FILES-SINK) | Config, export pipeline and Render Queue output modules through `craft-atomic` (FILES-SINK) |
+| `craft-files` | Grants and handle-relative writes in phase 2, on `craft-atomic` | Grants and handle-relative writes in phase 2, on `craft-atomic` |
 | Picker and drop | `craft::host::Files` returns grants | Footage import and drop return grants |
 
 Platform limits that cannot be guaranteed:

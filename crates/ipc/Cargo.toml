@@ -11,6 +11,7 @@ repository.workspace = true
 # wasm32-unknown-unknown. Apps gate it by target. interprocess is pinned: the transport behavior is
 # what the tests were run against.
 [dependencies]
+craft-atomic = { workspace = true }
 # Calendar checks only (AGENTS.md: all date logic goes through chrono).
 chrono.workspace = true
 getrandom = "0.2.15"

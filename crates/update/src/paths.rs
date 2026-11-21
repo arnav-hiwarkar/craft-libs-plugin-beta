@@ -1,6 +1,5 @@
 //! Where an installer keeps its own files: downloads, records, logs.
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::app::App;
@@ -73,15 +72,10 @@ impl Paths {
     }
 }
 
-/// Writes `bytes` to `path` via a temporary file and a rename, so a crash never leaves half a file.
 pub fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
     let dir = path.parent().ok_or("no parent folder")?;
     std::fs::create_dir_all(dir).map_err(|e| format!("couldn't create {} ({e})", dir.display()))?;
-    let mut tmp = tempfile::NamedTempFile::new_in(dir).map_err(|e| format!("couldn't create a temporary file in {} ({e})", dir.display()))?;
-    tmp.write_all(bytes).map_err(|e| format!("couldn't write {} ({e})", tmp.path().display()))?;
-    tmp.as_file().sync_all().map_err(|e| format!("couldn't sync {} ({e})", tmp.path().display()))?;
-    tmp.persist(path).map_err(|e| format!("couldn't replace {} ({e})", path.display()))?;
-    Ok(())
+    craft_atomic::write(path, bytes).visible().map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

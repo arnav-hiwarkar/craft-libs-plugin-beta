@@ -3,7 +3,6 @@
 
 use std::collections::BTreeSet;
 use std::fs::{File, OpenOptions, TryLockError};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -455,28 +454,8 @@ fn remove_socket_inside(runtime: &Path, candidate: &Path) {
     let _ = (runtime, candidate);
 }
 
-/// `.<app>-<pid>.<random>.tmp`, then rename onto `<app>-<pid>.json`.
 fn write_atomic(dir: &Path, stem: &str, bytes: &[u8]) -> Result<(), LinkError> {
-    let mut rand = [0u8; 8];
-    getrandom::getrandom(&mut rand).map_err(LinkError::io)?;
-    let tmp = dir.join(format!(".{stem}.{}.tmp", auth::encode_hex(&rand)));
-    let final_path = dir.join(format!("{stem}.json"));
-    let mut opts = OpenOptions::new();
-    opts.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
-    }
-    let mut file = opts.open(&tmp)?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    drop(file);
-    if let Err(err) = std::fs::rename(&tmp, &final_path) {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(err.into());
-    }
-    Ok(())
+    crate::private_options().write(&dir.join(format!("{stem}.json")), bytes).visible().map_err(LinkError::from)
 }
 
 #[cfg(test)]

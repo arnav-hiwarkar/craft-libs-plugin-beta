@@ -54,7 +54,8 @@ pub fn write_backup(path: &Path, text: &str) -> io::Result<()> {
         }
         craft_atomic::WriteOptions::default()
             .with_new_file_permissions(craft_atomic::NewFilePermissions::Private)
-            .atomic_write(&backup, text.as_bytes())?;
+            .write(&backup, text.as_bytes())
+            .visible()?;
         // The group bits were granted to the config's group; the new file may have been created
         // in another (a setgid directory, a different primary group).
         let grouped = config.as_ref().is_some_and(|m| std::os::unix::fs::chown(&backup, None, Some(m.gid())).is_ok());
@@ -64,7 +65,8 @@ pub fn write_backup(path: &Path, text: &str) -> io::Result<()> {
     {
         craft_atomic::WriteOptions::default()
             .with_new_file_permissions(craft_atomic::NewFilePermissions::Private)
-            .atomic_write(&backup, text.as_bytes())
+            .write(&backup, text.as_bytes())
+            .visible()
     }
 }
 

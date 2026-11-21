@@ -1,6 +1,6 @@
 #![cfg(unix)]
 
-use craft_atomic::{NewFilePermissions, WriteOptions, atomic_write, write_new};
+use craft_atomic::{NewFilePermissions, Receipt, WriteOptions, write, write_new};
 use std::fs::{self, File, Permissions};
 use std::io::{self, Write};
 use std::os::unix::fs::PermissionsExt;
@@ -60,9 +60,7 @@ fn permission_child() -> io::Result<()> {
     assert_eq!(mode(&ordinary)?, expected);
     let options = WriteOptions::default();
     let payload = b"document bytes";
-    for (tag, streaming, exclusive) in
-        [("replace", false, false), ("replace-stream", true, false), ("exclusive", false, true), ("exclusive-stream", true, true)]
-    {
+    for (tag, streaming, exclusive) in [("replace", false, false), ("replace-stream", true, false), ("exclusive", false, true)] {
         let path = dir.join(tag);
         let fill = |f: &mut File| {
             assert_eq!(f.metadata()?.permissions().mode() & 0o777, expected, "normal creation before writing");
@@ -71,10 +69,9 @@ fn permission_child() -> io::Result<()> {
             Ok(())
         };
         match (streaming, exclusive) {
-            (false, false) => options.atomic_write(&path, payload)?,
-            (false, true) => options.write_new(&path, payload)?,
-            (true, false) => options.atomic_write_with(&path, fill)?,
-            (true, true) => options.write_new_with(&path, fill)?,
+            (true, _) => options.write_with(&path, fill).visible()?,
+            (false, true) => options.write_new(&path, payload).visible()?,
+            (false, false) => options.write(&path, payload).visible()?,
         }
         assert_eq!(mode(&path)?, expected, "{tag}");
         assert_eq!(fs::read(&path)?, payload);
@@ -87,43 +84,37 @@ fn permission_child() -> io::Result<()> {
             assert_eq!(acl(&path)?, acl(&ordinary)?, "same inherited ACL for {tag}");
         }
         if exclusive {
-            assert_eq!(options.write_new(&path, b"must not replace").map_err(|e| e.kind()), Err(io::ErrorKind::AlreadyExists));
+            assert_eq!(options.write_new(&path, b"must not replace").visible().map_err(|e| e.kind()), Err(io::ErrorKind::AlreadyExists));
             assert_eq!(fs::read(&path)?, payload);
         } else {
             fs::set_permissions(&path, Permissions::from_mode(0o660))?;
-            options.atomic_write(&path, b"replacement")?;
+            options.write(&path, b"replacement").visible()?;
             assert_eq!(mode(&path)?, 0o660, "preserve existing mode regardless of current umask");
         }
     }
-    for (tag, write) in [("default", atomic_write as fn(&Path, &[u8]) -> io::Result<()>), ("default-exclusive", write_new)] {
+    for (tag, publish) in [("default", write as fn(&Path, &[u8]) -> Receipt), ("default-exclusive", write_new)] {
         let p = dir.join(tag);
-        write(&p, b"document")?;
+        publish(&p, b"document").visible()?;
         assert_eq!(mode(&p)?, expected);
     }
     let private = WriteOptions::default().with_new_file_permissions(NewFilePermissions::Private);
-    for exclusive in [false, true] {
-        let p = dir.join(format!("private-{exclusive}"));
-        let fill = |f: &mut File| {
+    let p = dir.join("private");
+    private
+        .write_with(&p, |f: &mut File| {
             assert_eq!(f.metadata()?.permissions().mode() & 0o077, 0, "private from creation");
             f.write_all(b"private")
-        };
-        if exclusive {
-            private.write_new_with(&p, fill)?;
-        } else {
-            private.atomic_write_with(&p, fill)?;
-        }
-        assert_eq!(mode(&p)?, 0o600);
-    }
-    for exclusive in [false, true] {
-        let path = dir.join(format!("callback-error-{exclusive}"));
-        let fill = |f: &mut File| {
-            f.write_all(b"partial")?;
-            Err(io::Error::from(io::ErrorKind::StorageFull))
-        };
-        let result = if exclusive { options.write_new_with(&path, fill) } else { options.atomic_write_with(&path, fill) };
-        assert_eq!(result.map_err(|e| e.kind()), Err(io::ErrorKind::StorageFull));
-        assert!(!path.exists());
-    }
+        })
+        .visible()?;
+    assert_eq!(mode(&p)?, 0o600);
+    private.write_new(&dir.join("private-new"), b"private").visible()?;
+    assert_eq!(mode(&dir.join("private-new"))?, 0o600);
+    let path = dir.join("callback-error");
+    let result = options.write_with(&path, |f: &mut File| {
+        f.write_all(b"partial")?;
+        Err(io::Error::from(io::ErrorKind::StorageFull))
+    });
+    assert_eq!(result.visible().map_err(|e| e.kind()), Err(io::ErrorKind::StorageFull));
+    assert!(!path.exists());
     assert!(fs::read_dir(dir)?.all(|e| e.is_ok_and(|e| !e.file_name().to_string_lossy().ends_with(".craft_tmp"))));
     Ok(())
 }
