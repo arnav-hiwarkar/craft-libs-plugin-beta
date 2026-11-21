@@ -102,18 +102,64 @@ fn check_fails_on_an_empty_folder_and_on_an_edited_listing() {
 }
 
 #[test]
-fn write_removes_strays_and_is_idempotent() {
+fn write_restores_files_keeps_strays_and_is_idempotent() {
     let dir = tempfile::tempdir().unwrap();
     let corpus = sample();
     corpus.write(dir.path()).unwrap();
-    fs::create_dir_all(dir.path().join("retired/sub")).unwrap();
-    fs::write(dir.path().join("retired/sub/a.wasm"), b"x").unwrap();
     fs::write(dir.path().join("module/m.wat"), b"changed").unwrap();
+    fs::write(dir.path().join("stray.txt"), b"x").unwrap();
     corpus.write(dir.path()).unwrap();
     corpus.write(dir.path()).unwrap();
-    assert_eq!(corpus.check(dir.path()).unwrap(), vec![]);
-    assert!(!dir.path().join("retired").exists());
     assert_eq!(fs::read(dir.path().join("module/m.wat")).unwrap(), b"abc");
+    assert_eq!(fs::read(dir.path().join("stray.txt")).unwrap(), b"x");
+    assert_eq!(corpus.check(dir.path()).unwrap(), vec![Drift::Stray("stray.txt".into())]);
+}
+
+#[test]
+fn write_refuses_a_folder_that_is_not_a_corpus() {
+    let dir = tempfile::tempdir().unwrap();
+    sample().write(&dir.path().join("absent")).unwrap();
+    fs::create_dir(dir.path().join("empty")).unwrap();
+    sample().write(&dir.path().join("empty")).unwrap();
+    let full = dir.path().join("full");
+    fs::create_dir_all(full.join("notes")).unwrap();
+    fs::write(full.join("notes/keep.md"), b"mine").unwrap();
+    assert_eq!(sample().write(&full), Err(Error::NotACorpus(full.clone())));
+    assert_eq!(fs::read(full.join("notes/keep.md")).unwrap(), b"mine");
+    assert!(!full.join("corpus.toml").exists());
+}
+
+#[test]
+fn committed_members_are_append_only() {
+    let dir = tempfile::tempdir().unwrap();
+    sample().write(dir.path()).unwrap();
+    let mut rewritten = Corpus::new("demo").unwrap();
+    rewritten.add("module", "abi-one", "loads and doubles \"red\"", files(&[("m.wat", b"abd"), ("sub/x.bin", b"")])).unwrap();
+    rewritten.add("folder", "plugin-dir", "lists one module", files(&[("Plug-ins/One Module.wasm", b"abc")])).unwrap();
+    assert_eq!(rewritten.write(dir.path()), Err(Error::AppendOnly(Drift::Rewritten("module".into()))));
+    assert_eq!(fs::read(dir.path().join("module/m.wat")).unwrap(), b"abc");
+    assert!(rewritten.check(dir.path()).unwrap().contains(&Drift::Rewritten("module".into())));
+    let mut dropped = Corpus::new("demo").unwrap();
+    dropped.add("module", "abi-one", "loads and doubles \"red\"", files(&[("m.wat", b"abc"), ("sub/x.bin", b"")])).unwrap();
+    assert_eq!(dropped.write(dir.path()), Err(Error::AppendOnly(Drift::Removed("folder".into()))));
+    let mut grown = sample();
+    grown.add("extra", "abi-one", "a new member", files(&[("e.wat", b"e")])).unwrap();
+    assert_eq!(grown.check(dir.path()).unwrap(), vec![Drift::Manifest, Drift::Missing("extra/e.wat".into())]);
+    grown.write(dir.path()).unwrap();
+    assert_eq!(grown.check(dir.path()).unwrap(), vec![]);
+    assert_eq!(
+        Error::AppendOnly(Drift::Rewritten("module".into())).to_string(),
+        "rewritten: member module has other files or digests than corpus.toml lists: committed members are append-only, so keep the member as it is and add a new member for the new content"
+    );
+}
+
+#[test]
+fn copy_member_writes_its_verified_files() {
+    let dir = tempfile::tempdir().unwrap();
+    sample().write(&dir.path().join("corpus")).unwrap();
+    let to = dir.path().join("copy");
+    open(&dir.path().join("corpus")).unwrap().copy_member("module", &to).unwrap();
+    assert_eq!((fs::read(to.join("m.wat")).unwrap(), fs::read(to.join("sub/x.bin")).unwrap()), (b"abc".to_vec(), Vec::new()));
 }
 
 #[test]
@@ -170,4 +216,75 @@ fn a_listing_with_unknown_fields_or_bad_digests_does_not_parse() {
     let escape = SAMPLE_TOML.replacen("plugin-dir", "../plugin", 1);
     assert_eq!(Manifest::parse(&escape), Err(Error::Kind("../plugin".into())));
     assert_eq!(Manifest::parse("").unwrap(), Manifest { member: vec![] });
+}
+
+fn run(args: &[&str], root: &std::path::Path, corpus: Corpus) -> (Result<bool, String>, String, String) {
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let r = cli::cli(args.iter().map(|a| (*a).to_owned()), root, || Ok::<_, String>(corpus), &mut out, &mut err);
+    (r, String::from_utf8(out).unwrap(), String::from_utf8(err).unwrap())
+}
+
+#[test]
+fn the_cli_writes_checks_and_names_the_append_only_rule() {
+    let dir = tempfile::tempdir().unwrap();
+    let (r, out, _) = run(&[], dir.path(), sample());
+    assert_eq!((r, out), (Ok(true), format!("wrote 2 members to {}\n", dir.path().display())));
+    let (r, out, err) = run(&["--check"], dir.path(), sample());
+    assert_eq!((r, err), (Ok(true), String::new()));
+    assert!(out.starts_with("folder                     plugin-dir               1 file(s)  lists one module\n"), "{out}");
+    assert!(out.ends_with(&format!("{} matches the generator\n", dir.path().display())), "{out}");
+    let mut rewritten = Corpus::new("demo").unwrap();
+    rewritten.add("folder", "plugin-dir", "lists one module", files(&[("Plug-ins/One Module.wasm", b"abd")])).unwrap();
+    rewritten.add("module", "abi-one", "loads and doubles \"red\"", files(&[("m.wat", b"abc"), ("sub/x.bin", b"")])).unwrap();
+    let (r, _, err) = run(&["--check"], dir.path(), rewritten);
+    assert_eq!(r, Ok(false));
+    assert!(err.ends_with(&format!("3 drift(s): {APPEND_ONLY}\n")), "{err}");
+    let mut grown = sample();
+    grown.add("extra", "abi-one", "a new member", files(&[("e.wat", b"e")])).unwrap();
+    let (r, _, err) = run(&["--check", "--root", dir.path().to_str().unwrap()], &dir.path().join("elsewhere"), grown);
+    assert_eq!(r, Ok(false));
+    assert!(err.ends_with("2 drift(s): regenerate to add the new members, then review the diff\n"), "{err}");
+    assert_eq!(run(&["--write"], dir.path(), sample()).0, Err(cli::USAGE.to_owned()));
+    assert_eq!(run(&["--root"], dir.path(), sample()).0, Err(cli::USAGE.to_owned()));
+}
+
+crate::legacy_paths! {
+    enum Sample {
+        One => "path-one",
+        Two => "path-two",
+    }
+}
+
+#[test]
+fn legacy_paths_lists_every_variant_with_its_kind() {
+    assert_eq!(Sample::ALL, [Sample::One, Sample::Two]);
+    assert_eq!(Sample::ALL.map(Sample::name), ["path-one", "path-two"]);
+}
+
+#[test]
+fn limits_hold_at_their_exact_boundaries() {
+    let one = || files(&[("a", b"")]);
+    let mut full = Corpus::new("demo").unwrap();
+    for n in 0..MAX_MEMBERS {
+        full.add(&format!("m{n}"), "k", "e", one()).unwrap();
+    }
+    assert_eq!(full.add("over", "k", "e", one()), Err(Error::TooManyMembers));
+    let mut corpus = Corpus::new("demo").unwrap();
+    let at_limit: Vec<(String, Vec<u8>)> = (0..MAX_FILES).map(|n| (format!("f{n}"), Vec::new())).collect();
+    assert_eq!(corpus.add("files", "k", "e", at_limit), Ok(()));
+    assert_eq!(corpus.add("big", "k", "e", vec![("a".into(), vec![0; MAX_FILE_BYTES as usize])]), Ok(()));
+    assert_eq!(corpus.add("bigger", "k", "e", vec![("a".into(), vec![0; MAX_FILE_BYTES as usize + 1])]), Err(Error::TooLarge("bigger/a".into())));
+    let eight = ["p"; 8].join("/");
+    let nine = ["p"; 9].join("/");
+    let long = "x".repeat(128);
+    let longer = "x".repeat(129);
+    let total = format!("{}/{}/{}/{}", "y".repeat(128), "y".repeat(128), "y".repeat(128), "y".repeat(125));
+    let over_total = format!("{total}y");
+    assert_eq!(total.len(), 512);
+    for (n, (path, ok)) in
+        [(&eight, true), (&nine, false), (&long, true), (&longer, false), (&total, true), (&over_total, false)].into_iter().enumerate()
+    {
+        let r = corpus.add(&format!("path{n}"), "k", "e", files(&[(path.as_str(), b"")]));
+        assert_eq!(r.is_ok(), ok, "{} parts, {} bytes", path.split('/').count(), path.len());
+    }
 }

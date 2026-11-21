@@ -60,33 +60,6 @@ pub(super) fn walk(root: &Path) -> Result<Vec<String>, Error> {
     Ok(found)
 }
 
-pub(super) fn remove(path: &Path) -> Result<(), Error> {
-    let meta = fs::symlink_metadata(path).map_err(|e| io(path, &e))?;
-    if meta.is_dir() { fs::remove_dir_all(path) } else { fs::remove_file(path) }.map_err(|e| io(path, &e))
-}
-
-pub(super) fn prune_empty_dirs(root: &Path) -> Result<(), Error> {
-    fn prune(dir: &Path, depth: usize) -> Result<bool, Error> {
-        let entries = match fs::read_dir(dir) {
-            Ok(entries) => entries,
-            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(true),
-            Err(e) => return Err(io(dir, &e)),
-        };
-        let mut empty = true;
-        for entry in entries {
-            let entry = entry.map_err(|e| io(dir, &e))?;
-            let is_dir = entry.file_type().map_err(|e| io(&entry.path(), &e))?.is_dir();
-            if is_dir && depth < MAX_DEPTH && prune(&entry.path(), depth + 1)? {
-                fs::remove_dir(entry.path()).map_err(|e| io(&entry.path(), &e))?;
-            } else {
-                empty = false;
-            }
-        }
-        Ok(empty)
-    }
-    prune(root, 0).map(|_| ())
-}
-
 pub(super) fn write_if_changed(path: &Path, bytes: &[u8]) -> Result<(), Error> {
     if read_bounded(path, MAX_FILE_BYTES)?.as_deref() == Some(bytes) {
         return Ok(());
@@ -144,5 +117,13 @@ impl Committed {
             return Err(Error::Digest { path, listed: listed.to_owned(), actual });
         }
         Ok(bytes)
+    }
+
+    pub fn copy_member(&self, member: &str, to: &Path) -> Result<(), Error> {
+        let entry = self.manifest.entry(member).ok_or_else(|| Error::NoMember(member.to_owned()))?;
+        for file in &entry.files {
+            write_if_changed(&to.join(&file.path), &self.bytes(member, &file.path)?)?;
+        }
+        Ok(())
     }
 }

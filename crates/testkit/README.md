@@ -260,19 +260,29 @@ against the exact bytes. The plugin platform's slice 0f uses it for each app's
   letters, digits, spaces, `.`, `_` and `-`, none starting with `.` and none starting or ending
   with a space; a file is at most 16 MiB. A corpus has at most 256 members.
 - `Corpus::write(root)` writes `corpus.toml`, a `.gitattributes` of `* -text` (so checkouts keep
-  the bytes) and every file under `root/<member>/`, and deletes every other file there. Files
-  that already hold their bytes are not rewritten.
+  the bytes) and every file under `root/<member>/`, and never deletes a file. A root without
+  `corpus.toml` must be absent or empty, so a mistyped root is refused with `NotACorpus` before
+  anything is written. Over an existing listing, committed members are append-only: a member whose
+  files or digests would change, or that the generator no longer makes, is refused with
+  `AppendOnly`, and new members are added. Files that already hold their bytes are not rewritten.
 - `Corpus::check(root)` compares the folder with the corpus and returns each `Drift`: a missing
   file (`corpus.toml` and `.gitattributes` included), a file whose bytes differ (with both
-  digests), a stray file, or a `corpus.toml` that is not the generated listing. An empty or absent
-  folder reports every file missing.
+  digests), a stray file, a `corpus.toml` that is not the generated listing, and a committed member
+  that is `Rewritten` or `Removed`. An empty or absent folder reports every file missing.
 - `open(root)` reads `corpus.toml`, refuses unknown fields, bad names and paths, duplicates and
   digests that are not lower-case hex, and reads every listed file, failing on one that is missing
   or differs from its digest. `Committed::bytes`, `path` and `dir` then give a member's files to a
-  test, and `bytes` checks the digest again.
+  test, and `bytes` checks the digest again. `Committed::copy_member(member, to)` writes a member's
+  verified files into a scratch folder, for code that writes next to the files it reads.
 - `Manifest::coverage(kinds)` returns a `Gap` for each kind without a member and each member whose
   kind is not in `kinds`. An empty `kinds` is an error, so a coverage test cannot pass by listing
   nothing.
+
+- `run_cli(args, default_root, generate)` is an app's `legacy-corpus` binary: no argument writes,
+  `--check` lists the members and fails on any drift, saying whether the fix is to regenerate (new
+  members) or to add a new member (an append-only breach), and `--root <dir>` names another root.
+- `legacy_paths!` declares an app's enum of legacy path kinds with `ALL` and `name()`, so the
+  coverage test and an exhaustive parity `match` both come from one list.
 
 `corpus.toml` lists the members sorted by name, and each member's files sorted by path:
 

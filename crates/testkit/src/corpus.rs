@@ -1,3 +1,4 @@
+mod cli;
 mod disk;
 mod manifest;
 #[cfg(test)]
@@ -9,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
+pub use cli::run_cli;
 pub use disk::{Committed, open};
 pub use manifest::{Entry, FileDigest, Gap, Manifest};
 
@@ -20,6 +22,7 @@ pub const MAX_MANIFEST_BYTES: u64 = 1 << 20;
 pub const MAX_MEMBERS: usize = 256;
 pub const MAX_FILES: usize = 64;
 pub const MAX_EXPECT_CHARS: usize = 240;
+pub const APPEND_ONLY: &str = "committed members are append-only, so keep the member as it is and add a new member for the new content";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
@@ -39,6 +42,8 @@ pub enum Error {
     NoMember(String),
     NoFile { member: String, path: String },
     NoKinds,
+    NotACorpus(PathBuf),
+    AppendOnly(Drift),
 }
 
 impl fmt::Display for Error {
@@ -60,6 +65,10 @@ impl fmt::Display for Error {
             Error::NoMember(member) => write!(f, "the corpus has no member {member}"),
             Error::NoFile { member, path } => write!(f, "member {member} has no file {path}"),
             Error::NoKinds => write!(f, "coverage needs at least one kind"),
+            Error::NotACorpus(root) => {
+                write!(f, "{} has files but no {MANIFEST}: a corpus is written only into an empty folder or over its own listing", root.display())
+            }
+            Error::AppendOnly(drift) => write!(f, "{drift}: {APPEND_ONLY}"),
         }
     }
 }
@@ -72,6 +81,14 @@ pub enum Drift {
     Changed { path: String, committed: String, generated: String },
     Stray(String),
     Manifest,
+    Rewritten(String),
+    Removed(String),
+}
+
+impl Drift {
+    pub fn breaks_append_only(&self) -> bool {
+        matches!(self, Drift::Rewritten(_) | Drift::Removed(_))
+    }
 }
 
 impl fmt::Display for Drift {
@@ -81,6 +98,8 @@ impl fmt::Display for Drift {
             Drift::Changed { path, committed, generated } => write!(f, "changed: {path} is {committed}, the generator makes {generated}"),
             Drift::Stray(path) => write!(f, "stray: {path} is not a corpus file"),
             Drift::Manifest => write!(f, "changed: {MANIFEST} differs from the generated listing"),
+            Drift::Rewritten(member) => write!(f, "rewritten: member {member} has other files or digests than {MANIFEST} lists"),
+            Drift::Removed(member) => write!(f, "removed: member {member} is in {MANIFEST} but the generator no longer makes it"),
         }
     }
 }
@@ -163,6 +182,24 @@ impl Corpus {
         files
     }
 
+    fn committed(root: &Path) -> Result<Option<Result<Manifest, Error>>, Error> {
+        Ok(disk::read_bounded(&root.join(MANIFEST), MAX_MANIFEST_BYTES)?
+            .map(|bytes| String::from_utf8(bytes).map_err(|_| Error::Manifest("not UTF-8".to_owned())).and_then(|text| Manifest::parse(&text))))
+    }
+
+    fn append_only(&self, committed: &Manifest) -> Vec<Drift> {
+        let generated = self.manifest();
+        committed
+            .member
+            .iter()
+            .filter_map(|old| match generated.entry(&old.name) {
+                None => Some(Drift::Removed(old.name.clone())),
+                Some(new) if new.files != old.files => Some(Drift::Rewritten(old.name.clone())),
+                Some(_) => None,
+            })
+            .collect()
+    }
+
     pub fn check(&self, root: &Path) -> Result<Vec<Drift>, Error> {
         let rendered = self.manifest().render();
         let mut drift = Vec::new();
@@ -170,6 +207,9 @@ impl Corpus {
             None => drift.push(Drift::Missing(MANIFEST.to_owned())),
             Some(text) if text != rendered.as_bytes() => drift.push(Drift::Manifest),
             Some(_) => {}
+        }
+        if let Some(Ok(committed)) = Self::committed(root)? {
+            drift.extend(self.append_only(&committed));
         }
         let files = self.files();
         for (path, bytes) in &files {
@@ -190,14 +230,16 @@ impl Corpus {
     }
 
     pub fn write(&self, root: &Path) -> Result<(), Error> {
-        let files = self.files();
-        for path in disk::walk(root)? {
-            if path != MANIFEST && !files.contains_key(&path) {
-                disk::remove(&root.join(&path))?;
+        match Self::committed(root)? {
+            None if !disk::walk(root)?.is_empty() => return Err(Error::NotACorpus(root.to_owned())),
+            None => {}
+            Some(committed) => {
+                if let Some(breach) = self.append_only(&committed?).into_iter().next() {
+                    return Err(Error::AppendOnly(breach));
+                }
             }
         }
-        disk::prune_empty_dirs(root)?;
-        for (path, bytes) in files {
+        for (path, bytes) in self.files() {
             disk::write_if_changed(&root.join(path), bytes)?;
         }
         disk::write_if_changed(&root.join(MANIFEST), self.manifest().render().as_bytes())
