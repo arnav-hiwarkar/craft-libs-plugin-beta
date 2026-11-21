@@ -1,0 +1,20 @@
+[package]
+name = "craft-idmap"
+description = "Permanent persisted ids for the Craft Apps: the engine.lock format, the one resolver for saved command and effect ids, and the pure lock check that refuses unaliased removals, reused ids and argument changes without a migration."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+sha2 = { version = "0.10", default-features = false, features = ["std"] }
+thiserror = { workspace = true }
+toml = { version = "1", default-features = false, features = ["parse", "serde", "std"] }
+
+[dev-dependencies]
+proptest = { workspace = true }

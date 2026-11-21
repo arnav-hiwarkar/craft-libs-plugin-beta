@@ -121,7 +121,44 @@ A hash change requires `migrate_args(from_hash)` or `persistable = false`.
 
 `craft-idmap` resolves engine ids, public operation aliases, contribution `aliases` and `legacy.<app>.<id>` keys. Engine records keep engine ids, and extension records use `TypeKey = (PackageId, LocalTypeId)`.
 
-The bake identity is `BakeKey`, defined once in the [document contract](document.md#records-and-participation). `ExecProfile` includes `DeterminismClass` (`Canonical` or `Engine(id)`), the pinned per-stage precision and the backend. It is the only profile term in the contracts: the render request, recurrence group, memo and cache keys all carry `ExecProfile`.
+### The lock and the resolver (IDS-NOW)
+
+Each app commits `plugin-contract/engine.lock`, format 1, TOML, written only by `cargo xtask engine-lock --update`:
+
+```text
+format = 1
+tombstones = ["<retired name>", …]          omitted when empty
+[[entry]]                                    sorted by id
+id         = "<first-shipped id>"            what saved files hold
+current    = "<id the registry has now>"     omitted while equal to id
+class      = "<app class>"                   PC: command, query, shell, tool, hold. EC: command, query, effect
+args       = "<16 hex digits>"               omitted for classes saved without arguments
+aliases    = ["<every intermediate id>"]     flattened: no chains, at most 64
+migrations = [{ from = "<hash>", name = "<app migration>" }, …]   at most 64, applied in order
+```
+
+- **Args hash.** The first 8 bytes of SHA-256 over the sorted, deduplicated argument keys, one per line. PC reads the keys from each command's params text, EC from its parsed params schema, and EC effects use their parameter ids. Queries are never saved with arguments, so they carry no hash; `persistable = false` is that class.
+- **Bounds.** A lock is at most 8 MiB, 65,536 entries and 65,536 tombstones. A name is 1 to 256 bytes of printable ASCII without quotes, backslashes or spaces. A class is 1 to 32 lowercase letters, digits or dashes.
+- **Edits.** `--rename OLD=NEW` keeps the first-shipped id and moves the old current id into `aliases`. `--retire ID` moves every name of the entry to `tombstones`. `--migrate ID=NAME` records a migration from the locked hash. No edit takes a name another entry or a tombstone holds.
+- **Check.** `craft_idmap::check(lock, registry, migrations)` is pure. Each finding is blocking unless marked *update*:
+
+| Finding | Meaning |
+|---|---|
+| `EmptyRegistry`, `EmptyLock` (*update* seeds) | Nothing to compare: the check never passes vacuously |
+| `Unlisted` (*update*) | A registered id has no entry |
+| `Stale` (*update*) | A class change, an argument hash appearing or disappearing, or a change a recorded migration covers |
+| `Missing` | An entry's current id is no longer registered: an unaliased removal |
+| `Reused` | A registered id is a tombstone or an earlier name of another entry |
+| `ArgsChanged` | The argument hash changed with no migration from the locked hash |
+| `UnknownMigration` | The lock names a migration the app does not register |
+| `Duplicate` | The registry lists an id twice |
+| `Conflict`, `Cycle` | A name is claimed twice, or aliases point at each other's current ids |
+
+- **Resolve.** `Resolver::new(lock)` refuses a lock with a `Conflict` or `Cycle`. `resolve(persisted, args, migrations)` returns `Current { id, args }` after running every recorded migration in order, or `Unknown`, `Tombstoned` or `MigrationFailed`. Saved arguments carry no hash, so every migration is idempotent on arguments already in the new shape. `persisted(current)` gives the first-shipped id that saves write.
+- **Apps.** Each app passes one `Site` per load path to `resolve_persisted(site, id, args)`; one test matches on every `Site` and drives that real path with an old id and argument under a simulated rename. An unresolved reference is inert, keeps its saved bytes, and reports a typed `Unresolved` naming the site.
+  - PhotoCraft resolves at use, so saved data is never rewritten: Smart Filters when they render and are authorized, Action steps when engine, panel, Batch, droplet or Record Again playback runs them, and keyboard shortcuts as preferences and shortcut sets load. Layer details show an unresolved filter's reason. A filter or step created now stores the id it ran.
+  - EffectCraft resolves effect ids when a project opens or is imported or a template loads, and when a preset applies; it resolves replay steps and script commands when they run. Project and preset saves write each effect's first-shipped id. An open reports unresolved effects with its toast, and an import with its warnings.
+- **Gate.** A `cargo test` in each app builds the registry list, checks it against the committed lock and requires the file to be the lock's own text. `cargo xtask engine-lock [--check | --update …]` runs that test, with the edits passed in `CRAFT_ENGINE_LOCK_ARGS`.
 
 ## Capabilities
 
