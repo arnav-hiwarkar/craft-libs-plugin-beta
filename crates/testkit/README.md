@@ -263,12 +263,15 @@ against the exact bytes. The plugin platform's slice 0f uses it for each app's
   the bytes) and every file under `root/<member>/`, and never deletes a file. A root without
   `corpus.toml` must be absent or empty, so a mistyped root is refused with `NotACorpus` before
   anything is written. Over an existing listing, committed members are append-only: a member whose
-  files or digests would change, or that the generator no longer makes, is refused with
-  `AppendOnly`, and new members are added. Files that already hold their bytes are not rewritten.
+  files or digests would change is refused with `AppendOnly`, new members are added, and a member
+  the generator no longer makes stays frozen in the listing with its committed digests, so a
+  writer that changes keeps its old output under the old name and adds the new one under a new
+  name. Files that already hold their bytes are not rewritten.
 - `Corpus::check(root)` compares the folder with the corpus and returns each `Drift`: a missing
   file (`corpus.toml` and `.gitattributes` included), a file whose bytes differ (with both
-  digests), a stray file, a `corpus.toml` that is not the generated listing, and a committed member
-  that is `Rewritten` or `Removed`. An empty or absent folder reports every file missing.
+  digests), a stray file, a `corpus.toml` that is not the generated listing with the frozen members,
+  and a committed member the generator would `Rewrite`. A frozen member's files are checked against
+  their committed digests. An empty or absent folder reports every file missing.
 - `open(root)` reads `corpus.toml`, refuses unknown fields, bad names and paths, duplicates and
   digests that are not lower-case hex, and reads every listed file, failing on one that is missing
   or differs from its digest. `Committed::bytes`, `path` and `dir` then give a member's files to a

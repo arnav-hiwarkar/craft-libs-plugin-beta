@@ -72,8 +72,8 @@ fn check_reports_missing_changed_and_stray_files() {
         vec![
             Drift::Changed {
                 path: "module/m.wat".into(),
-                committed: "a52d159f262b2c6ddb724a61840befc36eb30c88877a4030b65cbe86298449c9".into(),
-                generated: ABC.into()
+                on_disk: "a52d159f262b2c6ddb724a61840befc36eb30c88877a4030b65cbe86298449c9".into(),
+                expected: ABC.into()
             },
             Drift::Missing("module/sub/x.bin".into()),
             Drift::Stray("gone/deep/old.wasm".into()),
@@ -130,7 +130,7 @@ fn write_refuses_a_folder_that_is_not_a_corpus() {
 }
 
 #[test]
-fn committed_members_are_append_only() {
+fn committed_members_are_append_only_and_a_dropped_member_stays_frozen() {
     let dir = tempfile::tempdir().unwrap();
     sample().write(dir.path()).unwrap();
     let mut rewritten = Corpus::new("demo").unwrap();
@@ -141,7 +141,19 @@ fn committed_members_are_append_only() {
     assert!(rewritten.check(dir.path()).unwrap().contains(&Drift::Rewritten("module".into())));
     let mut dropped = Corpus::new("demo").unwrap();
     dropped.add("module", "abi-one", "loads and doubles \"red\"", files(&[("m.wat", b"abc"), ("sub/x.bin", b"")])).unwrap();
-    assert_eq!(dropped.write(dir.path()), Err(Error::AppendOnly(Drift::Removed("folder".into()))));
+    dropped.write(dir.path()).unwrap();
+    assert_eq!(dropped.listing(dir.path()).unwrap(), sample().manifest());
+    assert_eq!(dropped.check(dir.path()).unwrap(), vec![]);
+    fs::write(dir.path().join("folder/Plug-ins/One Module.wasm"), b"abd").unwrap();
+    assert_eq!(
+        dropped.check(dir.path()).unwrap(),
+        vec![Drift::Changed {
+            path: "folder/Plug-ins/One Module.wasm".into(),
+            on_disk: "a52d159f262b2c6ddb724a61840befc36eb30c88877a4030b65cbe86298449c9".into(),
+            expected: ABC.into()
+        }]
+    );
+    fs::write(dir.path().join("folder/Plug-ins/One Module.wasm"), b"abc").unwrap();
     let mut grown = sample();
     grown.add("extra", "abi-one", "a new member", files(&[("e.wat", b"e")])).unwrap();
     assert_eq!(grown.check(dir.path()).unwrap(), vec![Drift::Manifest, Drift::Missing("extra/e.wat".into())]);
@@ -149,7 +161,7 @@ fn committed_members_are_append_only() {
     assert_eq!(grown.check(dir.path()).unwrap(), vec![]);
     assert_eq!(
         Error::AppendOnly(Drift::Rewritten("module".into())).to_string(),
-        "rewritten: member module has other files or digests than corpus.toml lists: committed members are append-only, so keep the member as it is and add a new member for the new content"
+        "rewritten: member module has other files or digests than corpus.toml lists: committed members are append-only: stop generating the member so it stays as committed, and generate the new content as a new member"
     );
 }
 

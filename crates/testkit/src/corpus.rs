@@ -22,7 +22,8 @@ pub const MAX_MANIFEST_BYTES: u64 = 1 << 20;
 pub const MAX_MEMBERS: usize = 256;
 pub const MAX_FILES: usize = 64;
 pub const MAX_EXPECT_CHARS: usize = 240;
-pub const APPEND_ONLY: &str = "committed members are append-only, so keep the member as it is and add a new member for the new content";
+pub const APPEND_ONLY: &str =
+    "committed members are append-only: stop generating the member so it stays as committed, and generate the new content as a new member";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
@@ -78,16 +79,15 @@ impl std::error::Error for Error {}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Drift {
     Missing(String),
-    Changed { path: String, committed: String, generated: String },
+    Changed { path: String, on_disk: String, expected: String },
     Stray(String),
     Manifest,
     Rewritten(String),
-    Removed(String),
 }
 
 impl Drift {
     pub fn breaks_append_only(&self) -> bool {
-        matches!(self, Drift::Rewritten(_) | Drift::Removed(_))
+        matches!(self, Drift::Rewritten(_))
     }
 }
 
@@ -95,11 +95,10 @@ impl fmt::Display for Drift {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Drift::Missing(path) => write!(f, "missing: {path}"),
-            Drift::Changed { path, committed, generated } => write!(f, "changed: {path} is {committed}, the generator makes {generated}"),
+            Drift::Changed { path, on_disk, expected } => write!(f, "changed: {path} is {on_disk}, expected {expected}"),
             Drift::Stray(path) => write!(f, "stray: {path} is not a corpus file"),
             Drift::Manifest => write!(f, "changed: {MANIFEST} differs from the generated listing"),
             Drift::Rewritten(member) => write!(f, "rewritten: member {member} has other files or digests than {MANIFEST} lists"),
-            Drift::Removed(member) => write!(f, "removed: member {member} is in {MANIFEST} but the generator no longer makes it"),
         }
     }
 }
@@ -187,42 +186,53 @@ impl Corpus {
             .map(|bytes| String::from_utf8(bytes).map_err(|_| Error::Manifest("not UTF-8".to_owned())).and_then(|text| Manifest::parse(&text))))
     }
 
-    fn append_only(&self, committed: &Manifest) -> Vec<Drift> {
+    fn plan(&self, committed: Option<&Manifest>) -> Plan {
         let generated = self.manifest();
-        committed
-            .member
-            .iter()
-            .filter_map(|old| match generated.entry(&old.name) {
-                None => Some(Drift::Removed(old.name.clone())),
-                Some(new) if new.files != old.files => Some(Drift::Rewritten(old.name.clone())),
-                Some(_) => None,
-            })
-            .collect()
+        let mut plan = Plan { listing: generated.clone(), frozen: Vec::new(), breaches: Vec::new() };
+        for old in committed.into_iter().flat_map(|m| &m.member) {
+            match generated.entry(&old.name) {
+                None => plan.frozen.push(old.clone()),
+                Some(new) if new.files != old.files => plan.breaches.push(Drift::Rewritten(old.name.clone())),
+                Some(_) => {}
+            }
+        }
+        plan.listing.member.extend(plan.frozen.iter().cloned());
+        plan.listing.member.sort_by(|a, b| a.name.cmp(&b.name));
+        plan
+    }
+
+    pub fn listing(&self, root: &Path) -> Result<Manifest, Error> {
+        let committed = Self::committed(root)?.transpose()?;
+        Ok(self.plan(committed.as_ref()).listing)
     }
 
     pub fn check(&self, root: &Path) -> Result<Vec<Drift>, Error> {
-        let rendered = self.manifest().render();
+        let committed = Self::committed(root)?.and_then(Result::ok);
+        let plan = self.plan(committed.as_ref());
         let mut drift = Vec::new();
         match disk::read_bounded(&root.join(MANIFEST), MAX_MANIFEST_BYTES)? {
             None => drift.push(Drift::Missing(MANIFEST.to_owned())),
-            Some(text) if text != rendered.as_bytes() => drift.push(Drift::Manifest),
+            Some(text) if text != plan.listing.render().as_bytes() => drift.push(Drift::Manifest),
             Some(_) => {}
         }
-        if let Some(Ok(committed)) = Self::committed(root)? {
-            drift.extend(self.append_only(&committed));
+        drift.extend(plan.breaches.iter().cloned());
+        let mut expected: BTreeMap<String, String> = self.files().into_iter().map(|(path, bytes)| (path, sha256_hex(bytes))).collect();
+        for entry in &plan.frozen {
+            for file in &entry.files {
+                expected.insert(format!("{}/{}", entry.name, file.path), file.sha256.clone());
+            }
         }
-        let files = self.files();
-        for (path, bytes) in &files {
+        for (path, sha256) in &expected {
             match disk::read_bounded(&root.join(path), MAX_FILE_BYTES)? {
                 None => drift.push(Drift::Missing(path.clone())),
-                Some(on_disk) if on_disk != *bytes => {
-                    drift.push(Drift::Changed { path: path.clone(), committed: sha256_hex(&on_disk), generated: sha256_hex(bytes) })
+                Some(on_disk) if sha256_hex(&on_disk) != *sha256 => {
+                    drift.push(Drift::Changed { path: path.clone(), on_disk: sha256_hex(&on_disk), expected: sha256.clone() })
                 }
                 Some(_) => {}
             }
         }
         for path in disk::walk(root)? {
-            if path != MANIFEST && !files.contains_key(&path) {
+            if path != MANIFEST && !expected.contains_key(&path) {
                 drift.push(Drift::Stray(path));
             }
         }
@@ -230,18 +240,24 @@ impl Corpus {
     }
 
     pub fn write(&self, root: &Path) -> Result<(), Error> {
-        match Self::committed(root)? {
+        let committed = match Self::committed(root)? {
             None if !disk::walk(root)?.is_empty() => return Err(Error::NotACorpus(root.to_owned())),
-            None => {}
-            Some(committed) => {
-                if let Some(breach) = self.append_only(&committed?).into_iter().next() {
-                    return Err(Error::AppendOnly(breach));
-                }
-            }
+            None => None,
+            Some(committed) => Some(committed?),
+        };
+        let plan = self.plan(committed.as_ref());
+        if let Some(breach) = plan.breaches.into_iter().next() {
+            return Err(Error::AppendOnly(breach));
         }
         for (path, bytes) in self.files() {
             disk::write_if_changed(&root.join(path), bytes)?;
         }
-        disk::write_if_changed(&root.join(MANIFEST), self.manifest().render().as_bytes())
+        disk::write_if_changed(&root.join(MANIFEST), plan.listing.render().as_bytes())
     }
+}
+
+struct Plan {
+    listing: Manifest,
+    frozen: Vec<Entry>,
+    breaches: Vec<Drift>,
 }

@@ -64,10 +64,10 @@ pub(crate) fn cli<E: fmt::Display>(
     let say = |w: &mut dyn Write, line: String| w.write_all(format!("{line}\n").as_bytes()).map_err(|e| e.to_string());
     if !check {
         corpus.write(&root).map_err(|e| e.to_string())?;
-        say(out, format!("wrote {} members to {}", corpus.manifest().member.len(), root.display()))?;
+        say(out, format!("wrote {} members to {}", corpus.listing(&root).map_err(|e| e.to_string())?.member.len(), root.display()))?;
         return Ok(true);
     }
-    for entry in &corpus.manifest().member {
+    for entry in &corpus.listing(&root).unwrap_or_else(|_| corpus.manifest()).member {
         say(out, format!("{:<26} {:<24} {} file(s)  {}", entry.name, entry.kind, entry.files.len(), entry.expect))?;
     }
     let drift = corpus.check(&root).map_err(|e| e.to_string())?;
