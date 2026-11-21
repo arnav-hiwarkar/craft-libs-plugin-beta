@@ -247,6 +247,47 @@ assert_ne!(verdict, Verdict::Fail);
 The `CONF-aa-sequential` simulation runs up to 4,000 verdicts and is ignored by default; the CI job
 `testkit-simulation` runs it with `cargo test --release -p craft-testkit -- --ignored conf_aa_sequential`.
 
+## corpus
+
+`corpus`, behind the `corpus` feature and not built for `wasm32`, keeps a legacy corpus: files an
+app generates from code and commits, each listed with its sha256 so that later code can be proven
+against the exact bytes. The plugin platform's slice 0f uses it for each app's
+`tests/legacy-corpus/`.
+
+- `Corpus::new(app)` and `Corpus::add(name, kind, expect, files)` build the corpus in memory. A
+  member has a name and a kind (1 to 64 of `a-z`, `0-9` and `-`), a one-line expected behaviour
+  of at most 240 characters, and 1 to 64 files. A file path is up to 8 `/`-separated parts of
+  letters, digits, spaces, `.`, `_` and `-`, none starting with `.` and none starting or ending
+  with a space; a file is at most 16 MiB. A corpus has at most 256 members.
+- `Corpus::write(root)` writes `corpus.toml`, a `.gitattributes` of `* -text` (so checkouts keep
+  the bytes) and every file under `root/<member>/`, and deletes every other file there. Files
+  that already hold their bytes are not rewritten.
+- `Corpus::check(root)` compares the folder with the corpus and returns each `Drift`: a missing
+  file (`corpus.toml` and `.gitattributes` included), a file whose bytes differ (with both
+  digests), a stray file, or a `corpus.toml` that is not the generated listing. An empty or absent
+  folder reports every file missing.
+- `open(root)` reads `corpus.toml`, refuses unknown fields, bad names and paths, duplicates and
+  digests that are not lower-case hex, and reads every listed file, failing on one that is missing
+  or differs from its digest. `Committed::bytes`, `path` and `dir` then give a member's files to a
+  test, and `bytes` checks the digest again.
+- `Manifest::coverage(kinds)` returns a `Gap` for each kind without a member and each member whose
+  kind is not in `kinds`. An empty `kinds` is an error, so a coverage test cannot pass by listing
+  nothing.
+
+`corpus.toml` lists the members sorted by name, and each member's files sorted by path:
+
+```toml
+[[member]]
+name = "fill-module"
+kind = "pc-abi1-module"
+app = "photocraft"
+expect = "plugin.run sets every colour sample to the level parameter and keeps alpha"
+files = [
+    { path = "fill.wasm", sha256 = "..." },
+    { path = "fill.wat", sha256 = "..." },
+]
+```
+
 ## Origin
 
 ### guards
