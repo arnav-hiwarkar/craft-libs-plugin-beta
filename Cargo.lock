@@ -3410,6 +3410,12 @@ dependencies = [
 [[package]]
 name = "craft-testkit"
 version = "0.1.0"
+dependencies = [
+ "serde",
+ "sha2 0.10.9",
+ "tempfile",
+ "toml",
+]
 
 [[package]]
 name = "craft-text"
