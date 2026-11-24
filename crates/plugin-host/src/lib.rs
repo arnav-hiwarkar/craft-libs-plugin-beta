@@ -32,6 +32,8 @@ pub use package::{
     EXTENSION as PACKAGE_EXTENSION, MAX_ENTRIES as PACKAGE_MAX_ENTRIES, MAX_UNPACKED_BYTES as PACKAGE_MAX_BYTES, PackageError, unpack,
 };
 pub use panel::{MAX_BACKLOG, Retained};
+#[doc(hidden)]
+pub use plugin::pooled_generator_buffers;
 pub use plugin::{Limits, Plugin, PluginError, validate};
 pub use registry::{Approved, Bundle, BundleError, Consent, Refusal, Registry};
 

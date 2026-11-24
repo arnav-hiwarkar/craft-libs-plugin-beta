@@ -22,6 +22,42 @@ use crate::runtime::Engine;
 const MIN_BAND_ROWS: usize = 64;
 const STAGED_BYTES: usize = 1 << 30;
 
+mod zeroed_pool {
+    use super::Pixel;
+    use std::sync::Mutex;
+
+    const KEPT: usize = 2;
+    static POOL: Mutex<Vec<Vec<Pixel>>> = Mutex::new(Vec::new());
+
+    pub(super) fn take(len: usize) -> Vec<Pixel> {
+        let Ok(mut kept) = POOL.lock() else { return vec![[0.0; 4]; len] };
+        match kept.iter().position(|buffer| buffer.len() == len) {
+            Some(at) => kept.swap_remove(at),
+            None => {
+                kept.clear();
+                vec![[0.0; 4]; len]
+            }
+        }
+    }
+
+    pub(super) fn give(buffer: Vec<Pixel>) {
+        if let Ok(mut kept) = POOL.lock()
+            && kept.len() < KEPT
+        {
+            kept.push(buffer);
+        }
+    }
+
+    pub fn held() -> usize {
+        POOL.lock().map_or(0, |kept| kept.len())
+    }
+}
+
+#[doc(hidden)]
+pub fn pooled_generator_buffers() -> usize {
+    zeroed_pool::held()
+}
+
 fn plain_id(id: &str) -> bool {
     !id.is_empty() && id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
 }
@@ -93,7 +129,6 @@ pub struct Plugin {
     limits: Limits,
     contributions: Contributions,
     warned_gradients: Mutex<HashMap<String, u64>>,
-    zeroed_output: Mutex<Vec<Pixel>>,
 }
 
 struct NoHost;
@@ -118,14 +153,7 @@ impl Plugin {
     }
 
     fn described(manifest: Manifest, engine: Arc<Engine>, limits: Limits) -> Result<Plugin, PluginError> {
-        let mut plugin = Plugin {
-            manifest,
-            engine,
-            limits,
-            contributions: Contributions::default(),
-            warned_gradients: Mutex::default(),
-            zeroed_output: Mutex::default(),
-        };
+        let mut plugin = Plugin { manifest, engine, limits, contributions: Contributions::default(), warned_gradients: Mutex::default() };
         plugin.contributions = plugin.call(&Call::Describe, None, &mut NoHost)?;
         plugin.contributions.check().map_err(PluginError::Load)?;
         plugin.engine.know_tasks(plugin.contributions.tasks.iter().map(|task| task.id.clone()).collect());
@@ -266,9 +294,7 @@ impl Plugin {
             }
             shown
         } else if ignores {
-            let mut zeroed = self.zeroed_output.lock().map(|mut kept| std::mem::take(&mut *kept)).unwrap_or_default();
-            zeroed.resize(out_width * rows, [0.0; 4]);
-            zeroed
+            zeroed_pool::take(out_width * rows)
         } else {
             vec![[0.0; 4]; out_width * rows]
         };
@@ -325,9 +351,7 @@ impl Plugin {
         for row in output.chunks_exact_mut(out_width).skip((rect.top - area.top) as usize).take(rect.height() as usize) {
             row[(rect.left - area.left) as usize..(rect.right - area.left) as usize].fill([0.0; 4]);
         }
-        if let Ok(mut zeroed) = self.zeroed_output.lock() {
-            *zeroed = output;
-        }
+        zeroed_pool::give(output);
         *pixels = kept;
         Ok(rect)
     }
@@ -642,6 +666,23 @@ fn origin(call: &Call) -> Origin {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_pool_hands_back_the_same_buffer_keeps_at_most_two_and_drops_one_of_the_wrong_size() {
+        let first = zeroed_pool::take(7);
+        let second = zeroed_pool::take(7);
+        let (first_at, second_at) = (first.as_ptr(), second.as_ptr());
+        zeroed_pool::give(first);
+        zeroed_pool::give(second);
+        zeroed_pool::give(vec![[0.0; 4]; 7]);
+        assert_eq!(zeroed_pool::held(), 2);
+        let again = zeroed_pool::take(7);
+        assert!(again.as_ptr() == first_at || again.as_ptr() == second_at);
+        assert_eq!(zeroed_pool::held(), 1);
+        zeroed_pool::give(again);
+        assert_eq!(zeroed_pool::take(9), vec![[0.0; 4]; 9]);
+        assert_eq!(zeroed_pool::held(), 0);
+    }
 
     #[test]
     fn bands_that_drew_different_rectangles_are_cropped_to_their_union_and_transparent_where_none_drew() {
