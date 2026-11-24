@@ -1,5 +1,7 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use std::sync::Arc;
@@ -87,6 +89,7 @@ pub struct Plugin {
     engine: Arc<Engine>,
     limits: Limits,
     contributions: Contributions,
+    warned_gradients: Mutex<HashMap<String, u64>>,
 }
 
 struct NoHost;
@@ -111,7 +114,7 @@ impl Plugin {
     }
 
     fn described(manifest: Manifest, engine: Arc<Engine>, limits: Limits) -> Result<Plugin, PluginError> {
-        let mut plugin = Plugin { manifest, engine, limits, contributions: Contributions::default() };
+        let mut plugin = Plugin { manifest, engine, limits, contributions: Contributions::default(), warned_gradients: Mutex::default() };
         plugin.contributions = plugin.call(&Call::Describe, None, &mut NoHost)?;
         if let Some(error) = plugin.contributions.effects.iter().find_map(|effect| effect.check().err()) {
             return Err(PluginError::Load(error));
@@ -138,6 +141,26 @@ impl Plugin {
 
     pub fn uncache(&self, key: &str) {
         self.engine.uncache(key);
+    }
+
+    pub fn warn_dropped_stops(&self, effect: &str, param: &str, value: &craft_plugin::Value) {
+        let key = format!("{effect}/{param}");
+        let Ok(mut warned) = self.warned_gradients.lock() else { return };
+        let craft_plugin::Value::Gradient(gradient) = value else { return };
+        let dropped = gradient.dropped_stops();
+        if dropped == 0 {
+            warned.remove(&key);
+            return;
+        }
+        let mut hasher = DefaultHasher::new();
+        format!("{gradient:?}").hash(&mut hasher);
+        if warned.insert(key, hasher.finish()) != Some(hasher.finish()) {
+            let limit = craft_plugin::MAX_GRADIENT_STOPS;
+            self.engine.journal().push(
+                LogLevel::Warn,
+                format!("effect `{effect}`: gradient parameter `{param}` has {dropped} stops beyond the limit of {limit}; the plugin received only the first {limit} colour and opacity stops"),
+            );
+        }
     }
 
     pub fn contributions(&self) -> &Contributions {
