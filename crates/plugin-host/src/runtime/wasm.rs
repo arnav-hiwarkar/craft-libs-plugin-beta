@@ -13,7 +13,7 @@ use wasmtime::{
 use sha2::{Digest, Sha256};
 
 use super::native;
-use super::serve::HostCx;
+use super::serve::{self, HostCx};
 use super::tasks::Slot;
 use crate::plugin::{Io, PluginError, drawn_in};
 
@@ -218,8 +218,10 @@ fn host_call(mut caller: Caller<'_, State>, _ctx: u32, request: u32, request_len
         memory.data(&caller).get(start..end).map(<[u8]>::to_vec).ok_or_else(|| wasmtime::format_err!("host call reads outside memory"))
     };
     let request = slice(request, request_len)?;
-    let bulk_in = slice(bulk, bulk_len)?;
-    let (reply, bulk_out, paused) = native::serve_erased(caller.data().ctx, &request, &bulk_in);
+    let (reply, bulk_out, paused) = match serve::refuse_oversized(&request, bulk_len as usize) {
+        Some((reply, bulk_out)) => (reply, bulk_out, Duration::ZERO),
+        None => native::serve_erased(caller.data().ctx, &request, &slice(bulk, bulk_len)?),
+    };
     if !paused.is_zero()
         && let Some(deadline) = caller.data().deadline.and_then(|deadline| deadline.checked_add(paused))
     {
