@@ -8,6 +8,7 @@ const SEGMENT_SHIFT: u32 = 15;
 const FIRST_SEGMENT: u32 = (1.0f32 / 16384.0).to_bits() >> SEGMENT_SHIFT;
 const SEGMENTS: u32 = (16.0f32.to_bits() >> SEGMENT_SHIFT) - FIRST_SEGMENT;
 const DITHER_LEVELS: f32 = 255.0;
+const OCTAVE_SEED: u32 = 0x9e37_79b9;
 const NOISE_SCALE: f32 = 1.0 / 65536.0 / DITHER_LEVELS;
 
 pub(crate) fn row(kernel: &HostKernel, src: &[Pixel], top: &[Pixel], y: usize, out: &mut [Pixel]) {
@@ -28,8 +29,22 @@ pub(crate) fn row(kernel: &HostKernel, src: &[Pixel], top: &[Pixel], y: usize, o
             let row_y = (y as i64).wrapping_sub(origin[1]) as u32;
             pairs.enumerate().for_each(|(x, (o, p))| *o = dither(*p, (x as i64).wrapping_sub(origin[0]) as u32, row_y, *seed));
         }
+        HostKernel::Noise { scale, octaves, seed, origin } => {
+            let row_y = (y as i64).wrapping_sub(origin[1]) as u32 as i32 as f32;
+            out.iter_mut().enumerate().for_each(|(x, o)| {
+                let n = noise((x as i64).wrapping_sub(origin[0]) as u32 as i32 as f32, row_y, 1.0 / scale, *octaves, *seed);
+                *o = [n, n, n, 1.0];
+            });
+        }
         HostKernel::LightAlpha => pairs.for_each(|(o, p)| *o = [p[0], p[1], p[2], p[3].max(p[0].max(p[1]).max(p[2]).clamp(0.0, 1.0))]),
-        HostKernel::Blur { .. } | HostKernel::Resample { .. } | HostKernel::Convolve { .. } | HostKernel::Warp { .. } => {}
+        HostKernel::Blur { .. }
+        | HostKernel::Resample { .. }
+        | HostKernel::Convolve { .. }
+        | HostKernel::Warp { .. }
+        | HostKernel::Dilate { .. }
+        | HostKernel::Erode { .. }
+        | HostKernel::DirectionalBlur { .. }
+        | HostKernel::Bilateral { .. } => {}
     }
 }
 
@@ -123,6 +138,32 @@ pub(crate) fn hash(x: u32, y: u32, seed: u32) -> u32 {
     h ^= h >> 15;
     h = h.wrapping_mul(0x846c_a68b);
     h ^ (h >> 16)
+}
+
+fn lattice(x: u32, y: u32, seed: u32) -> f32 {
+    (hash(x, y, seed) & 0xff_ffff) as f32 / 16_777_215.0
+}
+
+fn value_noise(x: f32, y: f32, seed: u32) -> f32 {
+    let (x0, y0) = (x.floor(), y.floor());
+    let smooth = |t: f32| t * t * (3.0 - 2.0 * t);
+    let (fx, fy) = (smooth(x - x0), smooth(y - y0));
+    let (ix, iy) = (x0 as i32 as u32, y0 as i32 as u32);
+    let corner = |dx: u32, dy: u32| lattice(ix.wrapping_add(dx), iy.wrapping_add(dy), seed);
+    let top = corner(0, 0) + (corner(1, 0) - corner(0, 0)) * fx;
+    let bottom = corner(0, 1) + (corner(1, 1) - corner(0, 1)) * fx;
+    top + (bottom - top) * fy
+}
+
+pub(crate) fn noise(x: f32, y: f32, frequency: f32, octaves: u32, seed: u32) -> f32 {
+    let (mut sum, mut total, mut amplitude, mut frequency) = (0.0, 0.0, 1.0, frequency);
+    for octave in 0..octaves {
+        sum += amplitude * value_noise(x * frequency, y * frequency, seed.wrapping_add(octave.wrapping_mul(OCTAVE_SEED)));
+        total += amplitude;
+        amplitude *= 0.5;
+        frequency *= 2.0;
+    }
+    sum / total
 }
 
 fn room(v: f32) -> f32 {

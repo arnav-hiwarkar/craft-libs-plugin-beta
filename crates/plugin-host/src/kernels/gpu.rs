@@ -3,7 +3,7 @@ use std::fmt::Write;
 use craft_plugin::{BlendMode, Encoding, Filter, HostKernel, Measure, Negatives, Plan, PlanImage, PlanPass, Taps};
 
 use super::fuse::{Fused, Op, Ref, Step, live_after, steps};
-use super::{blur_taps, resample_scale};
+use super::{bilateral_space, blur_taps, directional_steps, resample_scale};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StepImage {
@@ -57,23 +57,36 @@ pub fn lower(plan: &Plan, frame: [u32; 2]) -> (Vec<Lowered<'_>>, Vec<[u32; 2]>) 
                 let (src, out) = (StepImage::Plan(pass.src), StepImage::Plan(pass.out));
                 let aux = pass.aux.map(StepImage::Plan);
                 let step = |entry, f, u, data| GpuStep { entry, src, aux, out, f, u, data, wgsl: String::new() };
-                let mut separable = |x: Vec<f32>, y: Vec<f32>| {
+                let mut two_steps = |[across, down]: [GpuStep; 2]| {
                     let out_size = size(pass.out);
                     let temp = StepImage::Temp(temps.iter().position(|known| *known == out_size).unwrap_or_else(|| {
                         temps.push(out_size);
                         temps.len() - 1
                     }));
-                    [
-                        GpuStep { out: temp, ..step("craft_convolve_x", Vec::new(), vec![x.len() as u32], x) },
-                        GpuStep { src: temp, ..step("craft_convolve_y", Vec::new(), vec![y.len() as u32], y) },
-                    ]
+                    vec![GpuStep { out: temp, ..across }, GpuStep { src: temp, ..down }]
+                };
+                let separable = |x: Vec<f32>, y: Vec<f32>| {
+                    [step("craft_convolve_x", Vec::new(), vec![x.len() as u32], x), step("craft_convolve_y", Vec::new(), vec![y.len() as u32], y)]
+                };
+                let morphology = |radius: &[u32; 2], erode: u32| {
+                    [0, 1].map(|axis| step("craft_morphology", Vec::new(), vec![radius[axis as usize], erode, axis], Vec::new()))
                 };
                 let steps: Vec<GpuStep> = match kernel {
                     HostKernel::Blur { shape, radius } => {
                         let [x, y] = radius.map(|r| blur_taps(*shape, r));
-                        separable(x, y).to_vec()
+                        two_steps(separable(x, y))
                     }
-                    HostKernel::Convolve { taps: Taps::Separable { x, y } } => separable(x.clone(), y.clone()).to_vec(),
+                    HostKernel::Convolve { taps: Taps::Separable { x, y } } => two_steps(separable(x.clone(), y.clone())),
+                    HostKernel::Dilate { radius } => two_steps(morphology(radius, 0)),
+                    HostKernel::Erode { radius } => two_steps(morphology(radius, 1)),
+                    HostKernel::DirectionalBlur { angle, length } => {
+                        let (samples, [dx, dy]) = directional_steps(*angle, *length);
+                        vec![step("craft_directional_blur", vec![dx, dy, 1.0 / samples as f32], vec![samples], Vec::new())]
+                    }
+                    HostKernel::Bilateral { radius, tolerance } => {
+                        let range = 1.0 / (2.0 * tolerance * tolerance);
+                        vec![step("craft_bilateral", vec![range], vec![*radius], bilateral_space(*radius))]
+                    }
                     HostKernel::Convolve { taps: Taps::Full { width, weights } } => {
                         let rows = weights.len() as u32 / (*width).max(1);
                         vec![step("craft_convolve_full", Vec::new(), vec![*width, rows], weights.clone())]
@@ -166,8 +179,20 @@ fn pointwise(fused: &Fused, resampled: Option<(usize, Filter)>, f: Vec<f32>) -> 
                 data.extend([*seed, origin[0] as u32, origin[1] as u32].into_iter().flat_map(halves));
                 format!("craft_dither({at}u, {v}, id.xy)")
             }
+            HostKernel::Noise { scale, octaves, seed, origin } => {
+                data.extend([1.0 / scale, *octaves as f32]);
+                data.extend([*seed, origin[0] as u32, origin[1] as u32].into_iter().flat_map(halves));
+                format!("craft_noise({at}u, id.xy)")
+            }
             HostKernel::LightAlpha => format!("craft_light_alpha({v})"),
-            HostKernel::Blur { .. } | HostKernel::Resample { .. } | HostKernel::Convolve { .. } | HostKernel::Warp { .. } => v,
+            HostKernel::Blur { .. }
+            | HostKernel::Resample { .. }
+            | HostKernel::Convolve { .. }
+            | HostKernel::Warp { .. }
+            | HostKernel::Dilate { .. }
+            | HostKernel::Erode { .. }
+            | HostKernel::DirectionalBlur { .. }
+            | HostKernel::Bilateral { .. } => v,
         };
         let _ = writeln!(wgsl, "    let v{k} = {expr};");
     }

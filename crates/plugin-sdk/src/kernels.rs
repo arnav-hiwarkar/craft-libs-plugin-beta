@@ -8,6 +8,10 @@ pub const MAX_FULL_SIDE: usize = 31;
 pub const MAX_CURVE_POINTS: usize = 4096;
 pub const MAX_RESAMPLE_SCALE: f32 = 64.0;
 pub const MAX_WARP: f32 = 4096.0;
+pub const MAX_MORPHOLOGY_RADIUS: u32 = 512;
+pub const MAX_DIRECTIONAL_LENGTH: f32 = 1024.0;
+pub const MAX_BILATERAL_RADIUS: u32 = 32;
+pub const MAX_NOISE_OCTAVES: u32 = 12;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -53,6 +57,26 @@ pub enum HostKernel {
         origin: [i64; 2],
     },
     LightAlpha,
+    Dilate {
+        radius: [u32; 2],
+    },
+    Erode {
+        radius: [u32; 2],
+    },
+    DirectionalBlur {
+        angle: f32,
+        length: f32,
+    },
+    Bilateral {
+        radius: u32,
+        tolerance: f32,
+    },
+    Noise {
+        scale: f32,
+        octaves: u32,
+        seed: u32,
+        origin: [i64; 2],
+    },
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -143,15 +167,33 @@ impl HostKernel {
             HostKernel::BrightnessCurve { .. } => "brightness_curve",
             HostKernel::Dither { .. } => "dither",
             HostKernel::LightAlpha => "light_alpha",
+            HostKernel::Dilate { .. } => "dilate",
+            HostKernel::Erode { .. } => "erode",
+            HostKernel::DirectionalBlur { .. } => "directional_blur",
+            HostKernel::Bilateral { .. } => "bilateral",
+            HostKernel::Noise { .. } => "noise",
         }
     }
 
     pub fn pointwise(&self) -> bool {
-        !matches!(self, HostKernel::Blur { .. } | HostKernel::Resample { .. } | HostKernel::Convolve { .. } | HostKernel::Warp { .. })
+        !matches!(
+            self,
+            HostKernel::Blur { .. }
+                | HostKernel::Resample { .. }
+                | HostKernel::Convolve { .. }
+                | HostKernel::Warp { .. }
+                | HostKernel::Dilate { .. }
+                | HostKernel::Erode { .. }
+                | HostKernel::DirectionalBlur { .. }
+                | HostKernel::Bilateral { .. }
+        )
     }
 
     pub(crate) fn needs_temporary(&self) -> bool {
-        matches!(self, HostKernel::Blur { .. } | HostKernel::Convolve { taps: Taps::Separable { .. } })
+        matches!(
+            self,
+            HostKernel::Blur { .. } | HostKernel::Convolve { taps: Taps::Separable { .. } } | HostKernel::Dilate { .. } | HostKernel::Erode { .. }
+        )
     }
 
     pub fn check(&self, src: [u32; 2], aux: Option<[u32; 2]>, out: [u32; 2]) -> Result<(), String> {
@@ -222,6 +264,36 @@ impl HostKernel {
                 }
                 if !(range.is_finite() && *range > 0.0) {
                     return Err(format!("`range` is {range}; it must be a finite number above 0"));
+                }
+                same("src", src)
+            }
+            HostKernel::Dilate { radius } | HostKernel::Erode { radius } => {
+                if radius.iter().any(|r| *r > MAX_MORPHOLOGY_RADIUS) {
+                    return Err(format!("`radius` is {radius:?}; each axis must be 0 to {MAX_MORPHOLOGY_RADIUS}"));
+                }
+                same("src", src)
+            }
+            HostKernel::DirectionalBlur { angle, length } => {
+                if !angle.is_finite() || !(0.0..=MAX_DIRECTIONAL_LENGTH).contains(length) {
+                    return Err(format!(
+                        "`angle` is {angle} and `length` {length}; give a finite angle in degrees and a length of 0 to {MAX_DIRECTIONAL_LENGTH} pixels"
+                    ));
+                }
+                same("src", src)
+            }
+            HostKernel::Bilateral { radius, tolerance } => {
+                if *radius > MAX_BILATERAL_RADIUS || !(tolerance.is_finite() && *tolerance > 0.0) {
+                    return Err(format!(
+                        "`radius` is {radius} and `tolerance` {tolerance}; give a radius of 0 to {MAX_BILATERAL_RADIUS} and a finite tolerance above 0"
+                    ));
+                }
+                same("src", src)
+            }
+            HostKernel::Noise { scale, octaves, .. } => {
+                if !(scale.is_finite() && *scale > 0.0) || !(1..=MAX_NOISE_OCTAVES).contains(octaves) {
+                    return Err(format!(
+                        "`scale` is {scale} and `octaves` {octaves}; give a finite scale above 0 pixels and 1 to {MAX_NOISE_OCTAVES} octaves"
+                    ));
                 }
                 same("src", src)
             }

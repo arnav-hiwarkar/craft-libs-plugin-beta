@@ -559,3 +559,108 @@ fn craft_pointwise(@builtin(global_invocation_id) id: vec3<u32>) {
     assert_eq!((other_numbers.wgsl == screen.wgsl, other_numbers.data[6]), (true, 0.75));
     assert!(step(&plan(0.5, BlendMode::Multiply, vec![0.0, 0.25, 2.0])).wgsl.contains("craft_amount(v0, v0 * i0, craft_data(6u))"));
 }
+
+fn grey(values: &[f32]) -> Vec<Pixel> {
+    values.iter().map(|v| [*v, *v, *v, 1.0]).collect()
+}
+
+#[test]
+fn dilate_and_erode_take_the_largest_and_smallest_value_in_a_window_inside_the_image() {
+    let row = grey(&[0.0, 0.0, 0.9, 0.0, 0.0]);
+    assert_eq!(host(HostKernel::Dilate { radius: [1, 0] }, &row, [5, 1], None, [5, 1]), grey(&[0.0, 0.9, 0.9, 0.9, 0.0]));
+    let held = grey(&[1.0, 1.0, 1.0, 0.0, 1.0]);
+    assert_eq!(
+        host(HostKernel::Erode { radius: [1, 0] }, &held, [5, 1], None, [5, 1]),
+        grey(&[1.0, 1.0, 0.0, 0.0, 0.0]),
+        "the frame edge does not erode"
+    );
+    let column = grey(&[0.2, 0.7, 0.4]);
+    assert_eq!(host(HostKernel::Dilate { radius: [0, 1] }, &column, [1, 3], None, [1, 3]), grey(&[0.7, 0.7, 0.7]));
+    assert_eq!(host(HostKernel::Erode { radius: [5, 5] }, &column, [1, 3], None, [1, 3]), grey(&[0.2, 0.2, 0.2]));
+    let square = grey(&[0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0]);
+    assert_eq!(host(HostKernel::Dilate { radius: [1, 1] }, &square, [3, 3], None, [3, 3]), grey(&[0.5; 9]), "a square window");
+}
+
+#[test]
+fn a_directional_blur_averages_samples_along_its_angle() {
+    let row = grey(&[0.0, 3.0, 0.0, 0.0]);
+    let along = host(HostKernel::DirectionalBlur { angle: 0.0, length: 2.0 }, &row, [4, 1], None, [4, 1]);
+    let edge = 2.0 / 3.0;
+    assert_close(&along, &[[1.0, 1.0, 1.0, edge], [1.0; 4], [1.0; 4], [0.0, 0.0, 0.0, edge]], 1e-6, "three samples, clear outside");
+    let column = grey(&[0.0, 3.0, 0.0, 0.0]);
+    let down = host(HostKernel::DirectionalBlur { angle: 90.0, length: 2.0 }, &column, [1, 4], None, [1, 4]);
+    assert_close(&down, &along, 1e-6, "at 90 degrees it runs down the image");
+    let source = picture(SIZE);
+    assert_eq!(host(HostKernel::DirectionalBlur { angle: 30.0, length: 0.0 }, &source, SIZE, None, SIZE), source, "no length keeps the image");
+}
+
+#[test]
+fn a_bilateral_filter_keeps_edges_beyond_its_tolerance_and_smooths_within_it() {
+    let edge = grey(&[0.0, 0.0, 1.0, 1.0]);
+    let kept = host(HostKernel::Bilateral { radius: 1, tolerance: 0.01 }, &edge, [4, 1], None, [4, 1]);
+    assert_eq!(kept, edge, "a step far beyond the tolerance stays sharp");
+    let smoothed = host(HostKernel::Bilateral { radius: 1, tolerance: 1000.0 }, &edge, [4, 1], None, [4, 1]);
+    let w = (-2.0f32).exp();
+    let near = w / (1.0 + 2.0 * w);
+    assert_close(
+        &smoothed,
+        &[[0.0, 0.0, 0.0, 1.0], [near, near, near, 1.0], [1.0 - near, 1.0 - near, 1.0 - near, 1.0], [1.0; 4]],
+        1e-6,
+        "a spatial Gaussian",
+    );
+}
+
+#[test]
+fn noise_is_seeded_value_noise_anchored_at_its_origin() {
+    let size = [64, 64];
+    let source = picture(size);
+    let noise = |seed, origin| host(HostKernel::Noise { scale: 1.0, octaves: 1, seed, origin }, &source, size, None, size);
+    let got = noise(3, [0, 0]);
+    assert_eq!(got[..2], [[0.5556614, 0.5556614, 0.5556614, 1.0], [0.30317625, 0.30317625, 0.30317625, 1.0]]);
+    assert_eq!(noise(3, [0, 0]), got, "the same seed gives the same noise");
+    assert_ne!(noise(4, [0, 0]), got, "another seed gives other noise");
+    assert_eq!(noise(3, [1, 0])[1], got[0], "the pattern is anchored at the origin");
+    assert!(got.iter().all(|p| p[0] == p[1] && p[1] == p[2] && p[3] == 1.0 && (0.0..=1.0).contains(&p[0])), "opaque grey in 0..1");
+    let mean = got.iter().map(|p| p[0]).sum::<f32>() / got.len() as f32;
+    assert!((mean - 0.5).abs() < 0.03, "mean {mean}");
+    let smooth = host(HostKernel::Noise { scale: 16.0, octaves: 4, seed: 3, origin: [0, 0] }, &source, size, None, size);
+    let step = smooth.chunks(64).flat_map(|row| row.windows(2)).map(|pair| (pair[1][0] - pair[0][0]).abs()).fold(0.0, f32::max);
+    assert!(step < 0.25, "neighbours stay close at a scale of 16 with four octaves: {step}");
+}
+
+#[test]
+fn noise_fuses_with_the_pointwise_kernels_around_it() {
+    let source = picture(SIZE);
+    let mut plan = Plan::new();
+    let grain = plan.scratch(SIZE);
+    let plan = plan.pass(PlanPass::noise(grain, 8.0, 3, 1, [5, -7])).pass(PlanPass::blend_images(
+        PlanImage::Source,
+        grain,
+        PlanImage::Output,
+        BlendMode::Multiply,
+        0.5,
+    ));
+    assert_eq!(plan.validate(SIZE), Ok(()));
+    assert!(matches!(&steps(&plan, SIZE)[..], [Step::Fused(group)] if group.ops.len() == 2), "noise and the blend run as one loop");
+    assert_eq!(fused(&plan, &source), sequential(&plan, &source));
+}
+
+#[test]
+fn the_new_kernels_give_the_same_pixels_in_bands_on_every_core_as_on_one_thread() {
+    let size = [64, 600];
+    let source = picture(size);
+    let kernels = [
+        HostKernel::Dilate { radius: [3, 7] },
+        HostKernel::Erode { radius: [7, 3] },
+        HostKernel::DirectionalBlur { angle: 37.0, length: 9.5 },
+        HostKernel::Bilateral { radius: 3, tolerance: 0.2 },
+        HostKernel::Noise { scale: 6.0, octaves: 5, seed: 11, origin: [-3, 40] },
+    ];
+    let one_thread = rayon::ThreadPoolBuilder::new().num_threads(1).build().expect("a one-thread pool");
+    for kernel in kernels {
+        let banded = host(kernel.clone(), &source, size, None, size);
+        let whole = one_thread.install(|| host(kernel.clone(), &source, size, None, size));
+        assert!(banded == whole, "{}: bands and one pass differ", kernel.name());
+        assert!(banded.iter().flatten().all(|v| v.is_finite()), "{}: every pixel is written", kernel.name());
+    }
+}
