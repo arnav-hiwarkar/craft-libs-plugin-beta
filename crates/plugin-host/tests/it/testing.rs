@@ -230,3 +230,34 @@ fn an_effect_reading_a_channel_it_did_not_declare_fails_and_says_what_to_declare
     let error = plugin.render("aux-undeclared").size(4, 4).run().unwrap_err();
     assert!(error.contains("effect `aux-undeclared` must declare `.reads_aux([Channel::Uv])`"), "{error}");
 }
+
+#[test]
+fn a_plan_reads_source_frames_at_other_times_from_the_host_and_must_declare_it() {
+    let (_bundle, plugin) = probe();
+    let shifted = |shift: f32| {
+        let mut picture = Picture::new(64, 48);
+        for (i, pixel) in picture.pixels.iter_mut().enumerate() {
+            let (x, y) = ((i % 64) as f32 - shift, (i / 64) as f32);
+            let v = 0.5 + 0.2 * (0.4 * x).sin() * (0.3 * y).cos() + 0.1 * (0.15 * x + 0.1 * y).sin();
+            *pixel = [v, v, v, 1.0];
+        }
+        picture
+    };
+    let (now, earlier) = (shifted(3.0), shifted(0.0));
+    let frames = move |time: f64| if time < 0.75 { shifted(0.0) } else { shifted(3.0) };
+    let rebuilt = plugin.render("rewind").input(now.clone()).source_at(frames).time(1.0).run().unwrap();
+    let mean_error = |a: &Picture, b: &Picture| {
+        let inner: Vec<f32> = (0..a.pixels.len())
+            .filter(|i| (8..56).contains(&(i % 64)) && (8..40).contains(&(i / 64)))
+            .map(|i| (a.pixels[i][0] - b.pixels[i][0]).abs())
+            .collect();
+        inner.iter().sum::<f32>() / inner.len() as f32
+    };
+    let (to_now, to_earlier) = (mean_error(&rebuilt, &now), mean_error(&rebuilt, &earlier));
+    assert!(
+        to_now < 0.01 && to_earlier > 10.0 * to_now,
+        "the earlier frame warped by the flow matches now ({to_now}), not the earlier frame ({to_earlier})"
+    );
+    let error = plugin.render("silent-rewind").input(now).time(1.0).run().unwrap_err();
+    assert!(error.contains("declare `.reads_other_frames()`"), "{error}");
+}

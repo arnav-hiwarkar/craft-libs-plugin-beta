@@ -855,6 +855,24 @@ impl Effect for Tally {
     }
 }
 
+struct Rewind {
+    declared: bool,
+}
+
+impl Effect for Rewind {
+    fn spec(&self) -> EffectSpec {
+        let spec = EffectSpec::new(if self.declared { "rewind" } else { "silent-rewind" }, "Rewind", "Probe").time_dependent();
+        if self.declared { spec.reads_other_frames() } else { spec }
+    }
+
+    fn layout(&self, cx: &Cx) -> Layout {
+        let mut plan = Plan::new();
+        let (earlier, flow) = (plan.source_at(cx.time - 0.5), plan.scratch(cx.size));
+        let plan = plan.pass(PlanPass::flow(PlanImage::Source, earlier, flow)).pass(PlanPass::warp(earlier, flow, PlanImage::Output, [1.0, 1.0]));
+        Layout::whole_frame().passes(plan)
+    }
+}
+
 struct ReadInputs;
 
 impl Effect for ReadInputs {
@@ -1285,6 +1303,8 @@ fn make() -> Plugin {
         .effect(Renamed)
         .effect(Drift { declared: true })
         .effect(Drift { declared: false })
+        .effect(Rewind { declared: true })
+        .effect(Rewind { declared: false })
         .effect(FastMaths)
         .effect(Scale)
         .effect(ShiftDown)
