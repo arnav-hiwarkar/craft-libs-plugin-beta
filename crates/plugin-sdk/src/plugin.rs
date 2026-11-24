@@ -113,6 +113,7 @@ impl Plugin {
             tasks: self.tasks.iter().map(|(spec, _)| spec.clone()).collect(),
             tools: self.tools.iter().map(|(spec, _)| spec.clone()).collect(),
             separate_input: true,
+            bounded: true,
         }
     }
 
