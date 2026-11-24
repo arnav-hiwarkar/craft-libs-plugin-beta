@@ -26,7 +26,7 @@ pub use wire::*;
 pub mod prelude {
     pub use crate::host;
     pub use crate::{
-        AppEvent, AudioRequest, Bind, Blend, BlendMode, BlurShape, Camera, Canvas, Cull, Cursor, Curve, Cx, Drag, Dropped, Effect, EffectSpec,
+        AppEvent, AudioRequest, Bind, Blend, BlendMode, BlurShape, Camera, Canvas, Cull, Cursor, Curve, Cx, Dab, Drag, Dropped, Effect, EffectSpec,
         Encoding, Error, FileErrorKind, Filter, Frame, FrameRequest, Gradient, Handle, HostKernel, Image, Key, LayerParam, LayerPlacement, Layout,
         Light, LightKind, LogLevel, Mark, MaskPath, Measure, Modifiers, Negatives, Overlay, Paint, Panel, Param, Pass, PickFile, Pixel, Plan,
         PlanData, PlanImage, PlanPass, Plugin, Pointer, PointerPhase, Rect, Result, Root, Rows, Scene, Space, Taps, Task, TaskState, TaskStatus,

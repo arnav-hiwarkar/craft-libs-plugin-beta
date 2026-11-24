@@ -3,7 +3,7 @@ use std::fmt::Write;
 use craft_plugin::{BlendMode, Encoding, Filter, HostKernel, Measure, Negatives, Plan, PlanImage, PlanPass, Taps};
 
 use super::fuse::{Fused, Op, Ref, Step, live_after, steps};
-use super::{bilateral_space, blur_taps, directional_steps, resample_scale};
+use super::{bilateral_space, blur_taps, dab_tiles, directional_steps, resample_scale};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StepImage {
@@ -86,6 +86,15 @@ pub fn lower(plan: &Plan, frame: [u32; 2]) -> (Vec<Lowered<'_>>, Vec<[u32; 2]>) 
                     HostKernel::Bilateral { radius, tolerance } => {
                         let range = 1.0 / (2.0 * tolerance * tolerance);
                         vec![step("craft_bilateral", vec![range], vec![*radius], bilateral_space(*radius))]
+                    }
+                    HostKernel::Splat { dabs } => {
+                        let (starts, indices, tiles_x) = dab_tiles(dabs, size(pass.out));
+                        let (index_base, dab_base) = (starts.len(), starts.len() + indices.len());
+                        let mut data: Vec<f32> = starts.into_iter().chain(indices).map(|v| v as f32).collect();
+                        data.extend(
+                            dabs.iter().flat_map(|d| [d.at[0], d.at[1], d.radius, d.colour[0], d.colour[1], d.colour[2], d.opacity, d.hardness]),
+                        );
+                        vec![step("craft_splat", Vec::new(), vec![tiles_x as u32, index_base as u32, dab_base as u32], data)]
                     }
                     HostKernel::Convolve { taps: Taps::Full { width, weights } } => {
                         let rows = weights.len() as u32 / (*width).max(1);
@@ -184,6 +193,10 @@ fn pointwise(fused: &Fused, resampled: Option<(usize, Filter)>, f: Vec<f32>) -> 
                 data.extend([*seed, origin[0] as u32, origin[1] as u32].into_iter().flat_map(halves));
                 format!("craft_noise({at}u, id.xy)")
             }
+            HostKernel::HslRange { hue, saturation, lightness, softness } => {
+                data.extend(hue.iter().chain(saturation).chain(lightness).chain([softness]));
+                format!("craft_hsl_range({at}u, {v})")
+            }
             HostKernel::LightAlpha => format!("craft_light_alpha({v})"),
             HostKernel::Blur { .. }
             | HostKernel::Resample { .. }
@@ -192,7 +205,8 @@ fn pointwise(fused: &Fused, resampled: Option<(usize, Filter)>, f: Vec<f32>) -> 
             | HostKernel::Dilate { .. }
             | HostKernel::Erode { .. }
             | HostKernel::DirectionalBlur { .. }
-            | HostKernel::Bilateral { .. } => v,
+            | HostKernel::Bilateral { .. }
+            | HostKernel::Splat { .. } => v,
         };
         let _ = writeln!(wgsl, "    let v{k} = {expr};");
     }

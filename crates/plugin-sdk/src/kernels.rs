@@ -12,6 +12,10 @@ pub const MAX_MORPHOLOGY_RADIUS: u32 = 512;
 pub const MAX_DIRECTIONAL_LENGTH: f32 = 1024.0;
 pub const MAX_BILATERAL_RADIUS: u32 = 32;
 pub const MAX_NOISE_OCTAVES: u32 = 12;
+pub const MAX_DABS: usize = 65536;
+pub const MAX_DAB_RADIUS: f32 = 256.0;
+pub const DAB_TILE: u32 = 16;
+pub const MAX_DAB_TILES: u64 = 1 << 21;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -77,6 +81,39 @@ pub enum HostKernel {
         seed: u32,
         origin: [i64; 2],
     },
+    HslRange {
+        hue: [f32; 2],
+        saturation: [f32; 2],
+        lightness: [f32; 2],
+        softness: f32,
+    },
+    Splat {
+        dabs: Vec<Dab>,
+    },
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub struct Dab {
+    pub at: [f32; 2],
+    pub radius: f32,
+    pub colour: [f32; 3],
+    pub opacity: f32,
+    pub hardness: f32,
+}
+
+impl Dab {
+    pub fn new(at: [f32; 2], radius: f32, colour: [f32; 3]) -> Self {
+        Dab { at, radius, colour, opacity: 1.0, hardness: 0.0 }
+    }
+
+    pub fn tiles(&self, out: [u32; 2]) -> [std::ops::Range<u32>; 2] {
+        [0, 1].map(|axis| {
+            let tiles = out[axis].div_ceil(DAB_TILE);
+            let tile = |v: f32| (v / DAB_TILE as f32).floor().clamp(0.0, tiles as f32) as u32;
+            let (first, last) = (self.at[axis] - self.radius, self.at[axis] + self.radius);
+            if self.radius > 0.0 && last >= 0.0 { tile(first)..(tile(last) + 1).min(tiles) } else { 0..0 }
+        })
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -172,6 +209,8 @@ impl HostKernel {
             HostKernel::DirectionalBlur { .. } => "directional_blur",
             HostKernel::Bilateral { .. } => "bilateral",
             HostKernel::Noise { .. } => "noise",
+            HostKernel::HslRange { .. } => "hsl_range",
+            HostKernel::Splat { .. } => "splat",
         }
     }
 
@@ -186,6 +225,7 @@ impl HostKernel {
                 | HostKernel::Erode { .. }
                 | HostKernel::DirectionalBlur { .. }
                 | HostKernel::Bilateral { .. }
+                | HostKernel::Splat { .. }
         )
     }
 
@@ -297,6 +337,39 @@ impl HostKernel {
                 }
                 same("src", src)
             }
+            HostKernel::HslRange { hue, saturation, lightness, softness } => {
+                let within = |range: &[f32; 2], max: f32| range.iter().all(|v| (0.0..=max).contains(v));
+                if !within(hue, 360.0) || !within(saturation, 1.0) || !within(lightness, 1.0) || !(0.0..=1.0).contains(softness) {
+                    return Err(format!(
+                        "`hue` is {hue:?}, `saturation` {saturation:?}, `lightness` {lightness:?} and `softness` {softness}; give hue in degrees 0 to 360 and the others 0 to 1"
+                    ));
+                }
+                same("src", src)
+            }
+            HostKernel::Splat { dabs } => {
+                if dabs.len() > MAX_DABS {
+                    return Err(format!("`dabs` has {} entries; give at most {MAX_DABS}, or split them over several passes", dabs.len()));
+                }
+                let fits = |d: &Dab| {
+                    d.at.iter().chain(&d.colour).all(|v| v.is_finite())
+                        && d.colour.iter().all(|c| *c >= 0.0)
+                        && (0.0..=MAX_DAB_RADIUS).contains(&d.radius)
+                        && (0.0..=1.0).contains(&d.opacity)
+                        && (0.0..=1.0).contains(&d.hardness)
+                };
+                if let Some((i, d)) = dabs.iter().enumerate().find(|(_, d)| !fits(d)) {
+                    return Err(format!(
+                        "dab {i} is {d:?}; give a finite position, a radius of 0 to {MAX_DAB_RADIUS}, a colour of 0 or more and an opacity and hardness of 0 to 1"
+                    ));
+                }
+                let tiles = dabs.iter().map(|d| d.tiles(out).map(|r| u64::from(r.end - r.start))).map(|[x, y]| x * y).sum::<u64>();
+                if tiles > MAX_DAB_TILES {
+                    return Err(format!(
+                        "the dabs cover {tiles} tiles of {DAB_TILE}x{DAB_TILE} pixels; the limit is {MAX_DAB_TILES}, so use fewer or smaller dabs"
+                    ));
+                }
+                same("src", src)
+            }
             HostKernel::ToLinear | HostKernel::ToSrgb | HostKernel::Transfer { .. } | HostKernel::Dither { .. } | HostKernel::LightAlpha => {
                 same("src", src)
             }
@@ -333,4 +406,15 @@ impl Taps {
             }
         }
     }
+}
+
+pub fn histogram<'a>(pixels: impl IntoIterator<Item = &'a Pixel>) -> [[u32; 256]; 4] {
+    let mut counts = [[0; 256]; 4];
+    for p in pixels {
+        let straight = if p[3] > 0.0 { [p[0] / p[3], p[1] / p[3], p[2] / p[3], p[3]] } else { [0.0; 4] };
+        for (channel, v) in counts.iter_mut().zip(straight) {
+            channel[(v.clamp(0.0, 1.0) * 255.0).round() as usize] += 1;
+        }
+    }
+    counts
 }

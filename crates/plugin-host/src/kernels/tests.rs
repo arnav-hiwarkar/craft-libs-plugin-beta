@@ -1,6 +1,6 @@
-use craft_plugin::{BlendMode, BlurShape, Encoding, Filter, HostKernel, Measure, Negatives, Pixel, Plan, PlanImage, PlanPass, Taps};
+use craft_plugin::{BlendMode, BlurShape, Dab, Encoding, Filter, HostKernel, Measure, Negatives, Pixel, Plan, PlanImage, PlanPass, Taps};
 
-use super::{Image, Lowered, Ref, Step, StepImage, blur_taps, lower, run, run_fused, steps};
+use super::{Image, Lowered, Ref, Step, StepImage, blur_taps, lower, run, run_fused, stamp, steps};
 
 const SIZE: [u32; 2] = [37, 23];
 
@@ -655,6 +655,10 @@ fn the_new_kernels_give_the_same_pixels_in_bands_on_every_core_as_on_one_thread(
         HostKernel::DirectionalBlur { angle: 37.0, length: 9.5 },
         HostKernel::Bilateral { radius: 3, tolerance: 0.2 },
         HostKernel::Noise { scale: 6.0, octaves: 5, seed: 11, origin: [-3, 40] },
+        HostKernel::HslRange { hue: [300.0, 40.0], saturation: [0.2, 1.0], lightness: [0.1, 0.9], softness: 0.1 },
+        HostKernel::Splat {
+            dabs: (0..300).map(|i| Dab::new([(i * 7 % 70) as f32, (i * 13 % 610) as f32], 3.0 + (i % 9) as f32, [0.2, 0.4, 0.1])).collect(),
+        },
     ];
     let one_thread = rayon::ThreadPoolBuilder::new().num_threads(1).build().expect("a one-thread pool");
     for kernel in kernels {
@@ -663,4 +667,84 @@ fn the_new_kernels_give_the_same_pixels_in_bands_on_every_core_as_on_one_thread(
         assert!(banded == whole, "{}: bands and one pass differ", kernel.name());
         assert!(banded.iter().flatten().all(|v| v.is_finite()), "{}: every pixel is written", kernel.name());
     }
+}
+
+#[test]
+fn hsl_range_gives_a_soft_grey_mask_of_straight_colours_and_wraps_hue() {
+    let pixels = [[1.0, 0.0, 0.0, 1.0], [0.5, 0.0, 0.0, 0.5], [0.0, 1.0, 0.0, 1.0], [1.0, 0.5, 0.0, 1.0], [0.0; 4], [1.0, 0.0, 0.5, 1.0]];
+    let select = |softness| HostKernel::HslRange { hue: [340.0, 20.0], saturation: [0.5, 1.0], lightness: [0.25, 0.75], softness };
+    let mask = |kernel| host(kernel, &pixels, [6, 1], None, [6, 1]).iter().map(|p| p[0]).collect::<Vec<_>>();
+    assert_eq!(mask(select(0.0)), [1.0, 0.5, 0.0, 0.0, 0.0, 0.0], "red is inside, half-covered red half, green and orange outside");
+    let soft = mask(select(0.05));
+    let ten_out = 1.0 - 10.0 / 18.0;
+    assert!((soft[3] - ten_out).abs() < 1e-6 && (soft[5] - ten_out).abs() < 1e-6, "orange and pink are 10 degrees out each side: {soft:?}");
+    assert!(host(select(0.05), &pixels, [6, 1], None, [6, 1]).iter().all(|p| p[0] == p[1] && p[1] == p[2] && p[3] == 1.0), "opaque grey");
+    let bad = HostKernel::HslRange { hue: [0.0, 400.0], saturation: [0.0, 1.0], lightness: [0.0, 1.0], softness: 0.0 };
+    assert!(bad.check([5, 1], None, [5, 1]).unwrap_err().contains("hue in degrees 0 to 360"));
+}
+
+#[test]
+fn hsl_range_fuses_with_the_blend_that_uses_its_mask() {
+    let source = picture(SIZE);
+    let mut plan = Plan::new();
+    let mask = plan.scratch(SIZE);
+    let plan = plan.pass(PlanPass::hsl_range(PlanImage::Source, mask, [200.0, 30.0], [0.1, 1.0], [0.0, 0.8], 0.2)).pass(PlanPass::blend_images(
+        PlanImage::Source,
+        mask,
+        PlanImage::Output,
+        BlendMode::Multiply,
+        1.0,
+    ));
+    assert_eq!(plan.validate(SIZE), Ok(()));
+    assert!(matches!(&steps(&plan, SIZE)[..], [Step::Fused(group)] if group.ops.len() == 2), "the mask and the blend run as one loop");
+    assert_eq!(fused(&plan, &source), sequential(&plan, &source));
+}
+
+#[test]
+fn splat_adds_soft_dabs_as_light() {
+    let clear = [[0.0; 4]; 5];
+    let dab = Dab { colour: [1.0, 0.5, 0.0], ..Dab::new([2.5, 0.5], 2.0, [0.0; 3]) };
+    let soft = host(HostKernel::Splat { dabs: vec![dab] }, &clear, [5, 1], None, [5, 1]);
+    assert_eq!(soft, [[0.0; 4], [0.5, 0.25, 0.0, 0.5], [1.0, 0.5, 0.0, 1.0], [0.5, 0.25, 0.0, 0.5], [0.0; 4]]);
+    let hard = host(HostKernel::Splat { dabs: vec![Dab { hardness: 0.5, opacity: 0.5, ..dab }] }, &clear, [5, 1], None, [5, 1]);
+    assert_eq!(hard[1], [0.5, 0.25, 0.0, 0.5], "inside its hardness a dab has its full opacity");
+    let twice = host(HostKernel::Splat { dabs: vec![dab, dab] }, &clear, [5, 1], None, [5, 1]);
+    assert_eq!(twice[2], [2.0, 1.0, 0.0, 1.0], "light adds up and alpha stops at 1");
+}
+
+#[test]
+fn splat_tiles_give_what_every_dab_on_every_pixel_gives() {
+    let size = [53, 41];
+    let source = picture(size);
+    let dabs: Vec<Dab> = (0..200)
+        .map(|i| Dab {
+            opacity: 0.7,
+            hardness: 0.3,
+            ..Dab::new([(i * 37 % 90) as f32 - 20.0, (i * 23 % 70) as f32 - 15.0], 0.5 + (i % 23) as f32, [0.3, 0.1, 0.6])
+        })
+        .collect();
+    let mut expected = source.clone();
+    for (k, p) in expected.iter_mut().enumerate() {
+        *p = dabs.iter().fold(*p, |p, dab| stamp(p, dab, k % 53, k / 53));
+    }
+    assert!(host(HostKernel::Splat { dabs: dabs.clone() }, &source, size, None, size) == expected, "tiles skip only dabs that miss the pixel");
+    assert_ne!(expected, source, "the dabs reach the picture");
+}
+
+#[test]
+fn splat_refuses_bad_dabs_and_too_much_area() {
+    let check = |dabs: Vec<Dab>| HostKernel::Splat { dabs }.check([64, 64], None, [64, 64]);
+    assert_eq!(check(vec![Dab::new([3.0, 4.0], 2.0, [1.0; 3])]), Ok(()));
+    assert!(check(vec![Dab { hardness: 2.0, ..Dab::new([0.0; 2], 1.0, [1.0; 3]) }]).unwrap_err().starts_with("dab 0 is"));
+    assert!(check(vec![Dab::new([0.0; 2], 1.0, [-1.0, 0.0, 0.0])]).is_err(), "negative light");
+    assert!(check(vec![Dab::new([0.0; 2], 1.0, [0.0; 3]); craft_plugin::MAX_DABS + 1]).unwrap_err().contains("at most 65536"));
+    let wide = HostKernel::Splat { dabs: vec![Dab::new([2048.0; 2], 256.0, [1.0; 3]); 9000] };
+    assert!(wide.check([4096, 4096], None, [4096, 4096]).unwrap_err().contains("tiles"), "9000 dabs of 33x33 tiles");
+}
+
+#[test]
+fn a_histogram_counts_straight_values_per_channel() {
+    let counts = craft_plugin::histogram(&[[0.5, 0.25, 0.0, 0.5], [1.0, 1.0, 1.0, 1.0], [0.0; 4], [2.0, -1.0, 0.5, 1.0]]);
+    assert_eq!([counts[0][255], counts[0][0], counts[1][128], counts[1][0], counts[2][128], counts[3][128]], [3, 1, 1, 2, 1, 1]);
+    assert_eq!(counts.map(|channel| channel.iter().sum::<u32>()), [4; 4]);
 }

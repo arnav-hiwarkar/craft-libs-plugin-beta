@@ -36,6 +36,10 @@ pub(crate) fn row(kernel: &HostKernel, src: &[Pixel], top: &[Pixel], y: usize, o
                 *o = [n, n, n, 1.0];
             });
         }
+        HostKernel::HslRange { hue, saturation, lightness, softness } => pairs.for_each(|(o, p)| {
+            let m = hsl_range(*p, *hue, *saturation, *lightness, *softness);
+            *o = [m, m, m, 1.0];
+        }),
         HostKernel::LightAlpha => pairs.for_each(|(o, p)| *o = [p[0], p[1], p[2], p[3].max(p[0].max(p[1]).max(p[2]).clamp(0.0, 1.0))]),
         HostKernel::Blur { .. }
         | HostKernel::Resample { .. }
@@ -44,8 +48,39 @@ pub(crate) fn row(kernel: &HostKernel, src: &[Pixel], top: &[Pixel], y: usize, o
         | HostKernel::Dilate { .. }
         | HostKernel::Erode { .. }
         | HostKernel::DirectionalBlur { .. }
-        | HostKernel::Bilateral { .. } => {}
+        | HostKernel::Bilateral { .. }
+        | HostKernel::Splat { .. } => {}
     }
+}
+
+fn soft_band(inside: f32, softness: f32) -> f32 {
+    (inside / softness.max(f32::EPSILON) + 1.0).clamp(0.0, 1.0)
+}
+
+fn hsl_range(p: Pixel, hue: [f32; 2], saturation: [f32; 2], lightness: [f32; 2], softness: f32) -> f32 {
+    if p[3] <= 0.0 {
+        return 0.0;
+    }
+    let [r, g, b] = [p[0] / p[3], p[1] / p[3], p[2] / p[3]];
+    let (max, min) = (r.max(g).max(b), r.min(g).min(b));
+    let (l, d) = ((max + min) * 0.5, max - min);
+    let (h, s) = if d <= f32::EPSILON {
+        (0.0, 0.0)
+    } else {
+        let sector = if max == r {
+            (g - b) / d + 6.0
+        } else if max == g {
+            (b - r) / d + 2.0
+        } else {
+            (r - g) / d + 4.0
+        };
+        (60.0 * (sector - 6.0 * (sector / 6.0).floor()), (d / (1.0 - (2.0 * l - 1.0).abs()).max(f32::EPSILON)).clamp(0.0, 1.0))
+    };
+    let wrap = |v: f32| v - 360.0 * (v / 360.0).floor();
+    let (width, offset) = (wrap(hue[1] - hue[0]), wrap(h - hue[0]));
+    let hue_outside = if offset <= width { 0.0 } else { (offset - width).min(360.0 - offset) };
+    let band = |v: f32, range: [f32; 2]| soft_band((v - range[0]).min(range[1] - v), softness);
+    soft_band(-hue_outside, softness * 360.0) * band(s, saturation) * band(l, lightness) * p[3]
 }
 
 pub(crate) fn blend_channel(mode: BlendMode, b: f32, t: f32) -> f32 {
