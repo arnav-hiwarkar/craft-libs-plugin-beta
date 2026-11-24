@@ -234,3 +234,52 @@ fn a_package_gives_its_manifest_without_being_unpacked() {
     let (_dir, file) = crafted(|_| {});
     assert_eq!(craft_plugin_host::Bundle::manifest_of(&file).unwrap().id, "test.crafted");
 }
+
+fn data_only(root: &Path, luts: &[&str], present: &[&str]) -> PathBuf {
+    let dir = root.join("looks");
+    std::fs::create_dir_all(&dir).unwrap();
+    let manifest = json!({"id": "test.looks", "name": "Looks", "version": "1.0.0", "contributes": {"luts": luts, "presets": [
+        {"effect": "ec.color.tint", "name": "Warm", "values": {"amount": 40.0}}]}});
+    std::fs::write(dir.join("plugin.json"), manifest.to_string()).unwrap();
+    present.iter().for_each(|name| std::fs::write(dir.join(name), "LUT_3D_SIZE 2\n").unwrap());
+    dir
+}
+
+#[test]
+fn a_bundle_with_no_entry_installs_and_runs_nothing() {
+    let source = tempfile::tempdir().unwrap();
+    let dir = data_only(source.path(), &["warm.cube"], &["warm.cube"]);
+    let root = tempfile::tempdir().unwrap();
+    let mut registry = Registry::open(root.path());
+    let installed = registry.install(&dir).unwrap();
+    assert!(installed.manifest.is_data_only());
+    assert_eq!(installed.manifest.contributes.luts, ["warm.cube"]);
+    assert_eq!(installed.manifest.contributes.presets[0].values["amount"], Value::Number(40.0));
+    assert_eq!(registry.mode(&installed.manifest), RunMode::Sandboxed);
+    registry.approve(&installed).unwrap();
+    assert_eq!(registry.consent("test.looks").unwrap().unsandboxed, None);
+    assert!(registry.grants(&installed).unwrap().is_empty());
+}
+
+#[test]
+fn a_data_only_bundle_whose_lut_file_is_missing_is_refused_by_name() {
+    let source = tempfile::tempdir().unwrap();
+    let dir = data_only(source.path(), &["warm.cube", "cool.cube"], &["warm.cube"]);
+    let root = tempfile::tempdir().unwrap();
+    let Err(BundleError::MissingLut(path)) = Registry::open(root.path()).install(&dir) else { panic!("installed with a missing LUT") };
+    assert!(path.ends_with("cool.cube"));
+    assert!(Registry::open(root.path()).bundles().is_empty());
+}
+
+#[test]
+fn a_check_that_rejects_a_bundle_leaves_the_installed_version_alone() {
+    let source = tempfile::tempdir().unwrap();
+    let dir = data_only(source.path(), &["warm.cube"], &["warm.cube"]);
+    let root = tempfile::tempdir().unwrap();
+    let mut registry = Registry::open(root.path());
+    registry.install(&dir).unwrap();
+    std::fs::write(dir.join("warm.cube"), "changed\n").unwrap();
+    let refused = registry.install_checked(&dir, |_| Err("warm.cube is not a .cube file".into()));
+    assert_eq!(refused.unwrap_err().to_string(), "warm.cube is not a .cube file");
+    assert_eq!(std::fs::read_to_string(root.path().join("test.looks/warm.cube")).unwrap(), "LUT_3D_SIZE 2\n");
+}

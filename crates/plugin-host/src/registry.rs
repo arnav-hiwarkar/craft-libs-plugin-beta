@@ -36,6 +36,10 @@ pub enum BundleError {
     NoNativeBuild(String),
     #[error("the plugin's entry file {0} is missing")]
     MissingEntry(PathBuf),
+    #[error("the plugin lists the LUT file {0}, but it is missing")]
+    MissingLut(PathBuf),
+    #[error("{0}")]
+    Rejected(String),
     #[error(
         "plugin `{0}` version {1} is already approved with different files; give this build a new version number or remove the installed one first"
     )]
@@ -191,6 +195,10 @@ impl Registry {
     }
 
     pub fn install(&mut self, source: &Path) -> Result<Bundle, BundleError> {
+        self.install_checked(source, |_| Ok(()))
+    }
+
+    pub fn install_checked(&mut self, source: &Path, check: impl FnOnce(&Bundle) -> Result<(), String>) -> Result<Bundle, BundleError> {
         let io = |path: &Path| {
             let path = path.to_path_buf();
             move |e| BundleError::Io(path, e)
@@ -207,10 +215,17 @@ impl Registry {
             Bundle::open(source)
         };
         let incoming = match unpacked.and_then(|bundle| {
-            let entry = bundle.entry_path()?;
-            if !entry.is_file() {
-                return Err(BundleError::MissingEntry(entry));
+            if bundle.manifest.is_data_only() {
+                if let Some(lut) = bundle.manifest.contributes.luts.iter().map(|lut| bundle.dir.join(lut)).find(|lut| !lut.is_file()) {
+                    return Err(BundleError::MissingLut(lut));
+                }
+            } else {
+                let entry = bundle.entry_path()?;
+                if !entry.is_file() {
+                    return Err(BundleError::MissingEntry(entry));
+                }
             }
+            check(&bundle).map_err(BundleError::Rejected)?;
             let approved = self.consents.get(&bundle.manifest.id).and_then(|consent| consent.approved.as_ref());
             match approved {
                 Some(approved) if approved.version == bundle.manifest.version && approved.digest != bundle.digest()? => {
@@ -267,7 +282,7 @@ impl Registry {
     pub fn approve(&mut self, bundle: &Bundle) -> Result<(), BundleError> {
         let manifest = &bundle.manifest;
         let chosen = self.consents.get(&manifest.id).and_then(|consent| consent.unsandboxed.clone()).filter(|version| version == &manifest.version);
-        let unsandboxed = if manifest.has_wasm() { chosen } else { Some(manifest.version.clone()) };
+        let unsandboxed = if manifest.has_wasm() || manifest.is_data_only() { chosen } else { Some(manifest.version.clone()) };
         let approved = Some(Approved { version: manifest.version.clone(), digest: bundle.digest()? });
         let consent = Consent { enabled: true, granted: manifest.permissions.clone(), unsandboxed, approved, quarantined: None };
         let mut consents = self.consents.clone();
