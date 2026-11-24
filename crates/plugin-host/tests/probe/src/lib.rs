@@ -541,6 +541,39 @@ impl Effect for Streak {
     }
 }
 
+struct Sprite;
+
+const SPRITE: usize = 200;
+
+impl Effect for Sprite {
+    fn spec(&self) -> EffectSpec {
+        EffectSpec::new("sprite", "Sprite", "Probe").param(Param::checkbox("whole", "Whole Frame", false))
+    }
+
+    fn layout(&self, cx: &Cx) -> Layout {
+        if cx.bool("whole") { Layout::whole_frame() } else { Layout::pointwise() }
+    }
+
+    fn render(&self, cx: &Cx, frame: &mut Frame) -> Result<()> {
+        let (left, top) = ((cx.size[0] as usize).saturating_sub(SPRITE) / 2, (cx.size[1] as usize).saturating_sub(SPRITE) / 2);
+        let (x0, width, cleared) = (frame.origin[0], frame.width, cx.bool("whole"));
+        for (y, row) in frame.rows_mut() {
+            if !cleared {
+                row.fill([0.0; 4]);
+            }
+            if !(top..top + SPRITE).contains(&y) {
+                continue;
+            }
+            let v = (y - top) as f32 / SPRITE as f32;
+            for x in left.max(x0)..(left + SPRITE).min(x0 + width) {
+                let u = (x - left) as f32 / SPRITE as f32;
+                row[x - x0] = [u, v, 1.0 - u * v, 1.0];
+            }
+        }
+        Ok(())
+    }
+}
+
 struct Plain;
 
 impl Effect for Plain {
@@ -1007,6 +1040,7 @@ fn make() -> Plugin {
         .effect(Halve)
         .effect(Streak)
         .effect(Plain)
+        .effect(Sprite)
         .effect(ReadInputs)
         .effect(SceneCamera)
         .effect(Placed)
