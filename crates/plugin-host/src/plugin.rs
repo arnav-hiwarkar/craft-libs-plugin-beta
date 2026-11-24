@@ -46,6 +46,8 @@ pub enum PluginError {
     Failed(String),
     #[error("the plugin sent a reply this app does not understand: {0}")]
     Protocol(String),
+    #[error("the render was called off")]
+    Cancelled,
 }
 
 #[cfg_attr(target_family = "wasm", expect(dead_code, reason = "no engine reads pixels in the web build"))]
@@ -360,6 +362,9 @@ impl Plugin {
         };
         let mut spare: Vec<Vec<Pixel>> = Vec::new();
         for step in kernels::steps(plan, cx.size) {
+            if called_off(&make_host()) {
+                return Err(PluginError::Cancelled);
+            }
             let (out_image, inputs, end) = match &step {
                 Step::Single(index) => {
                     let pass = &plan.passes[*index];
@@ -488,8 +493,13 @@ impl Plugin {
     }
 
     fn exchange<R: DeserializeOwned>(&self, call: &Call, io: Io, host: &mut dyn Host) -> Result<R, PluginError> {
+        let renders = matches!(call, Call::Render { .. } | Call::Pass { .. });
+        if renders && called_off(host) {
+            return Err(PluginError::Cancelled);
+        }
         let seen = self.engine.journal().latest();
         let answered = self.answer(call, io, host).map_err(|error| match error {
+            _ if renders && called_off(host) => PluginError::Cancelled,
             PluginError::Trap(_) => self
                 .engine
                 .journal()
@@ -500,7 +510,9 @@ impl Plugin {
                 .map_or(error, |line| PluginError::Trap(line.message)),
             other => other,
         });
-        if let Err(error) = &answered {
+        if let Err(error) = &answered
+            && !matches!(error, PluginError::Cancelled)
+        {
             self.engine.journal().push(LogLevel::Error, format!("{} failed: {error}", what(call)));
         }
         answered
@@ -508,7 +520,8 @@ impl Plugin {
 
     fn answer<R: DeserializeOwned>(&self, call: &Call, io: Io, host: &mut dyn Host) -> Result<R, PluginError> {
         let request = serde_json::to_vec(call).map_err(|e| PluginError::Protocol(e.to_string()))?;
-        let reply = self.engine.call(&request, io, host, origin(call), self.budget(call))?;
+        let cancel = if matches!(call, Call::Render { .. } | Call::Pass { .. }) { host.cancel() } else { None };
+        let reply = self.engine.call(&request, io, host, origin(call), self.budget(call), cancel)?;
         let outcome: Outcome<R> = serde_json::from_slice(&reply).map_err(|e| PluginError::Protocol(e.to_string()))?;
         Result::from(outcome).map_err(PluginError::Failed)
     }
@@ -518,6 +531,10 @@ impl Drop for Plugin {
     fn drop(&mut self) {
         self.engine.cancel_all();
     }
+}
+
+fn called_off(host: &dyn Host) -> bool {
+    host.cancel().is_some_and(|cancel| cancel.load(std::sync::atomic::Ordering::Relaxed))
 }
 
 pub(crate) fn drawn_in(reply: Option<Rendered>, band: Rect) -> Rect {

@@ -1,12 +1,13 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::OnceLock;
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
 use craft_plugin::{
-    BlendMode, Call, FrameDesc, Layout, MaskPath, ParamsAt, Permission, Pixel, Plan, PlanImage, PlanPass, RenderCx, Taps, TaskState, TaskStatus,
-    UiEvent, UiEventKind, UiInput, Widget, native_target,
+    BlendMode, Call, FrameDesc, Layout, LogLevel, MaskPath, ParamsAt, Permission, Pixel, Plan, PlanImage, PlanPass, RenderCx, Taps, TaskState,
+    TaskStatus, UiEvent, UiEventKind, UiInput, Widget, native_target,
 };
 use craft_plugin_host::testing::probe_dir;
 use craft_plugin_host::{Access, Bundle, Host, Limits, Pixels, Plugin, PluginError, Rect, Refusal, Registry, Retained};
@@ -605,6 +606,73 @@ fn a_sandboxed_plugin_that_never_returns_is_stopped_and_the_next_call_still_work
     cx.params.insert("amount".into(), craft_plugin::Value::Number(1.0));
     loaded.plugin.render("invert", &cx, &Layout::whole_frame(), None, &mut pixels, Recorder::default).unwrap();
     assert_eq!(pixels[0], [0.75, 0.75, 0.75, 1.0]);
+}
+
+struct CalledOff(Arc<AtomicBool>);
+
+impl Host for CalledOff {
+    fn cancel(&self) -> Option<Arc<AtomicBool>> {
+        Some(self.0.clone())
+    }
+}
+
+#[test]
+fn a_sandboxed_render_called_off_stops_at_the_next_tick_without_an_error_and_the_next_render_works() {
+    let (dir, bundle) = bundle(Kind::Wasm, &[]);
+    let data = tempfile::tempdir().unwrap();
+    let limits = Limits { interactive: Duration::from_millis(400), work: Duration::from_secs(20) };
+    let loaded =
+        Loaded { plugin: Plugin::load(&bundle, bundle.manifest.permissions.clone(), data.path().join("data"), limits).unwrap(), _dir: dir, data };
+    let cancel = Arc::new(AtomicBool::new(false));
+    let mut pixels: Vec<Pixel> = vec![[0.0; 4]; 4];
+    let started = Instant::now();
+    let stopped = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            std::thread::sleep(Duration::from_millis(100));
+            cancel.store(true, Ordering::Relaxed);
+        });
+        loaded.plugin.render("spin", &cx(2, 2), &Layout::whole_frame(), None, &mut pixels, || CalledOff(cancel.clone())).unwrap_err()
+    });
+    let took = started.elapsed();
+    assert!(matches!(stopped, PluginError::Cancelled), "{stopped:?}");
+    assert!(took < Duration::from_secs(5), "the call-off took {took:?}; the time limit is 20 s");
+    assert_eq!(loaded.plugin.logs(0).iter().filter(|line| line.level == LogLevel::Error).count(), 0);
+    let mut pixels: Vec<Pixel> = vec![[0.25, 0.25, 0.25, 1.0]];
+    let mut cx = cx(1, 1);
+    cx.params.insert("amount".into(), craft_plugin::Value::Number(1.0));
+    loaded.plugin.render("invert", &cx, &Layout::whole_frame(), None, &mut pixels, || CalledOff(Arc::default())).unwrap();
+    assert_eq!(pixels[0], [0.75, 0.75, 0.75, 1.0]);
+}
+
+#[test]
+fn a_render_called_off_stops_at_the_next_pass_and_keeps_its_input() {
+    let loaded = load(Kind::Native, &[]);
+    let cancel = Arc::new(AtomicBool::new(false));
+    struct CallsOffWhenDone(Arc<AtomicBool>, bool);
+    impl Host for CallsOffWhenDone {
+        fn cancel(&self) -> Option<Arc<AtomicBool>> {
+            Some(self.0.clone())
+        }
+    }
+    impl Drop for CallsOffWhenDone {
+        fn drop(&mut self) {
+            if self.1 {
+                self.0.store(true, Ordering::Relaxed);
+            }
+        }
+    }
+    let made = AtomicUsize::new(0);
+    let host = || CallsOffWhenDone(cancel.clone(), made.fetch_add(1, Ordering::Relaxed) == 1);
+    let mut pixels = ramp();
+    let stopped =
+        loaded.plugin.run_passes("passes", &cx(PASS_FRAME[0], PASS_FRAME[1]), &halve_and_restore([None, None]), &mut pixels, host).unwrap_err();
+    assert!(matches!(stopped, PluginError::Cancelled), "{stopped:?}");
+    assert_eq!(made.load(Ordering::Relaxed), 3, "the first pass ran; the second never started");
+    assert!(pixels == ramp(), "a render called off keeps its input");
+    let mut pixels: Vec<Pixel> = vec![[0.25, 0.25, 0.25, 1.0]];
+    let stopped = loaded.plugin.render("invert", &cx(1, 1), &Layout::whole_frame(), None, &mut pixels, || CalledOff(cancel.clone())).unwrap_err();
+    assert!(matches!(stopped, PluginError::Cancelled), "{stopped:?}");
+    assert_eq!(pixels[0], [0.25, 0.25, 0.25, 1.0]);
 }
 
 #[test]
