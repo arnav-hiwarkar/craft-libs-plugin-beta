@@ -392,6 +392,10 @@ pub struct TestPlugin {
     data: tempfile::TempDir,
 }
 
+pub fn probe_dir() -> &'static Path {
+    Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/probe"))
+}
+
 fn manifest_dir() -> Result<PathBuf, String> {
     std::env::var_os("CARGO_MANIFEST_DIR").map(PathBuf::from).ok_or_else(|| "CARGO_MANIFEST_DIR is not set; run the test with cargo test".into())
 }

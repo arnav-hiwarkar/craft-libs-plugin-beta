@@ -8,15 +8,12 @@ use craft_plugin::{
     BlendMode, Call, FrameDesc, Layout, MaskPath, ParamsAt, Permission, Pixel, Plan, PlanImage, PlanPass, RenderCx, Taps, TaskState, TaskStatus,
     UiEvent, UiEventKind, UiInput, Widget, native_target,
 };
+use craft_plugin_host::testing::probe_dir;
 use craft_plugin_host::{Access, Bundle, Host, Limits, Pixels, Plugin, PluginError, Rect, Registry, Retained};
 use serde_json::{Value, json};
 
 mod package;
 mod testing;
-
-fn probe_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/probe")
-}
 
 fn build(extra: &[&str]) {
     let status = Command::new(env!("CARGO"))
