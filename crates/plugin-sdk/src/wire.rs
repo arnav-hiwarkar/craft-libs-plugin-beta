@@ -1059,6 +1059,10 @@ pub struct FrameRequest {
     pub layer: Option<String>,
     pub time: f64,
     pub scale: f64,
+    #[serde(default)]
+    pub ids: bool,
+    #[serde(default)]
+    pub source: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]

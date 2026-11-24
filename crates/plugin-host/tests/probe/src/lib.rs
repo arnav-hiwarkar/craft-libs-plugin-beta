@@ -1096,7 +1096,7 @@ fn wait_while_held() {
 fn relayed() -> Result<String> {
     let request: serde_json::Value = serde_json::from_slice(&host::read_file(Root::Bundle, "relay.json")?)?;
     if request["frame"].is_object() {
-        let image = host::frame(craft_plugin::FrameRequest { comp: None, layer: None, time: 0.0, scale: 1.0 })?;
+        let image = host::frame(craft_plugin::FrameRequest { time: 0.0, scale: 1.0, ..Default::default() })?;
         return Ok(format!("{}x{}", image.width, image.height));
     }
     match request["task"].as_str() {
@@ -1313,10 +1313,12 @@ fn make() -> Plugin {
             let args = task.args();
             let layer = args["layer"].as_str().map(String::from);
             let request = craft_plugin::FrameRequest {
-                comp: None,
+                comp: args["comp"].as_str().map(String::from),
                 layer,
                 time: args["time"].as_f64().unwrap_or(0.0),
                 scale: args["scale"].as_f64().unwrap_or(1.0),
+                ids: args["ids"].as_bool().unwrap_or(false),
+                source: args["source"].as_bool().unwrap_or(false),
             };
             let image = host::frame(request)?;
             let center = image.at(image.width as isize / 2, image.height as isize / 2);

@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use craft_plugin::{
-    AppEvent, Call, EffectSpec, FrameRequest, Layout, MaskPath, Overlay, PanelReply, ParamKind, ParamsAt, Pixel, Place, Plan, PlanPass, Rect, RenderCx,
-    Scene, TaskStatus, ToolEvent, ToolEventKind, UiEvent, UiEventKind, UiInput, Value, Widget,
+    AppEvent, Call, EffectSpec, FrameRequest, Layout, MaskPath, Overlay, PanelReply, ParamKind, ParamsAt, Pixel, Place, Plan, PlanPass, Rect,
+    RenderCx, Scene, TaskStatus, ToolEvent, ToolEventKind, UiEvent, UiEventKind, UiInput, Value, Widget,
 };
 pub use serde_json::json;
 
@@ -303,8 +303,8 @@ pub fn default_value(kind: &ParamKind, layer_size: [f64; 2]) -> Option<Value> {
     })
 }
 
-type Reply = Arc<dyn Fn(&serde_json::Value) -> serde_json::Value + Send + Sync>;
-type Frames = Arc<dyn Fn(&FrameRequest) -> Picture + Send + Sync>;
+type Reply = Arc<dyn Fn(&serde_json::Value) -> Result<serde_json::Value, String> + Send + Sync>;
+type Frames = Arc<dyn Fn(&FrameRequest) -> Result<Picture, String> + Send + Sync>;
 
 #[derive(Default)]
 struct Recorder {
@@ -313,7 +313,7 @@ struct Recorder {
     notes: Vec<String>,
     clipboard: String,
     frames: Option<Frames>,
-    data: Vec<(Place, String, Vec<u8>)>,
+    data: Vec<(Place, crate::data::Data)>,
 }
 
 fn own(place: Place) -> Place {
@@ -351,7 +351,7 @@ impl Host for TestHost<'_> {
             recorder.commands.push((id.to_string(), params.clone()));
             recorder.answers.get(id).cloned()
         };
-        Ok(reply.map_or(serde_json::Value::Null, |reply| reply(&params)))
+        reply.map_or(Ok(serde_json::Value::Null), |reply| reply(&params))
     }
 
     fn notify(&mut self, message: &str) {
@@ -373,9 +373,10 @@ impl Host for TestHost<'_> {
     }
 
     fn frame(&mut self, request: &FrameRequest) -> Result<Pixels, String> {
+        crate::check_frame(request)?;
         let frames = self.recorder.lock().map_err(|_| "the test host panicked earlier")?.frames.clone();
         if let Some(frames) = frames {
-            return Ok(frames(request).pixels());
+            return frames(request).map(|picture| picture.pixels());
         }
         let scale = request.scale.clamp(1.0 / 64.0, 1.0);
         let [width, height] = [320.0, 180.0].map(|side: f64| (side * scale).round().max(1.0) as u32);
@@ -404,14 +405,18 @@ impl Host for TestHost<'_> {
 
     fn data(&mut self, _plugin: &str, place: Place, key: &str) -> Result<Option<Vec<u8>>, String> {
         let recorder = self.recorder.lock().map_err(|_| "the test host panicked earlier")?;
-        Ok(recorder.data.iter().find(|(at, name, _)| *at == own(place) && name == key).map(|(_, _, value)| value.clone()))
+        Ok(recorder.data.iter().find(|(at, _)| *at == own(place)).and_then(|(_, keys)| keys.get(key).cloned()))
     }
 
     fn set_data(&mut self, _plugin: &str, place: Place, key: &str, value: Option<Vec<u8>>) -> Result<(), String> {
         let mut recorder = self.recorder.lock().map_err(|_| "the test host panicked earlier")?;
-        recorder.data.retain(|(at, name, _)| !(*at == own(place) && name == key));
-        recorder.data.extend(value.map(|value| (own(place), key.to_string(), value)));
-        Ok(())
+        let place = own(place);
+        let elsewhere = recorder.data.iter().filter(|(at, _)| *at != place).map(|(_, keys)| crate::data::size(keys)).sum();
+        if !recorder.data.iter().any(|(at, _)| *at == place) {
+            recorder.data.push((place, crate::data::Data::new()));
+        }
+        let keys = recorder.data.iter_mut().find(|(at, _)| *at == place).map(|(_, keys)| keys).ok_or("the test host lost a place")?;
+        crate::data::write(keys, elsewhere, key, value)
     }
 }
 
@@ -480,16 +485,16 @@ impl TestPlugin {
     }
 
     pub fn answer(&self, command: &str, reply: serde_json::Value) {
-        self.reply(command, move |_| reply.clone());
+        self.reply(command, move |_| Ok(reply.clone()));
     }
 
-    pub fn reply(&self, command: &str, reply: impl Fn(&serde_json::Value) -> serde_json::Value + Send + Sync + 'static) {
+    pub fn reply(&self, command: &str, reply: impl Fn(&serde_json::Value) -> Result<serde_json::Value, String> + Send + Sync + 'static) {
         if let Ok(mut recorder) = self.recorder.lock() {
             recorder.answers.insert(command.to_string(), Arc::new(reply));
         }
     }
 
-    pub fn frames(&self, frames: impl Fn(&FrameRequest) -> Picture + Send + Sync + 'static) {
+    pub fn frames(&self, frames: impl Fn(&FrameRequest) -> Result<Picture, String> + Send + Sync + 'static) {
         if let Ok(mut recorder) = self.recorder.lock() {
             recorder.frames = Some(Arc::new(frames));
         }
@@ -499,8 +504,8 @@ impl TestPlugin {
         TestHost::bare(&self.recorder).data("", place, key).ok().flatten()
     }
 
-    pub fn set_data(&self, place: Place, key: &str, value: &[u8]) {
-        let _ = TestHost::bare(&self.recorder).set_data("", place, key, Some(value.to_vec()));
+    pub fn set_data(&self, place: Place, key: &str, value: &[u8]) -> Result<(), String> {
+        TestHost::bare(&self.recorder).set_data("", place, key, Some(value.to_vec()))
     }
 
     pub fn commands(&self) -> Vec<(String, serde_json::Value)> {
