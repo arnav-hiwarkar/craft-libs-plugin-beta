@@ -58,6 +58,19 @@ pub(crate) fn resample_scale(scale: Option<[f32; 2]>, src: [u32; 2], out: [u32; 
     scale.unwrap_or([0, 1].map(|axis| src[axis] as f32 / out[axis].max(1) as f32))
 }
 
+pub(crate) fn directional_steps(angle: f32, length: f32) -> (u32, [f32; 2]) {
+    let samples = length.ceil() as u32 + 1;
+    let spacing = if samples > 1 { length / (samples - 1) as f32 } else { 0.0 };
+    let radians = angle.to_radians();
+    (samples, [radians.cos() * spacing, radians.sin() * spacing])
+}
+
+pub(crate) fn bilateral_space(radius: u32) -> Vec<f32> {
+    let sigma = (radius as f32 / 2.0).max(0.5);
+    let reach = radius as i32;
+    (-reach..=reach).map(|i| (-((i * i) as f32) / (2.0 * sigma * sigma)).exp()).collect()
+}
+
 pub(crate) fn run(kernel: &HostKernel, src: Image, aux: Option<Image>, size: [u32; 2], out: &mut [Pixel]) {
     let top = aux.unwrap_or(Image { size, pixels: &[] });
     let width = size[0] as usize;
@@ -73,7 +86,39 @@ pub(crate) fn run(kernel: &HostKernel, src: Image, aux: Option<Image>, size: [u3
             let d = top.at(x as isize, y as isize);
             bilinear(src, x as f32 + amount[0] * d[0], y as f32 + amount[1] * d[1])
         }),
+        HostKernel::Dilate { radius } => morphology(src, *radius, f32::max, width, out),
+        HostKernel::Erode { radius } => morphology(src, *radius, f32::min, width, out),
+        HostKernel::DirectionalBlur { angle, length } => {
+            let (samples, step) = directional_steps(*angle, *length);
+            let middle = (samples - 1) as f32 * 0.5;
+            each_pixel(src, out, width, |x, y, _| {
+                let mut sum = CLEAR;
+                for s in 0..samples {
+                    let t = s as f32 - middle;
+                    mul_add(&mut sum, &bilinear(src, x as f32 + step[0] * t, y as f32 + step[1] * t), 1.0);
+                }
+                sum.map(|v| v * (1.0 / samples as f32))
+            });
+        }
+        HostKernel::Bilateral { radius, tolerance } => {
+            let (space, range) = (bilateral_space(*radius), 1.0 / (2.0 * tolerance * tolerance));
+            let (reach, height) = (*radius as usize, src.size[1] as usize);
+            each_pixel(src, out, width, |x, y, centre| {
+                let (mut sum, mut total) = (CLEAR, 0.0);
+                for (from, wy) in (y as isize - reach as isize..).zip(&space).filter(|(from, _)| (0..height as isize).contains(from)) {
+                    let row = src.row(from as usize);
+                    for (p, wx) in (x as isize - reach as isize..).zip(&space).filter_map(|(at, w)| Some((row.get(usize::try_from(at).ok()?)?, w))) {
+                        let d = (0..3).map(|c| (p[c] - centre[c]) * (p[c] - centre[c])).sum::<f32>();
+                        let w = wx * wy * (-d * range).exp();
+                        mul_add(&mut sum, p, w);
+                        total += w;
+                    }
+                }
+                sum.map(|v| v / total)
+            });
+        }
         HostKernel::Blend { .. }
+        | HostKernel::Noise { .. }
         | HostKernel::Curves { .. }
         | HostKernel::Matrix { .. }
         | HostKernel::ToLinear
@@ -172,6 +217,38 @@ fn convolve_full(src: Image, side: usize, weights: &[f32], width: usize, out: &m
             }
         }
     });
+}
+
+fn morphology(src: Image, radius: [u32; 2], pick: fn(f32, f32) -> f32, width: usize, out: &mut [Pixel]) {
+    let [reach_x, reach_y] = radius.map(|r| r as usize);
+    let height = out.len() / width.max(1);
+    let fold = |into: &mut Pixel, p: &Pixel| *into = [0, 1, 2, 3].map(|c| pick(into[c], p[c]));
+    let mut across = vec![CLEAR; out.len()];
+    each_row(
+        &mut across,
+        width,
+        || (),
+        |_, y, row| {
+            let held = src.row(y);
+            for (x, o) in row.iter_mut().enumerate() {
+                let window = &held[x.saturating_sub(reach_x)..(x + reach_x + 1).min(width)];
+                *o = window[0];
+                window[1..].iter().for_each(|p| fold(o, p));
+            }
+        },
+    );
+    each_row(
+        out,
+        width,
+        || (),
+        |_, y, row| {
+            let (first, end) = (y.saturating_sub(reach_y), (y + reach_y + 1).min(height));
+            row.copy_from_slice(&across[first * width..(first + 1) * width]);
+            for from in first + 1..end {
+                row.iter_mut().zip(&across[from * width..(from + 1) * width]).for_each(|(o, p)| fold(o, p));
+            }
+        },
+    );
 }
 
 pub(crate) fn filter_weight(filter: Filter, d: f32) -> f32 {

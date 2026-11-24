@@ -375,6 +375,11 @@ impl Effect for HostKernels {
             "huge to linear",
             "to linear, negatives linear",
             "to sRGB, negatives linear",
+            "dilate",
+            "erode",
+            "directional blur",
+            "bilateral",
+            "noise grain",
         ];
         let modes = ["over", "add", "subtract", "multiply", "screen", "overlay", "darken", "lighten", "difference", "screen hdr"];
         EffectSpec::new("host-kernels", "Host Kernels", "Probe")
@@ -438,6 +443,11 @@ impl Effect for HostKernels {
             23 => plan.pass(PlanPass::to_linear(source, output)),
             24 => plan.pass(PlanPass::transfer(source, output, Encoding::Linear, Negatives::Linear)),
             25 => plan.pass(PlanPass::transfer(source, output, Encoding::Srgb, Negatives::Linear)),
+            26 => plan.pass(PlanPass::dilate(source, output, [3, 1])),
+            27 => plan.pass(PlanPass::erode(source, output, [1, 3])),
+            28 => plan.pass(PlanPass::directional_blur(source, output, 30.0, 9.0)),
+            29 => plan.pass(PlanPass::bilateral(source, output, 3, 0.15)),
+            30 => plan.pass(PlanPass::noise(soft, 4.0, 3, 7, [-3, 9])).pass(PlanPass::blend_images(source, soft, output, BlendMode::Multiply, 0.6)),
             _ => {
                 let quarter = frame.map(|side| side.div_ceil(4));
                 let (small, blurred) = (plan.scratch(quarter), plan.scratch(quarter));

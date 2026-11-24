@@ -892,6 +892,26 @@ impl PlanPass {
         PlanPass::host(HostKernel::LightAlpha, src, out)
     }
 
+    pub fn dilate(src: PlanImage, out: PlanImage, radius: [u32; 2]) -> Self {
+        PlanPass::host(HostKernel::Dilate { radius }, src, out)
+    }
+
+    pub fn erode(src: PlanImage, out: PlanImage, radius: [u32; 2]) -> Self {
+        PlanPass::host(HostKernel::Erode { radius }, src, out)
+    }
+
+    pub fn directional_blur(src: PlanImage, out: PlanImage, angle: f32, length: f32) -> Self {
+        PlanPass::host(HostKernel::DirectionalBlur { angle, length }, src, out)
+    }
+
+    pub fn bilateral(src: PlanImage, out: PlanImage, radius: u32, tolerance: f32) -> Self {
+        PlanPass::host(HostKernel::Bilateral { radius, tolerance }, src, out)
+    }
+
+    pub fn noise(out: PlanImage, scale: f32, octaves: u32, seed: u32, origin: [i64; 2]) -> Self {
+        PlanPass::host(HostKernel::Noise { scale, octaves, seed, origin }, PlanImage::Source, out)
+    }
+
     pub fn draw(kernel: &str, out: PlanImage) -> Self {
         PlanPass { draw: Some(Draw::default()), ..PlanPass::new(kernel, PlanImage::Source, out) }
     }
