@@ -164,3 +164,13 @@ fn an_effect_at_state_version_1_moves_a_value_saved_under_its_old_name_and_leave
     assert_eq!(plugin.migrate("renamed", 1, saved.clone()).unwrap(), saved);
     assert_eq!(plugin.migrate("invert", 0, saved.clone()).unwrap(), saved);
 }
+
+#[test]
+fn a_generator_that_reports_a_drawn_rectangle_renders_as_a_whole_frame_with_the_rest_transparent() {
+    let (_bundle, plugin) = probe();
+    let picture = plugin.render("sprite").size(400, 300).set("drawn", true).run().unwrap();
+    assert_eq!((picture.width, picture.height), (400, 300));
+    assert_eq!(picture.at(0, 0), [0.0; 4]);
+    assert_eq!(picture.at(99, 150), [0.0; 4]);
+    assert_eq!(picture.at(100, 50), [0.0, 0.0, 1.0, 1.0]);
+}

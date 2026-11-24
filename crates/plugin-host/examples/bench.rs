@@ -111,7 +111,7 @@ fn render(plugin: &Plugin, effect: &str, size: [u32; 2], rounds: usize) -> ([f64
     let pixels = std::cell::RefCell::new(original.clone());
     let ms = median_ms(
         rounds,
-        || pixels.borrow_mut().copy_from_slice(&original),
+        || pixels.borrow_mut().clone_from(&original),
         || match layout.gpu.as_ref().filter(|plan| layout.cpu && plan.runs_on_cpu()) {
             Some(plan) => plugin.run_passes(effect, &cx, plan, &mut pixels.borrow_mut(), || NoHost).unwrap(),
             None => plugin.render(effect, &cx, &layout, None, &mut pixels.borrow_mut(), || NoHost).map(|_| ()).unwrap(),
@@ -134,6 +134,9 @@ fn main() {
             Subject { name: "Halo Flares", dir: plugins.join("halo"), library: "halo", effect: "flare" },
             Subject { name: "Retro CRT", dir: plugins.join("retro"), library: "retro", effect: "crt" },
             Subject { name: "Retro Neon", dir: plugins.join("retro"), library: "retro", effect: "neon" },
+            Subject { name: "Generate Ramp", dir: plugins.join("generate"), library: "generate", effect: "ramp" },
+            Subject { name: "Generate Field", dir: plugins.join("generate"), library: "generate", effect: "field" },
+            Subject { name: "Generate Dots", dir: plugins.join("generate"), library: "generate", effect: "dots" },
         ]),
         None => println!("the probe only: set CRAFT_PLUGINS to an app's reference plugin folder (EffectCraft's plugins/) to bench those too"),
     }
