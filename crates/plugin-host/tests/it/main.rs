@@ -1515,6 +1515,25 @@ fn a_generator_that_ignores_its_input_and_reports_what_it_drew_gives_the_same_pi
 }
 
 #[test]
+fn several_generator_plugins_rendering_alternately_share_at_most_two_buffers_and_draw_the_same_pixels() {
+    let (_, expected) = sprite(Kind::Native, false, true, [300, 260], None);
+    let others: Vec<_> = (0..4).map(|_| load(Kind::Native, &[])).collect();
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+    let mut cx = cx(300, 260);
+    cx.params.insert("drawn".into(), craft_plugin_host::Value::Bool(true));
+    for round in 0..3 {
+        for loaded in &others {
+            let layout =
+                loaded.plugin.call::<Layout>(&Call::Layout { effect: "sprite".into(), cx: cx.clone() }, None, &mut Recorder::default()).unwrap();
+            let mut pixels = vec![[0.5; 4]; 300 * 260];
+            pool.install(|| loaded.plugin.render("sprite", &cx, &layout, None, &mut pixels, Recorder::default)).unwrap();
+            assert!(pixels == expected, "round {round}");
+            assert!(craft_plugin_host::pooled_generator_buffers() <= 2);
+        }
+    }
+}
+
+#[test]
 fn a_generator_whose_last_band_fails_leaves_its_input_whole() {
     let pool = rayon::ThreadPoolBuilder::new().num_threads(4).build().unwrap();
     each_kind(|kind| {
