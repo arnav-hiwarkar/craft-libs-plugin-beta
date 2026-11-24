@@ -1566,6 +1566,49 @@ fn a_sandboxed_plugin_names_its_module_by_the_digest_of_its_compiled_cache_entry
     let compiled = wasm.data.path().join(".compiled");
     let mut entries: Vec<String> = std::fs::read_dir(&compiled).unwrap().map(|entry| entry.unwrap().file_name().into_string().unwrap()).collect();
     entries.sort();
-    assert_eq!(entries, vec![format!("{digest}.cwasm"), format!("{digest}.mac"), "key".to_string()]);
+    let kept = ["cwasm", "cwasm.mac", "described", "described.mac"].map(|extension| format!("{digest}.{extension}"));
+    assert_eq!(entries, [kept.as_slice(), &["key".to_string()]].concat());
     assert_eq!(load(Kind::Native, &[]).plugin.module_digest(), None);
+}
+
+#[test]
+fn a_second_start_registers_from_the_kept_description_and_the_module_starts_on_first_use() {
+    let (dir, bundle) = bundle(Kind::Wasm, &[]);
+    let data = tempfile::tempdir().unwrap();
+    let start = |bundle: &Bundle| Plugin::load(bundle, BTreeSet::new(), data.path().join("data"), Limits::default()).unwrap();
+    let first = start(&bundle);
+    assert!(first.started(), "the first start describes the plugin by running it");
+    let warm = start(&bundle);
+    assert!(!warm.started(), "a warm start ran the module");
+    assert_eq!(warm.contributions(), first.contributions());
+    let mut cx = cx(2, 1);
+    cx.params.insert("amount".into(), craft_plugin::Value::Number(1.0));
+    let mut pixels: Vec<Pixel> = vec![[0.25, 0.5, 1.0, 1.0], [0.0, 0.0, 0.0, 0.5]];
+    warm.render("invert", &cx, &Layout::neighbourhood(0), None, &mut pixels, Recorder::default).unwrap();
+    assert_eq!(pixels, [[0.75, 0.5, 0.0, 1.0], [1.0, 1.0, 1.0, 0.5]]);
+    assert!(warm.started());
+
+    std::fs::write(dir.path().join("notes.txt"), "changed").unwrap();
+    let changed = start(&bundle);
+    assert!(changed.started(), "a changed bundle was not described again");
+    assert_ne!(changed.module_digest(), first.module_digest());
+}
+
+#[test]
+fn a_module_whose_files_changed_after_its_start_refuses_to_run_instead_of_running_the_new_bytes() {
+    let (dir, bundle) = bundle(Kind::Wasm, &[]);
+    let data = tempfile::tempdir().unwrap();
+    let digest = bundle.digest().unwrap();
+    drop(Plugin::open(&bundle, &digest, BTreeSet::new(), data.path().join("data"), Limits::default()).unwrap());
+    for entry in std::fs::read_dir(data.path().join(".compiled")).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|extension| extension == "cwasm") {
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+    let warm = Plugin::open(&bundle, &digest, BTreeSet::new(), data.path().join("data"), Limits::default()).unwrap();
+    std::fs::write(dir.path().join("notes.txt"), "changed").unwrap();
+    let mut pixels: Vec<Pixel> = vec![[0.25, 0.5, 1.0, 1.0]];
+    let refused = warm.render("invert", &cx(1, 1), &Layout::neighbourhood(0), None, &mut pixels, Recorder::default).unwrap_err();
+    assert_eq!(refused, PluginError::Load("the plugin's files changed since it was started; turn it off and on again".into()));
 }

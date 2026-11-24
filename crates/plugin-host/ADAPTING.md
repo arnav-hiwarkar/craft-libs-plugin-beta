@@ -46,7 +46,10 @@ SDK (EffectCraft keeps `crates/plugin/tests/it/legacy/legacy.wasm`).
    (changed files, wider permissions, quarantined); show it. Call `Registry::recover` once at start, then
    `mark_running` with the set of unsandboxed plugins before each one starts and after one stops, and
    `end_run` on a clean quit, so a crash turns those plugins off next time. Offer a safe-mode flag that
-   starts none.
+   starts none. Start an approved plugin with `Plugin::open(bundle, digest, ..)`, passing the digest from
+   `Registry::grants_and_digest`, so each start reads and hashes the bundle once. A sandboxed plugin that
+   was described before under the same digest registers from its kept description (`.data/.compiled/
+   <name>.described`) and loads its module on first use; `Plugin::started` tells whether it has.
 2. **Commands and the gate.** Implement `Host::access` and `Host::command` over the app's command system.
    Allow an explicit list of document command families (an allow list, never a deny list), map undoable
    commands to `document.write`, require both file permissions for any command that names a file, and run

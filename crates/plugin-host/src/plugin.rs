@@ -136,7 +136,12 @@ impl Host for NoHost {}
 
 impl Plugin {
     pub fn load(bundle: &Bundle, grants: BTreeSet<Permission>, data_dir: PathBuf, limits: Limits) -> Result<Plugin, PluginError> {
-        let engine = Engine::open(bundle, grants, data_dir)?;
+        let digest = bundle.digest().map_err(|e| PluginError::Load(e.to_string()))?;
+        Plugin::open(bundle, &digest, grants, data_dir, limits)
+    }
+
+    pub fn open(bundle: &Bundle, digest: &str, grants: BTreeSet<Permission>, data_dir: PathBuf, limits: Limits) -> Result<Plugin, PluginError> {
+        let engine = Engine::open(bundle, digest, grants, data_dir)?;
         Plugin::described(bundle.manifest.clone(), engine, limits)
     }
 
@@ -154,8 +159,20 @@ impl Plugin {
 
     fn described(manifest: Manifest, engine: Arc<Engine>, limits: Limits) -> Result<Plugin, PluginError> {
         let mut plugin = Plugin { manifest, engine, limits, contributions: Contributions::default(), warned_gradients: Mutex::default() };
-        plugin.contributions = plugin.call(&Call::Describe, None, &mut NoHost)?;
-        plugin.contributions.check().map_err(PluginError::Load)?;
+        let kept = plugin.engine.described().and_then(|reply| parse::<Contributions>(&reply).ok().filter(|found| found.check().is_ok()));
+        plugin.contributions = match kept {
+            Some(contributions) => contributions,
+            None => {
+                let seen = plugin.engine.journal().latest();
+                let reply = plugin.answer(&Call::Describe, Io::None, &mut NoHost);
+                let contributions: Contributions = plugin.logged(&Call::Describe, seen, reply.as_deref().map_err(Clone::clone).and_then(parse))?;
+                contributions.check().map_err(PluginError::Load)?;
+                if let Ok(reply) = reply {
+                    plugin.engine.keep_described(&reply);
+                }
+                contributions
+            }
+        };
         plugin.engine.know_tasks(plugin.contributions.tasks.iter().map(|task| task.id.clone()).collect());
         Ok(plugin)
     }
@@ -166,6 +183,10 @@ impl Plugin {
 
     pub fn module_digest(&self) -> Option<&str> {
         self.engine.module_digest()
+    }
+
+    pub fn started(&self) -> bool {
+        self.engine.started()
     }
 
     pub fn cached(&self, key: &str) -> Option<std::sync::Arc<[u8]>> {
@@ -547,8 +568,13 @@ impl Plugin {
             return Err(PluginError::Cancelled);
         }
         let seen = self.engine.journal().latest();
-        let answered = self.answer(call, io, host).map_err(|error| match error {
-            _ if renders && called_off(host) => PluginError::Cancelled,
+        let answered = self.answer(call, io, host).and_then(|reply| parse(&reply));
+        let answered = answered.map_err(|error| if renders && called_off(host) { PluginError::Cancelled } else { error });
+        self.logged(call, seen, answered)
+    }
+
+    fn logged<R>(&self, call: &Call, seen: u64, answered: Result<R, PluginError>) -> Result<R, PluginError> {
+        let answered = answered.map_err(|error| match error {
             PluginError::Trap(_) => self
                 .engine
                 .journal()
@@ -567,13 +593,16 @@ impl Plugin {
         answered
     }
 
-    fn answer<R: DeserializeOwned>(&self, call: &Call, io: Io, host: &mut dyn Host) -> Result<R, PluginError> {
+    fn answer(&self, call: &Call, io: Io, host: &mut dyn Host) -> Result<Vec<u8>, PluginError> {
         let request = serde_json::to_vec(call).map_err(|e| PluginError::Protocol(e.to_string()))?;
         let cancel = if matches!(call, Call::Render { .. } | Call::Pass { .. }) { host.cancel() } else { None };
-        let reply = self.engine.call(&request, io, host, origin(call), self.budget(call), cancel)?;
-        let outcome: Outcome<R> = serde_json::from_slice(&reply).map_err(|e| PluginError::Protocol(e.to_string()))?;
-        Result::from(outcome).map_err(PluginError::Failed)
+        self.engine.call(&request, io, host, origin(call), self.budget(call), cancel)
     }
+}
+
+fn parse<R: DeserializeOwned>(reply: &[u8]) -> Result<R, PluginError> {
+    let outcome: Outcome<R> = serde_json::from_slice(reply).map_err(|e| PluginError::Protocol(e.to_string()))?;
+    Result::from(outcome).map_err(PluginError::Failed)
 }
 
 impl Drop for Plugin {

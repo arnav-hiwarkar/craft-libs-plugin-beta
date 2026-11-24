@@ -90,19 +90,26 @@ impl Bundle {
     }
 
     pub fn digest(&self) -> Result<String, BundleError> {
+        self.digest_keeping(None).map(|(digest, _)| digest)
+    }
+
+    pub(crate) fn digest_keeping(&self, kept: Option<&Path>) -> Result<(String, Option<Vec<u8>>), BundleError> {
         let mut files = Vec::new();
         list_files(&self.dir, "", &mut files).map_err(|e| BundleError::Io(self.dir.clone(), e))?;
         files.sort();
-        let mut hasher = Sha256::new();
+        let (mut hasher, mut found) = (Sha256::new(), None);
         for relative in files {
             let path = self.dir.join(&relative);
-            let bytes = std::fs::read(&path).map_err(|e| BundleError::Io(path, e))?;
+            let bytes = std::fs::read(&path).map_err(|e| BundleError::Io(path.clone(), e))?;
             hasher.update(relative.as_bytes());
             hasher.update([0]);
             hasher.update((bytes.len() as u64).to_le_bytes());
             hasher.update(&bytes);
+            if kept == Some(path.as_path()) {
+                found = Some(bytes);
+            }
         }
-        Ok(hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect())
+        Ok((hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect(), found))
     }
 
     pub fn entry_path(&self) -> Result<PathBuf, BundleError> {
@@ -163,6 +170,10 @@ impl Registry {
     }
 
     pub fn grants(&self, bundle: &Bundle) -> Result<BTreeSet<Permission>, Refusal> {
+        self.grants_and_digest(bundle).map(|(grants, _)| grants)
+    }
+
+    pub fn grants_and_digest(&self, bundle: &Bundle) -> Result<(BTreeSet<Permission>, String), Refusal> {
         let manifest = &bundle.manifest;
         let consent = self.consents.get(&manifest.id).ok_or(Refusal::NotApproved)?;
         if let Some(reason) = &consent.quarantined {
@@ -180,7 +191,7 @@ impl Registry {
         let approved = consent.approved.as_ref().ok_or_else(|| Refusal::Changed("approved before files were recorded".into()))?;
         let found = bundle.digest().map_err(|e| Refusal::Changed(e.to_string()))?;
         match approved.digest == found {
-            true => Ok(manifest.permissions.clone()),
+            true => Ok((manifest.permissions.clone(), found)),
             false => Err(Refusal::Changed(format!("approved {} {:.12}, found {} {found:.12}", approved.version, approved.digest, manifest.version))),
         }
     }

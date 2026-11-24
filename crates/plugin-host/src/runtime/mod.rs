@@ -7,7 +7,7 @@ mod wasm;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use craft_plugin::{Call, Outcome, Permission, RunMode, TaskState};
@@ -30,8 +30,34 @@ fn app_folders(data_dir: &Path) -> Vec<PathBuf> {
     std::iter::once(shared).chain(crate::registry::install_root(shared)).map(Path::to_path_buf).collect()
 }
 
+struct LazyModule {
+    bundle: Bundle,
+    digest: String,
+    name: String,
+    cache: PathBuf,
+    module: OnceLock<Result<WasmModule, PluginError>>,
+}
+
+impl LazyModule {
+    fn get(&self) -> Result<&WasmModule, PluginError> {
+        let read = || {
+            let entry = self.bundle.entry_path().map_err(|e| PluginError::Load(e.to_string()))?;
+            match self.bundle.digest_keeping(Some(&entry)).map_err(|e| PluginError::Load(e.to_string()))? {
+                (digest, Some(bytes)) if digest == self.digest => Ok(bytes),
+                (_, Some(_)) => Err(PluginError::Load("the plugin's files changed since it was started; turn it off and on again".into())),
+                (_, None) => Err(PluginError::Load(format!("{}: the entry file is missing", entry.display()))),
+            }
+        };
+        self.module.get_or_init(|| WasmModule::load(&self.name, &self.cache, read)).as_ref().map_err(Clone::clone)
+    }
+
+    fn instantiate(&self) -> Result<WasmGuest, PluginError> {
+        self.get()?.instantiate()
+    }
+}
+
 enum Kind {
-    Wasm { module: WasmModule, main: Mutex<Option<Box<WasmGuest>>>, pool: Mutex<Vec<WasmGuest>> },
+    Wasm { module: Box<LazyModule>, main: Mutex<Option<Box<WasmGuest>>>, pool: Mutex<Vec<WasmGuest>> },
     Native(NativeGuest),
 }
 
@@ -41,12 +67,17 @@ pub(crate) struct Engine {
 }
 
 impl Engine {
-    pub fn open(bundle: &Bundle, grants: BTreeSet<Permission>, data_dir: PathBuf) -> Result<Arc<Engine>, PluginError> {
+    pub fn open(bundle: &Bundle, digest: &str, grants: BTreeSet<Permission>, data_dir: PathBuf) -> Result<Arc<Engine>, PluginError> {
         let entry = bundle.entry_path().map_err(|e| PluginError::Load(e.to_string()))?;
         let kind = if bundle.mode == RunMode::Sandboxed {
-            let bytes = std::fs::read(&entry).map_err(|e| PluginError::Load(format!("{}: {e}", entry.display())))?;
-            let cache = data_dir.parent().unwrap_or(&data_dir).join(COMPILED_DIR);
-            Kind::Wasm { module: WasmModule::compile(&bytes, &cache)?, main: Mutex::new(None), pool: Mutex::new(Vec::new()) }
+            let module = LazyModule {
+                bundle: bundle.clone(),
+                digest: digest.to_string(),
+                name: wasm::module_name(digest)?,
+                cache: data_dir.parent().unwrap_or(&data_dir).join(COMPILED_DIR),
+                module: OnceLock::new(),
+            };
+            Kind::Wasm { module: Box::new(module), main: Mutex::new(None), pool: Mutex::new(Vec::new()) }
         } else {
             Kind::Native(NativeGuest::load(&entry)?)
         };
@@ -79,8 +110,28 @@ impl Engine {
 
     pub fn module_digest(&self) -> Option<&str> {
         match &self.kind {
-            Kind::Wasm { module, .. } => Some(module.digest()),
+            Kind::Wasm { module, .. } => Some(&module.name),
             Kind::Native(_) => None,
+        }
+    }
+
+    pub fn started(&self) -> bool {
+        match &self.kind {
+            Kind::Wasm { module, .. } => module.module.get().is_some(),
+            Kind::Native(_) => true,
+        }
+    }
+
+    pub fn described(&self) -> Option<Vec<u8>> {
+        match &self.kind {
+            Kind::Wasm { module, .. } => wasm::described(&module.cache, &module.name),
+            Kind::Native(_) => None,
+        }
+    }
+
+    pub fn keep_described(&self, reply: &[u8]) {
+        if let Kind::Wasm { module, .. } = &self.kind {
+            wasm::keep_described(&module.cache, &module.name, reply);
         }
     }
 
