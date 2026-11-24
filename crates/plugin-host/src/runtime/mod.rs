@@ -41,12 +41,7 @@ struct LazyModule {
 
 impl LazyModule {
     fn bytes(&self) -> Result<Vec<u8>, PluginError> {
-        let entry = self.bundle.entry_path().map_err(|e| PluginError::Load(e.to_string()))?;
-        match self.bundle.digest_keeping(Some(&entry)).map_err(|e| PluginError::Load(e.to_string()))? {
-            (digest, Some(bytes)) if digest == self.digest => Ok(bytes),
-            (_, Some(_)) => Err(PluginError::Load("the plugin's files changed since it was started; turn it off and on again".into())),
-            (_, None) => Err(PluginError::Load(format!("{}: the entry file is missing", entry.display()))),
-        }
+        self.bundle.entry_if_unchanged(&self.digest).map_err(PluginError::Load)
     }
 
     fn get(&self) -> Result<&WasmModule, PluginError> {
@@ -133,8 +128,15 @@ impl Engine {
 
     pub fn started(&self) -> bool {
         match &self.kind {
-            Kind::Wasm { module, .. } => module.module.get().is_some(),
+            Kind::Wasm { module, .. } => matches!(module.module.get(), Some(Ok(_))),
             Kind::Native(_) => true,
+        }
+    }
+
+    pub fn failure(&self) -> Option<String> {
+        match &self.kind {
+            Kind::Wasm { module, .. } => module.module.get()?.as_ref().err().map(ToString::to_string),
+            Kind::Native(_) => None,
         }
     }
 

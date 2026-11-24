@@ -189,6 +189,10 @@ impl Plugin {
         self.engine.started()
     }
 
+    pub fn failure(&self) -> Option<String> {
+        self.engine.failure()
+    }
+
     pub fn cached(&self, key: &str) -> Option<std::sync::Arc<[u8]>> {
         self.engine.cached(key)
     }

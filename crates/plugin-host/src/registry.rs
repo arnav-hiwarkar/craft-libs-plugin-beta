@@ -90,26 +90,31 @@ impl Bundle {
     }
 
     pub fn digest(&self) -> Result<String, BundleError> {
-        self.digest_keeping(None).map(|(digest, _)| digest)
+        read_files(&self.dir, None).map(|(digest, _)| digest)
     }
 
-    pub(crate) fn digest_keeping(&self, kept: Option<&Path>) -> Result<(String, Option<Vec<u8>>), BundleError> {
-        let mut files = Vec::new();
-        list_files(&self.dir, "", &mut files).map_err(|e| BundleError::Io(self.dir.clone(), e))?;
-        files.sort();
-        let (mut hasher, mut found) = (Sha256::new(), None);
-        for relative in files {
-            let path = self.dir.join(&relative);
-            let bytes = std::fs::read(&path).map_err(|e| BundleError::Io(path.clone(), e))?;
-            hasher.update(relative.as_bytes());
-            hasher.update([0]);
-            hasher.update((bytes.len() as u64).to_le_bytes());
-            hasher.update(&bytes);
-            if kept == Some(path.as_path()) {
-                found = Some(bytes);
-            }
+    pub fn read(dir: &Path) -> Result<(Bundle, String), BundleError> {
+        let (digest, text) = read_files(dir, Some(MANIFEST_FILE))?;
+        let text = text.ok_or_else(|| BundleError::Io(dir.join(MANIFEST_FILE), std::io::ErrorKind::NotFound.into()))?;
+        let text =
+            String::from_utf8(text).map_err(|e| BundleError::Io(dir.join(MANIFEST_FILE), std::io::Error::new(std::io::ErrorKind::InvalidData, e)))?;
+        let manifest = Manifest::parse(&text)?;
+        let mode = manifest.mode(false);
+        Ok((Bundle { dir: dir.to_path_buf(), manifest, mode }, digest))
+    }
+
+    pub(crate) fn entry_if_unchanged(&self, digest: &str) -> Result<Vec<u8>, String> {
+        let entry = self.manifest.entry_file(self.mode).ok_or_else(|| BundleError::NoBuildForThisMachine(native_target()).to_string())?;
+        match read_files(&self.dir, Some(entry)).map_err(|e| e.to_string())? {
+            (found, Some(bytes)) if found == digest => Ok(bytes),
+            (_, Some(_)) => Err("the plugin's files changed since it was started; turn it off and on again".into()),
+            (_, None) => Err(format!("{}: the entry file is missing", self.dir.join(entry).display())),
         }
-        Ok((hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect(), found))
+    }
+
+    fn has_file(&self, relative: &str) -> bool {
+        let mut files = Vec::new();
+        list_files(&self.dir, "", &mut files).is_ok() && files.iter().any(|file| file == relative)
     }
 
     pub fn entry_path(&self) -> Result<PathBuf, BundleError> {
@@ -132,6 +137,12 @@ pub struct Consent {
 pub struct Approved {
     pub version: String,
     pub digest: String,
+}
+
+pub struct ApprovedBundle {
+    pub grants: BTreeSet<Permission>,
+    pub digest: String,
+    pub bundle: Bundle,
 }
 
 pub struct Registry {
@@ -170,18 +181,19 @@ impl Registry {
     }
 
     pub fn grants(&self, bundle: &Bundle) -> Result<BTreeSet<Permission>, Refusal> {
-        self.grants_and_digest(bundle).map(|(grants, _)| grants)
+        self.approved(bundle).map(|approved| approved.grants)
     }
 
-    pub fn grants_and_digest(&self, bundle: &Bundle) -> Result<(BTreeSet<Permission>, String), Refusal> {
-        let manifest = &bundle.manifest;
-        let consent = self.consents.get(&manifest.id).ok_or(Refusal::NotApproved)?;
+    pub fn approved(&self, bundle: &Bundle) -> Result<ApprovedBundle, Refusal> {
+        let consent = self.consents.get(&bundle.manifest.id).ok_or(Refusal::NotApproved)?;
         if let Some(reason) = &consent.quarantined {
             return Err(Refusal::Quarantined(reason.clone()));
         }
         if !consent.enabled {
             return Err(Refusal::Disabled);
         }
+        let (bundle, found) = Bundle::read(&bundle.dir).map_err(|e| Refusal::Changed(e.to_string()))?;
+        let manifest = &bundle.manifest;
         if !manifest.permissions.is_subset(&consent.granted) {
             return Err(Refusal::Wider);
         }
@@ -189,11 +201,10 @@ impl Registry {
             return Err(Refusal::NotApproved);
         }
         let approved = consent.approved.as_ref().ok_or_else(|| Refusal::Changed("approved before files were recorded".into()))?;
-        let found = bundle.digest().map_err(|e| Refusal::Changed(e.to_string()))?;
-        match approved.digest == found {
-            true => Ok((manifest.permissions.clone(), found)),
-            false => Err(Refusal::Changed(format!("approved {} {:.12}, found {} {found:.12}", approved.version, approved.digest, manifest.version))),
+        if approved.digest != found {
+            return Err(Refusal::Changed(format!("approved {} {:.12}, found {} {found:.12}", approved.version, approved.digest, manifest.version)));
         }
+        Ok(ApprovedBundle { grants: manifest.permissions.clone(), digest: found, bundle: self.running(&bundle) })
     }
 
     pub fn running(&self, bundle: &Bundle) -> Bundle {
@@ -231,7 +242,7 @@ impl Registry {
                 }
             } else {
                 let entry = bundle.entry_path()?;
-                if !entry.is_file() {
+                if !bundle.manifest.entry_file(bundle.mode).is_some_and(|file| bundle.has_file(file)) {
                     return Err(BundleError::MissingEntry(entry));
                 }
             }
@@ -392,6 +403,25 @@ impl Registry {
 
 fn read_state(root: &Path) -> BTreeMap<String, Consent> {
     std::fs::read_to_string(root.join(STATE_FILE)).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default()
+}
+
+fn read_files(dir: &Path, kept: Option<&str>) -> Result<(String, Option<Vec<u8>>), BundleError> {
+    let mut files = Vec::new();
+    list_files(dir, "", &mut files).map_err(|e| BundleError::Io(dir.to_path_buf(), e))?;
+    files.sort();
+    let (mut hasher, mut found) = (Sha256::new(), None);
+    for relative in files {
+        let path = dir.join(&relative);
+        let bytes = std::fs::read(&path).map_err(|e| BundleError::Io(path, e))?;
+        hasher.update(relative.as_bytes());
+        hasher.update([0]);
+        hasher.update((bytes.len() as u64).to_le_bytes());
+        hasher.update(&bytes);
+        if kept == Some(relative.as_str()) {
+            found = Some(bytes);
+        }
+    }
+    Ok((hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect(), found))
 }
 
 fn list_files(dir: &Path, prefix: &str, files: &mut Vec<String>) -> std::io::Result<()> {

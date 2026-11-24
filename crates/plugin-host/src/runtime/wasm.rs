@@ -273,6 +273,23 @@ const KEY_FILE: &str = "key";
 const MAC_LEN: usize = 32;
 const COMPILED_EXTENSION: &str = "cwasm";
 const DESCRIBED_EXTENSION: &str = "described";
+const COMPILED_LIMIT: u64 = 1 << 30;
+const DESCRIBED_LIMIT: u64 = REPLY_LIMIT as u64 + 256;
+
+fn compile(engine: &Engine, wasm: &[u8]) -> Result<Vec<u8>, PluginError> {
+    static POOL: OnceLock<Result<rayon::ThreadPool, String>> = OnceLock::new();
+    let pool = POOL
+        .get_or_init(|| rayon::ThreadPoolBuilder::new().thread_name(|n| format!("craft-plugin-compile-{n}")).build().map_err(|e| e.to_string()))
+        .as_ref()
+        .map_err(|e| PluginError::Load(format!("the plugin compiler did not start: {e}")))?;
+    std::thread::scope(|scope| {
+        let compiling = std::thread::Builder::new()
+            .name("craft-plugin-compile".into())
+            .spawn_scoped(scope, || pool.install(|| engine.precompile_module(wasm)))
+            .map_err(|e| PluginError::Load(format!("the plugin compiler did not start: {e}")))?;
+        compiling.join().map_err(|_| PluginError::Load("the plugin compiler stopped".into()))?.map_err(load_error)
+    })
+}
 
 fn cached(engine: &Engine, name: &str, cache: &Path, read: impl FnOnce() -> Result<Vec<u8>, PluginError>) -> Result<Module, PluginError> {
     let path = cache.join(format!("{name}.{COMPILED_EXTENSION}"));
@@ -280,13 +297,13 @@ fn cached(engine: &Engine, name: &str, cache: &Path, read: impl FnOnce() -> Resu
         Ok(key) => key,
         Err(error) => {
             log::warn!("{}: the compiled plugin cache is off: {error}", cache.display());
-            return engine.precompile_module(&read()?).and_then(|compiled| native::fresh_module(engine, &compiled)).map_err(load_error);
+            return native::fresh_module(engine, &compile(engine, &read()?)?).map_err(load_error);
         }
     };
-    if let Some(module) = signed_entry(&key, &path).and_then(|body| native::compiled_module(engine, &body)) {
+    if let Some(module) = signed_entry(&key, &path, COMPILED_LIMIT).and_then(|body| native::compiled_module(engine, &body)) {
         return Ok(module);
     }
-    let compiled = engine.precompile_module(&read()?).map_err(load_error)?;
+    let compiled = compile(engine, &read()?)?;
     let module = native::fresh_module(engine, &compiled).map_err(load_error)?;
     if let Err(error) = store(&key, &path, &compiled) {
         log::warn!("{}: the compiled plugin was not cached: {error}", path.display());
@@ -295,7 +312,7 @@ fn cached(engine: &Engine, name: &str, cache: &Path, read: impl FnOnce() -> Resu
 }
 
 pub(crate) fn described(cache: &Path, record: &str) -> Option<(String, Vec<u8>)> {
-    let body = signed_entry(&install_key(cache).ok()?, &cache.join(format!("{record}.{DESCRIBED_EXTENSION}")))?;
+    let body = signed_entry(&install_key(cache).ok()?, &cache.join(format!("{record}.{DESCRIBED_EXTENSION}")), DESCRIBED_LIMIT)?;
     let split = body.iter().position(|&byte| byte == b'\n')?;
     Some((String::from_utf8(body[..split].to_vec()).ok()?, body[split + 1..].to_vec()))
 }
@@ -318,9 +335,19 @@ fn signed(key: &[u8; 32], path: &Path, body: &[u8]) -> [u8; 32] {
     hmac(key, &[path.file_name().unwrap_or_default().as_encoded_bytes(), &[0], body])
 }
 
-fn signed_entry(key: &[u8; 32], path: &Path) -> Option<Vec<u8>> {
-    let mac = std::fs::read(mac_path(path)).ok()?;
-    let body = std::fs::read(path).ok()?;
+fn read_at_most(path: &Path, limit: u64) -> Option<Vec<u8>> {
+    let file = std::fs::File::open(path).ok()?;
+    if file.metadata().ok()?.len() > limit {
+        return None;
+    }
+    let mut body = Vec::new();
+    std::io::Read::read_to_end(&mut std::io::Read::take(file, limit + 1), &mut body).ok()?;
+    (body.len() as u64 <= limit).then_some(body)
+}
+
+fn signed_entry(key: &[u8; 32], path: &Path, limit: u64) -> Option<Vec<u8>> {
+    let mac = read_at_most(&mac_path(path), MAC_LEN as u64)?;
+    let body = read_at_most(path, limit)?;
     let expected = signed(key, path, &body);
     let equal = mac.len() == MAC_LEN && mac.iter().zip(expected).fold(0, |differ, (a, b)| differ | (a ^ b)) == 0;
     equal.then_some(body)
@@ -591,7 +618,7 @@ mod tests {
         std::io::Write::write_all(&mut file, &corrupted).unwrap();
         file.set_modified(written).unwrap();
         drop(file);
-        assert!(signed_entry(&key, &entry).is_none(), "a corrupted entry was accepted");
+        assert!(signed_entry(&key, &entry, super::COMPILED_LIMIT).is_none(), "a corrupted entry was accepted");
         assert_eq!(cached(engine, ONE_IMPORT, dir.path()).unwrap().imports().len(), 1);
         assert!(std::fs::read(&entry).unwrap() == body, "the corrupted entry was not replaced by a fresh compile");
     }

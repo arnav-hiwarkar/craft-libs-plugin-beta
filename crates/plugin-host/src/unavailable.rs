@@ -28,6 +28,10 @@ impl Engine {
         match *self {}
     }
 
+    pub fn failure(&self) -> Option<String> {
+        match *self {}
+    }
+
     pub fn described(&self) -> Option<Vec<u8>> {
         match *self {}
     }

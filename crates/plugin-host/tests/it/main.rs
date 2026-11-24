@@ -687,9 +687,11 @@ fn an_installed_plugin_runs_only_after_the_user_approves_exactly_what_it_asks_fo
     let reopened = Registry::open(root.path());
     assert_eq!(reopened.grants(&installed), Ok(BTreeSet::from([Permission::DocumentRead])));
 
-    let mut greedier = installed.clone();
-    greedier.manifest.permissions.insert(Permission::FilesWrite);
-    assert_eq!(reopened.grants(&greedier), Err(Refusal::Wider), "an update asking for more waits for a new approval");
+    let manifest = installed.dir.join("plugin.json");
+    let asked = std::fs::read_to_string(&manifest).unwrap();
+    std::fs::write(&manifest, asked.replace("\"document.read\"", "\"document.read\",\"files.write\"")).unwrap();
+    assert_eq!(reopened.grants(&installed), Err(Refusal::Wider), "an update asking for more waits for a new approval");
+    std::fs::write(&manifest, asked).unwrap();
 
     registry.disable("test.probe").unwrap();
     assert_eq!(registry.grants(&installed), Err(Refusal::Disabled));
@@ -1612,4 +1614,80 @@ fn a_module_whose_files_changed_after_its_start_refuses_to_run_instead_of_runnin
     let mut pixels: Vec<Pixel> = vec![[0.25, 0.5, 1.0, 1.0]];
     let refused = warm.render("invert", &cx(1, 1), &Layout::neighbourhood(0), None, &mut pixels, Recorder::default).unwrap_err();
     assert_eq!(refused, PluginError::Load("the plugin's files changed since it was started; turn it off and on again".into()));
+    assert!(!warm.started());
+    assert_eq!(warm.failure(), Some(refused.to_string()));
+}
+
+fn warm_without_compiled(bundle: &Bundle, data: &Path) -> Plugin {
+    let start = || Plugin::load(bundle, BTreeSet::new(), data.join("data"), Limits::default()).unwrap();
+    drop(start());
+    for entry in std::fs::read_dir(data.join(".compiled")).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|extension| extension == "cwasm") {
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+    start()
+}
+
+#[test]
+fn a_first_use_compiling_off_the_render_pool_finishes_while_every_render_worker_waits_for_it() {
+    let (_dir, bundle) = bundle(Kind::Wasm, &[]);
+    let data = tempfile::tempdir().unwrap();
+    let warm = Arc::new(warm_without_compiled(&bundle, data.path()));
+    assert!(!warm.started());
+    let render = |plugin: &Plugin| {
+        let mut pixels: Vec<Pixel> = vec![[0.25, 0.5, 1.0, 1.0]];
+        plugin.render("invert", &cx(1, 1), &Layout::neighbourhood(0), None, &mut pixels, Recorder::default).unwrap();
+    };
+    let (done, finished) = std::sync::mpsc::channel();
+    let (first, busy) = (warm.clone(), warm.clone());
+    std::thread::spawn(move || render(&first));
+    std::thread::sleep(Duration::from_millis(20));
+    std::thread::spawn(move || {
+        rayon::broadcast(|_| render(&busy));
+        done.send(()).unwrap();
+    });
+    finished.recv_timeout(Duration::from_secs(300)).expect("the renders finished");
+    assert!(warm.started());
+}
+
+#[test]
+fn a_kept_description_over_the_reply_limit_is_not_read_and_the_plugin_is_described_again() {
+    let (_dir, bundle) = bundle(Kind::Wasm, &[]);
+    let data = tempfile::tempdir().unwrap();
+    drop(Plugin::load(&bundle, BTreeSet::new(), data.path().join("data"), Limits::default()).unwrap());
+    for entry in std::fs::read_dir(data.path().join(".compiled")).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|extension| extension == "described" || extension == "mac") {
+            std::fs::OpenOptions::new().write(true).open(path).unwrap().set_len(1 << 40).unwrap();
+        }
+    }
+    let again = Plugin::load(&bundle, BTreeSet::new(), data.path().join("data"), Limits::default()).unwrap();
+    assert!(again.started(), "the oversized description was used");
+}
+
+#[test]
+fn an_entry_named_in_another_case_than_its_file_is_refused_at_install() {
+    let (dir, _) = bundle(Kind::Wasm, &[]);
+    let manifest = dir.path().join("plugin.json");
+    let text = std::fs::read_to_string(&manifest).unwrap().replace("probe.wasm", "Probe.wasm");
+    std::fs::write(&manifest, text).unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let refused = Registry::open(root.path()).install(dir.path()).unwrap_err();
+    assert!(matches!(refused, craft_plugin_host::BundleError::MissingEntry(_)), "{refused}");
+}
+
+#[test]
+fn an_approved_start_reads_its_manifest_from_the_bytes_it_hashed_not_from_an_older_copy() {
+    let (dir, _) = bundle(Kind::Wasm, &[]);
+    let root = tempfile::tempdir().unwrap();
+    let mut registry = Registry::open(root.path());
+    let older = registry.install(dir.path()).unwrap();
+    let manifest = older.dir.join("plugin.json");
+    std::fs::write(&manifest, std::fs::read_to_string(&manifest).unwrap().replace("\"Probe\"", "\"Renamed\"")).unwrap();
+    registry.approve(&Bundle::open(&older.dir).unwrap()).unwrap();
+    let approved = registry.approved(&older).unwrap();
+    assert_eq!(approved.bundle.manifest.name, "Renamed");
+    assert_eq!(approved.digest, older.digest().unwrap());
 }
