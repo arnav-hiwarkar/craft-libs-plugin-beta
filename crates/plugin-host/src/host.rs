@@ -90,6 +90,10 @@ pub trait Host {
         None
     }
 
+    fn cancel(&self) -> Option<Arc<AtomicBool>> {
+        None
+    }
+
     fn finish(&mut self, _written: &mut [Pixel]) {}
 
     fn clipboard(&mut self) -> Result<String, String> {

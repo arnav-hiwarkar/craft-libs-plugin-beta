@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use craft_plugin::{ABI, Outcome, Pixel, Rect, Rendered};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use wasmtime::{
     AsContextMut, Caller, Config, Engine, Extern, Linker, Memory, Module, Store, StoreLimits, StoreLimitsBuilder, TypedFunc, UpdateDeadline,
@@ -32,6 +33,7 @@ struct State {
     ctx: usize,
     alloc: Option<AllocFn>,
     deadline: Option<Instant>,
+    cancel: Option<Arc<AtomicBool>>,
 }
 
 fn engine() -> Result<&'static Engine, PluginError> {
@@ -86,7 +88,7 @@ impl WasmModule {
             .tables(TABLE_LIMIT)
             .table_elements(TABLE_ELEMENT_LIMIT)
             .build();
-        let mut store = Store::new(self.module.engine(), State { limits, ctx: 0, alloc: None, deadline: None });
+        let mut store = Store::new(self.module.engine(), State { limits, ctx: 0, alloc: None, deadline: None, cancel: None });
         store.limiter(|state| &mut state.limits);
         store.set_epoch_deadline(ticks(Duration::from_secs(5)));
         let instance = self.linker.instantiate(&mut store, &self.module).map_err(load_error)?;
@@ -116,9 +118,25 @@ pub(crate) struct WasmGuest {
 }
 
 impl WasmGuest {
-    pub fn call(&mut self, request: &[u8], io: Io, cx: &mut HostCx, budget: Duration) -> Result<Vec<u8>, PluginError> {
-        self.store.set_epoch_deadline(ticks(budget));
-        self.run(request, io, cx, Instant::now().checked_add(budget))
+    pub fn call(
+        &mut self,
+        request: &[u8],
+        io: Io,
+        cx: &mut HostCx,
+        budget: Duration,
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> Result<Vec<u8>, PluginError> {
+        if cancel.is_some() {
+            self.store.epoch_deadline_callback(called_off_or_late);
+            self.store.set_epoch_deadline(1);
+        } else {
+            self.store.epoch_deadline_trap();
+            self.store.set_epoch_deadline(ticks(budget));
+        }
+        self.store.data_mut().cancel = cancel;
+        let reply = self.run(request, io, cx, Instant::now().checked_add(budget));
+        self.store.data_mut().cancel = None;
+        reply
     }
 
     pub fn run_task(&mut self, request: &[u8], cx: &mut HostCx, slot: Arc<Slot>) -> Result<Vec<u8>, PluginError> {
@@ -232,7 +250,9 @@ fn host_call(mut caller: Caller<'_, State>, _ctx: u32, request: u32, request_len
         && let Some(deadline) = caller.data().deadline.and_then(|deadline| deadline.checked_add(paused))
     {
         caller.data_mut().deadline = Some(deadline);
-        caller.as_context_mut().set_epoch_deadline(ticks(deadline.saturating_duration_since(Instant::now())));
+        if caller.data().cancel.is_none() {
+            caller.as_context_mut().set_epoch_deadline(ticks(deadline.saturating_duration_since(Instant::now())));
+        }
     }
     if caller.data().deadline.is_some_and(|deadline| Instant::now() > deadline) {
         wasmtime::bail!("the plugin passed its time limit while the host served a call");
@@ -442,6 +462,16 @@ fn succeeded(reply: &[u8]) -> bool {
 
 fn len(bytes: &[u8]) -> wasmtime::Result<u32> {
     Ok(u32::try_from(bytes.len())?)
+}
+
+fn called_off_or_late(store: wasmtime::StoreHookState<State>) -> wasmtime::Result<UpdateDeadline> {
+    if store.data().cancel.as_ref().is_some_and(|cancel| cancel.load(Ordering::Relaxed)) {
+        wasmtime::bail!("the render was called off");
+    }
+    if store.data().deadline.is_some_and(|deadline| Instant::now() > deadline) {
+        wasmtime::bail!("the plugin passed its time limit");
+    }
+    Ok(UpdateDeadline::Continue(1))
 }
 
 fn ticks(budget: Duration) -> u64 {

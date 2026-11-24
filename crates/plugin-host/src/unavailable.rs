@@ -44,7 +44,15 @@ impl Engine {
         match *self {}
     }
 
-    pub fn call(self: &Arc<Self>, _: &[u8], _: Io, _: &mut dyn Host, _: Origin, _: Duration) -> Result<Vec<u8>, PluginError> {
+    pub fn call(
+        self: &Arc<Self>,
+        _: &[u8],
+        _: Io,
+        _: &mut dyn Host,
+        _: Origin,
+        _: Duration,
+        _: Option<Arc<std::sync::atomic::AtomicBool>>,
+    ) -> Result<Vec<u8>, PluginError> {
         match **self {}
     }
 

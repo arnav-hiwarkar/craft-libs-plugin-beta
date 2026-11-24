@@ -6,6 +6,7 @@ mod wasm;
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -104,7 +105,15 @@ impl Engine {
         matches!(self.kind, Kind::Wasm { .. })
     }
 
-    pub fn call(self: &Arc<Self>, request: &[u8], io: Io, host: &mut dyn Host, origin: Origin, budget: Duration) -> Result<Vec<u8>, PluginError> {
+    pub fn call(
+        self: &Arc<Self>,
+        request: &[u8],
+        io: Io,
+        host: &mut dyn Host,
+        origin: Origin,
+        budget: Duration,
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> Result<Vec<u8>, PluginError> {
         let stateful = origin == Origin::Interactive;
         let mut cx = HostCx { host, plugin: &self.identity, engine: self, origin, task: None, on_task_thread: false, paused: Duration::ZERO };
         match &self.kind {
@@ -122,7 +131,7 @@ impl Engine {
                     Some(guest) => guest,
                     None => Box::new(module.instantiate()?),
                 };
-                let reply = guest.call(request, io, &mut cx, budget)?;
+                let reply = guest.call(request, io, &mut cx, budget, cancel)?;
                 *slot = Some(guest);
                 Ok(reply)
             }
@@ -132,7 +141,7 @@ impl Engine {
                     Some(guest) => guest,
                     None => module.instantiate()?,
                 };
-                let reply = guest.call(request, io, &mut cx, budget)?;
+                let reply = guest.call(request, io, &mut cx, budget, cancel)?;
                 if let Ok(mut pool) = pool.lock()
                     && pool.len() < rayon::current_num_threads()
                 {
