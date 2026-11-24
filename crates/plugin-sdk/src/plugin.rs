@@ -7,7 +7,7 @@ use crate::abi::Pixels;
 use crate::effect::{Cx, Effect, Frame, Pass, Rows};
 use crate::ui::{Panel, Ui};
 use crate::viewer::{Overlay, Space, Tool, ToolSpec};
-use crate::wire::{Call, CommandSpec, Contributions, ControlsReply, EffectSpec, HostCall, Outcome, PanelSpec, Pixel, TaskSpec, Window};
+use crate::wire::{Call, CommandSpec, Contributions, ControlsReply, EffectSpec, HostCall, Outcome, PanelReply, PanelSpec, Pixel, TaskSpec, Window};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Error(pub String);
@@ -203,7 +203,8 @@ impl Plugin {
                 let mut edited = value.clone();
                 let mut ui = Ui::new(&input);
                 self.find_effect(&effect)?.controls(instance, &param, &mut edited, &mut ui);
-                json(&ControlsReply { widgets: ui.finish(), value: (edited != value).then_some(edited) })
+                let PanelReply { widgets, topics, timers, .. } = ui.reply();
+                json(&ControlsReply { widgets, value: (edited != value).then_some(edited), topics, timers })
             }
             Call::Command { command } => {
                 let (_, run) = self.commands.iter().find(|(spec, _)| spec.id == command).ok_or_else(|| Error(format!("no command `{command}`")))?;
@@ -254,7 +255,7 @@ fn json(value: &impl Serialize) -> Result<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wire::{Param, ParamKind, UiEvent, UiEventKind, UiInput, Widget};
+    use crate::wire::{Param, ParamKind, Timer, Topic, UiEvent, UiEventKind, UiInput, Widget};
 
     struct Toggle;
 
@@ -264,6 +265,8 @@ mod tests {
         }
 
         fn controls(&self, _instance: u64, param: &str, value: &mut String, ui: &mut Ui) {
+            ui.on(Topic::Selection);
+            ui.every("blink", 250);
             if ui.button(param) {
                 *value = if value == "off" { "on".into() } else { "off".into() };
             }
@@ -370,5 +373,13 @@ mod tests {
         let Widget::Button { id, .. } = idle.widgets[0] else { panic!("button expected") };
         let clicked = controls(&plugin, "off", vec![UiEvent { id, kind: UiEventKind::Click }]);
         assert_eq!(clicked.value.as_deref(), Some("on"));
+    }
+
+    #[test]
+    fn a_control_row_subscribes_and_arms_timers_as_a_panel_does_and_an_older_reply_has_neither() {
+        let reply = controls(&Plugin::new().effect(Toggle), "off", vec![]);
+        assert_eq!((reply.topics, reply.timers), (vec![Topic::Selection], vec![Timer { name: "blink".into(), ms: 250, repeat: true }]));
+        let older: ControlsReply = serde_json::from_str(r#"{"widgets":[],"value":"on"}"#).unwrap();
+        assert_eq!(older, ControlsReply { value: Some("on".into()), ..Default::default() });
     }
 }
