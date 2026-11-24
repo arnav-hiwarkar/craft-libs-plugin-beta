@@ -1,12 +1,18 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs::File;
+use std::io::{Seek, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use craft_plugin::{MANIFEST_FILE, Manifest, ManifestError, Permission, RunMode, native_target};
 
 use crate::package::{self, PackageError};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 const STATE_FILE: &str = "state.json";
+const RUNS_DIR: &str = ".runs";
+const UNCLEAN_EXIT: &str = "the app closed unexpectedly while it ran unsandboxed";
 const DATA_DIR: &str = ".data";
 const UNPACKING_DIR: &str = ".unpacking";
 
@@ -30,6 +36,24 @@ pub enum BundleError {
     NoNativeBuild(String),
     #[error("the plugin's entry file {0} is missing")]
     MissingEntry(PathBuf),
+    #[error(
+        "plugin `{0}` version {1} is already approved with different files; give this build a new version number or remove the installed one first"
+    )]
+    VersionReused(String, String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum Refusal {
+    #[error("it has not been approved yet")]
+    NotApproved,
+    #[error("it is turned off")]
+    Disabled,
+    #[error("it was turned off because {0}")]
+    Quarantined(String),
+    #[error("it asks for more permissions than you approved")]
+    Wider,
+    #[error("its files changed since you approved them ({0})")]
+    Changed(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -60,6 +84,23 @@ impl Bundle {
         self
     }
 
+    pub fn digest(&self) -> Result<String, BundleError> {
+        let mut files = Vec::new();
+        list_files(&self.dir, "", &mut files).map_err(|e| BundleError::Io(self.dir.clone(), e))?;
+        files.sort();
+        let mut hasher = Sha256::new();
+        for relative in files {
+            let path = self.dir.join(&relative);
+            let mut file = File::open(&path).map_err(|e| BundleError::Io(path.clone(), e))?;
+            let length = file.metadata().map_err(|e| BundleError::Io(path.clone(), e))?.len();
+            hasher.update(relative.as_bytes());
+            hasher.update([0]);
+            hasher.update(length.to_le_bytes());
+            std::io::copy(&mut file, &mut hasher).map_err(|e| BundleError::Io(path, e))?;
+        }
+        Ok(hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect())
+    }
+
     pub fn entry_path(&self) -> Result<PathBuf, BundleError> {
         self.manifest.entry_file(self.mode).map(|file| self.dir.join(file)).ok_or_else(|| BundleError::NoBuildForThisMachine(native_target()))
     }
@@ -72,17 +113,26 @@ pub struct Consent {
     pub granted: BTreeSet<Permission>,
     #[serde(default)]
     pub unsandboxed: Option<String>,
+    pub approved: Option<Approved>,
+    pub quarantined: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Approved {
+    pub version: String,
+    pub digest: String,
 }
 
 pub struct Registry {
     root: PathBuf,
     consents: BTreeMap<String, Consent>,
+    run: Option<(PathBuf, File)>,
 }
 
 impl Registry {
     pub fn open(root: &Path) -> Registry {
         let consents = std::fs::read_to_string(root.join(STATE_FILE)).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default();
-        Registry { root: root.to_path_buf(), consents }
+        Registry { root: root.to_path_buf(), consents, run: None }
     }
 
     pub fn root(&self) -> &Path {
@@ -109,11 +159,27 @@ impl Registry {
         manifest.mode(chosen)
     }
 
-    pub fn grants(&self, manifest: &Manifest) -> Option<BTreeSet<Permission>> {
-        let consent = self.consents.get(&manifest.id)?;
-        let covered = manifest.permissions.is_subset(&consent.granted);
-        let trusted = self.mode(manifest) == RunMode::Sandboxed || consent.unsandboxed.as_ref() == Some(&manifest.version);
-        (consent.enabled && covered && trusted).then(|| manifest.permissions.clone())
+    pub fn grants(&self, bundle: &Bundle) -> Result<BTreeSet<Permission>, Refusal> {
+        let manifest = &bundle.manifest;
+        let consent = self.consents.get(&manifest.id).ok_or(Refusal::NotApproved)?;
+        if let Some(reason) = &consent.quarantined {
+            return Err(Refusal::Quarantined(reason.clone()));
+        }
+        if !consent.enabled {
+            return Err(Refusal::Disabled);
+        }
+        if !manifest.permissions.is_subset(&consent.granted) {
+            return Err(Refusal::Wider);
+        }
+        if self.mode(manifest) == RunMode::Unsandboxed && consent.unsandboxed.as_ref() != Some(&manifest.version) {
+            return Err(Refusal::NotApproved);
+        }
+        let approved = consent.approved.as_ref().ok_or_else(|| Refusal::Changed("approved before files were recorded".into()))?;
+        let found = bundle.digest().map_err(|e| Refusal::Changed(e.to_string()))?;
+        match approved.digest == found {
+            true => Ok(manifest.permissions.clone()),
+            false => Err(Refusal::Changed(format!("approved {} {:.12}, found {} {found:.12}", approved.version, approved.digest, manifest.version))),
+        }
     }
 
     pub fn running(&self, bundle: &Bundle) -> Bundle {
@@ -142,7 +208,16 @@ impl Registry {
         };
         let incoming = match unpacked.and_then(|bundle| {
             let entry = bundle.entry_path()?;
-            if entry.is_file() { Ok(bundle) } else { Err(BundleError::MissingEntry(entry)) }
+            if !entry.is_file() {
+                return Err(BundleError::MissingEntry(entry));
+            }
+            let approved = self.consents.get(&bundle.manifest.id).and_then(|consent| consent.approved.as_ref());
+            match approved {
+                Some(approved) if approved.version == bundle.manifest.version && approved.digest != bundle.digest()? => {
+                    Err(BundleError::VersionReused(bundle.manifest.id.clone(), bundle.manifest.version.clone()))
+                }
+                _ => Ok(bundle),
+            }
         }) {
             Ok(bundle) => bundle,
             Err(error) => {
@@ -189,9 +264,12 @@ impl Registry {
         std::fs::remove_dir_all(&target).map_err(|e| BundleError::Io(target, e))
     }
 
-    pub fn approve(&mut self, manifest: &Manifest) -> Result<(), BundleError> {
-        let unsandboxed = (!manifest.has_wasm()).then(|| manifest.version.clone());
-        let consent = Consent { enabled: true, granted: manifest.permissions.clone(), unsandboxed };
+    pub fn approve(&mut self, bundle: &Bundle) -> Result<(), BundleError> {
+        let manifest = &bundle.manifest;
+        let chosen = self.consents.get(&manifest.id).and_then(|consent| consent.unsandboxed.clone()).filter(|version| version == &manifest.version);
+        let unsandboxed = if manifest.has_wasm() { chosen } else { Some(manifest.version.clone()) };
+        let approved = Some(Approved { version: manifest.version.clone(), digest: bundle.digest()? });
+        let consent = Consent { enabled: true, granted: manifest.permissions.clone(), unsandboxed, approved, quarantined: None };
         let mut consents = self.consents.clone();
         consents.insert(manifest.id.clone(), consent);
         self.commit(consents)
@@ -217,6 +295,49 @@ impl Registry {
         self.commit(consents)
     }
 
+    pub fn recover(&mut self) -> Result<Vec<String>, BundleError> {
+        let Ok(entries) = std::fs::read_dir(self.root.join(RUNS_DIR)) else { return Ok(Vec::new()) };
+        let mut consents = self.consents.clone();
+        let mut quarantined = Vec::new();
+        for path in entries.filter_map(|entry| Some(entry.ok()?.path())) {
+            let Ok(file) = File::open(&path) else { continue };
+            if file.try_lock().is_err() {
+                continue;
+            }
+            let ids: Vec<String> = serde_json::from_reader(&file).unwrap_or_default();
+            for id in ids {
+                if let Some(consent) = consents.get_mut(&id) {
+                    consent.quarantined = Some(UNCLEAN_EXIT.into());
+                    quarantined.push(id);
+                }
+            }
+            drop(file);
+            std::fs::remove_file(&path).map_err(|e| BundleError::Io(path, e))?;
+        }
+        self.commit(consents)?;
+        Ok(quarantined)
+    }
+
+    pub fn mark_running(&mut self, unsandboxed: &BTreeSet<String>) -> Result<(), BundleError> {
+        static RUNS: AtomicU64 = AtomicU64::new(0);
+        if self.run.is_none() {
+            let dir = self.root.join(RUNS_DIR);
+            let path = dir.join(format!("{}-{}.json", std::process::id(), RUNS.fetch_add(1, Ordering::Relaxed)));
+            let file = std::fs::create_dir_all(&dir).and_then(|()| File::create(&path)).map_err(|e| BundleError::Io(path.clone(), e))?;
+            file.try_lock().map_err(|e| BundleError::Io(path.clone(), e.into()))?;
+            self.run = Some((path, file));
+        }
+        let Some((path, file)) = &mut self.run else { return Ok(()) };
+        let text = serde_json::to_vec(unsandboxed).unwrap_or_default();
+        file.set_len(0).and_then(|()| file.rewind()).and_then(|()| file.write_all(&text)).map_err(|e| BundleError::Io(path.clone(), e))
+    }
+
+    pub fn end_run(&mut self) -> Result<(), BundleError> {
+        let Some((path, file)) = self.run.take() else { return Ok(()) };
+        drop(file);
+        std::fs::remove_file(&path).map_err(|e| BundleError::Io(path, e))
+    }
+
     fn installed_dir(&self, id: &str) -> Result<PathBuf, BundleError> {
         self.bundles()
             .into_iter()
@@ -237,6 +358,20 @@ impl Registry {
         self.consents = consents;
         Ok(())
     }
+}
+
+fn list_files(dir: &Path, prefix: &str, files: &mut Vec<String>) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let kind = entry.file_type()?;
+        let relative = format!("{prefix}{}", entry.file_name().to_string_lossy());
+        if kind.is_dir() {
+            list_files(&entry.path(), &format!("{relative}/"), files)?;
+        } else if kind.is_file() {
+            files.push(relative);
+        }
+    }
+    Ok(())
 }
 
 fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {

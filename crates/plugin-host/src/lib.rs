@@ -32,7 +32,7 @@ pub use package::{
 };
 pub use panel::{MAX_BACKLOG, Retained};
 pub use plugin::{Limits, Plugin, PluginError, validate};
-pub use registry::{Bundle, BundleError, Consent, Registry};
+pub use registry::{Approved, Bundle, BundleError, Consent, Refusal, Registry};
 
 pub mod ui {
     pub use craft_plugin::{

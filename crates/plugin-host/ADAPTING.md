@@ -40,6 +40,11 @@ SDK (EffectCraft keeps `crates/plugin/tests/it/legacy/legacy.wasm`).
 1. **Install, approve, load.** Point `Registry` at the app's config folder, show the approval with the
    requested permissions, refuse unapproved native code, refuse plugin management from scripts. Test: install
    a bundle, it waits; approve, it runs and still runs after a restart; a script cannot approve it.
+   `Registry::grants(bundle)` hashes the bundle and answers a `Refusal` whose text tells the user why
+   (changed files, wider permissions, quarantined); show it. Call `Registry::recover` once at start, then
+   `mark_running` with the set of unsandboxed plugins before each one starts and after one stops, and
+   `end_run` on a clean quit, so a crash turns those plugins off next time. Offer a safe-mode flag that
+   starts none.
 2. **Commands and the gate.** Implement `Host::access` and `Host::command` over the app's command system.
    Allow an explicit list of document command families (an allow list, never a deny list), map undoable
    commands to `document.write`, require both file permissions for any command that names a file, and run
