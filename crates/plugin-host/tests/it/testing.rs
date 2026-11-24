@@ -1,3 +1,6 @@
+use std::collections::BTreeMap;
+
+use craft_plugin::Value;
 use craft_plugin_host::testing::{Pattern, Picture, TestPlugin, check_frame, updating_frames};
 
 use super::{Kind, bundle};
@@ -150,4 +153,14 @@ fn a_gradient_past_the_stop_limit_reaches_the_plugin_cut_and_is_warned_about_onc
     assert_eq!(red(71), 63.0 / 69.0);
     let second = warning.replace("has 6 stops", "has 7 stops");
     assert_eq!(plugin.logs(), [warning, second.as_str()]);
+}
+
+#[test]
+fn an_effect_at_state_version_1_moves_a_value_saved_under_its_old_name_and_leaves_newer_values_alone() {
+    let (_bundle, plugin) = probe();
+    let saved = BTreeMap::from([("amt".to_string(), Value::Number(0.25)), ("unknown".to_string(), Value::Bool(true))]);
+    let migrated = plugin.migrate("renamed", 0, saved.clone()).unwrap();
+    assert_eq!(migrated, BTreeMap::from([("strength".to_string(), Value::Number(0.25)), ("unknown".to_string(), Value::Bool(true))]));
+    assert_eq!(plugin.migrate("renamed", 1, saved.clone()).unwrap(), saved);
+    assert_eq!(plugin.migrate("invert", 0, saved.clone()).unwrap(), saved);
 }

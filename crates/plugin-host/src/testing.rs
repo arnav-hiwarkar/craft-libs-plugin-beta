@@ -491,6 +491,11 @@ impl TestPlugin {
         }
     }
 
+    pub fn migrate(&self, effect: &str, from: u32, values: BTreeMap<String, Value>) -> Result<BTreeMap<String, Value>, String> {
+        let call = Call::Migrate { effect: effect.into(), from, values };
+        self.plugin.call(&call, None, &mut TestHost::bare(&self.recorder)).map_err(|e| e.to_string())
+    }
+
     pub fn tool(&self, id: &str, event: ToolEvent) -> Result<Overlay, String> {
         self.plugin.call(&Call::Tool { tool: id.into(), event }, None, &mut TestHost::bare(&self.recorder)).map_err(|e| e.to_string())
     }

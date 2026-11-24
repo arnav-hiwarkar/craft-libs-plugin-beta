@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::ops::Deref;
 
 use crate::Result;
@@ -39,6 +40,8 @@ pub trait Effect: Send + Sync + 'static {
     fn overlay(&self, _cx: &Cx, _overlay: &mut Overlay) {}
 
     fn drag(&self, _cx: &Cx, _key: &str, _to: [f64; 2], _value: &mut String) {}
+
+    fn migrate(&self, _from: u32, _values: &mut BTreeMap<String, Value>) {}
 }
 
 pub struct Pass<'a> {

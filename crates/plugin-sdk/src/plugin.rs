@@ -227,6 +227,10 @@ impl Plugin {
                 self.find_effect(&effect)?.drag(&Cx::new(cx), &key, to, &mut value);
                 json(&Some(value))
             }
+            Call::Migrate { effect, from, mut values } => {
+                self.find_effect(&effect)?.migrate(from, &mut values);
+                json(&values)
+            }
             Call::Tool { tool, event } => {
                 let (_, state) = self.tools.iter().find(|(spec, _)| spec.id == tool).ok_or_else(|| Error(format!("no tool `{tool}`")))?;
                 let mut overlay = Overlay::in_space(Space::Comp);

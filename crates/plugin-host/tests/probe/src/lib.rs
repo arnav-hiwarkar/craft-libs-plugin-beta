@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use craft_plugin::math;
 use craft_plugin::prelude::*;
 use serde_json::json;
@@ -20,6 +22,22 @@ impl Effect for Invert {
             pixel
         });
         Ok(())
+    }
+}
+
+struct Renamed;
+
+impl Effect for Renamed {
+    fn spec(&self) -> EffectSpec {
+        EffectSpec::new("renamed", "Renamed Parameter", "Probe").version(1).param(Param::slider("strength", "Strength", 0.5, 0.0..=1.0))
+    }
+
+    fn migrate(&self, from: u32, values: &mut BTreeMap<String, Value>) {
+        if from < 1
+            && let Some(amount) = values.remove("amt")
+        {
+            values.insert("strength".into(), amount);
+        }
     }
 }
 
@@ -1151,6 +1169,7 @@ fn make() -> Plugin {
     Plugin::new()
         .effect(Invert)
         .effect(Tinted)
+        .effect(Renamed)
         .effect(Drift { declared: true })
         .effect(Drift { declared: false })
         .effect(FastMaths)
