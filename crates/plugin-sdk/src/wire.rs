@@ -792,25 +792,27 @@ impl Plan {
     fn scratch_bytes(&self, frame: [u32; 2]) -> u64 {
         let bytes = |[w, h]: [u32; 2], per_pixel: u64| (u64::from(w) * u64::from(h)).saturating_mul(per_pixel);
         let mut kept: Vec<([u32; 2], u64)> = self.images.iter().map(|size| (*size, PIXEL_BYTES as u64)).collect();
-        let mut working: Vec<([u32; 2], u64)> = Vec::new();
+        let mut working: Vec<([u32; 2], u64, usize)> = Vec::new();
         let mut largest_intermediate = 0;
         for pass in &self.passes {
             let (Some(src), Some(out)) = (self.size_of(pass.src, frame), self.size_of(pass.out, frame)) else { continue };
             match (&pass.host, &pass.draw) {
-                (Some(kernel), _) if kernel.needs_temporary() => working.push((out, PIXEL_BYTES as u64)),
-                (Some(HostKernel::Flow { levels, .. }), _) => {
-                    working.extend(crate::kernels::flow_levels(out, *levels).into_iter().flat_map(|level| [(level, PIXEL_BYTES as u64); 3]))
-                }
+                (Some(kernel), _) if kernel.needs_temporary() => working.push((out, PIXEL_BYTES as u64, 0)),
+                (Some(HostKernel::Flow { levels, .. }), _) => working.extend(
+                    crate::kernels::flow_levels(out, *levels).into_iter().flat_map(|level| [0, 1, 2].map(|nth| (level, PIXEL_BYTES as u64, nth))),
+                ),
                 (Some(HostKernel::Resample { .. }), _) => {
                     largest_intermediate = largest_intermediate.max(bytes([out[0], src[1]], PIXEL_BYTES as u64))
                 }
-                (None, Some(draw)) => working.extend(std::iter::once((out, DRAW_PIXEL_BYTES)).chain(draw.depth.then_some((out, DEPTH_PIXEL_BYTES)))),
+                (None, Some(draw)) => {
+                    working.extend(std::iter::once((out, DRAW_PIXEL_BYTES, 0)).chain(draw.depth.then_some((out, DEPTH_PIXEL_BYTES, 0))))
+                }
                 _ => {}
             }
         }
         working.sort_unstable();
         working.dedup();
-        kept.extend(working);
+        kept.extend(working.into_iter().map(|(size, per_pixel, _)| (size, per_pixel)));
         kept.iter().map(|&(size, per_pixel)| bytes(size, per_pixel)).fold(largest_intermediate, u64::saturating_add)
     }
 
@@ -831,7 +833,7 @@ impl Plan {
         let area = |[w, h]: [u32; 2]| u64::from(w) * u64::from(h);
         if self.scratch_bytes(frame) > MAX_SCRATCH_FRAMES.saturating_mul(area(frame)).saturating_mul(PIXEL_BYTES as u64) {
             return Err(format!(
-                "the scratch images and the images the passes work in (blur temporaries, resample intermediates, draw targets) together exceed {MAX_SCRATCH_FRAMES} times the {fw}x{fh} padded frame"
+                "the scratch images and the images the passes work in (blur temporaries, resample intermediates, flow levels, draw targets) together exceed {MAX_SCRATCH_FRAMES} times the {fw}x{fh} padded frame"
             ));
         }
         if self.buffers.len() > MAX_BUFFERS {
@@ -1920,13 +1922,37 @@ mod tests {
             (
                 "scratch at the limit and a blur temporary",
                 plan(vec![[53, 37]; 8], vec![PlanPass::blur(source, scratch, [1.0; 2]), finish()]),
-                "the scratch images and the images the passes work in (blur temporaries, resample intermediates, draw targets) together exceed 8 times",
+                "the scratch images and the images the passes work in (blur temporaries, resample intermediates, flow levels, draw targets) together exceed 8 times",
             ),
             ("scratch at the limit and a resample's intermediate", resampled_through_tall_and_wide, "together exceed 8 times"),
             ("scratch at the limit and a draw target", scratch_and_draw, "together exceed 8 times"),
             ("97 floats", plan(vec![], vec![finish().floats(&[0.0; 97])]), "97 floats"),
             ("17 uints", plan(vec![], vec![finish().uints(&[0; 17])]), "17 uints"),
-            ("17 pictures", too_many_pictures, "at most 16 textures and layers"),
+            ("17 pictures", too_many_pictures, "at most 16 textures, layers and source frames"),
+            (
+                "a source frame at no time",
+                {
+                    let mut p = plan(vec![], vec![finish()]);
+                    p.source_at(f64::NAN);
+                    p
+                },
+                "give a finite time",
+            ),
+            (
+                "writes a source frame",
+                {
+                    let mut p = plan(vec![], vec![finish()]);
+                    let frame = p.source_at(0.5);
+                    p.passes.push(tint(PlanImage::Source, frame));
+                    p
+                },
+                "which passes only read",
+            ),
+            (
+                "scratch and a flow's levels",
+                plan(vec![[53, 37]; 5], vec![PlanPass::flow(source, source, scratch), finish()]),
+                "flow levels, draw targets) together exceed 8 times",
+            ),
             ("too many texels", too_many_texels, "the limit is 16777216"),
             ("texels that wrap", wrapping_texels, "hold 18446744073709551615 pixels; the limit is 16777216"),
             ("draw without its buffer", draw_without_buffer, "names buffer 0"),
