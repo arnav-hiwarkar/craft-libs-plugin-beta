@@ -483,6 +483,10 @@ impl Plugin {
         self.engine.journal().page(after, load)
     }
 
+    pub fn warn(&self, message: String) {
+        self.engine.journal().push(LogLevel::Warn, message);
+    }
+
     fn exchange<R: DeserializeOwned>(&self, call: &Call, io: Io, host: &mut dyn Host) -> Result<R, PluginError> {
         let seen = self.engine.journal().latest();
         let answered = self.answer(call, io, host).map_err(|error| match error {
