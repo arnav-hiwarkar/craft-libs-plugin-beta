@@ -4,7 +4,8 @@ mod pointwise;
 #[cfg(test)]
 mod tests;
 
-use craft_plugin::{BlurShape, Filter, HostKernel, Pixel, Taps};
+use craft_plugin::{BlurShape, DAB_TILE, Dab, Filter, HostKernel, Pixel, Taps};
+
 use rayon::prelude::*;
 
 pub use fuse::{Fused, Op, Ref, Step, steps};
@@ -71,6 +72,39 @@ pub(crate) fn bilateral_space(radius: u32) -> Vec<f32> {
     (-reach..=reach).map(|i| (-((i * i) as f32) / (2.0 * sigma * sigma)).exp()).collect()
 }
 
+pub(crate) fn dab_tiles(dabs: &[Dab], size: [u32; 2]) -> (Vec<u32>, Vec<u32>, usize) {
+    let [tiles_x, tiles_y] = size.map(|side| side.div_ceil(DAB_TILE) as usize);
+    let mut lists = vec![Vec::new(); tiles_x * tiles_y];
+    for (i, dab) in dabs.iter().enumerate() {
+        let [across, down] = dab.tiles(size);
+        for ty in down {
+            for tx in across.clone() {
+                lists[ty as usize * tiles_x + tx as usize].push(i as u32);
+            }
+        }
+    }
+    let starts = std::iter::once(0).chain(lists.iter().scan(0, |end, list| {
+        *end += list.len() as u32;
+        Some(*end)
+    }));
+    (starts.collect(), lists.concat(), tiles_x)
+}
+
+pub(crate) fn stamp(mut p: Pixel, dab: &Dab, x: usize, y: usize) -> Pixel {
+    let (dx, dy) = (x as f32 + 0.5 - dab.at[0], y as f32 + 0.5 - dab.at[1]);
+    let d = (dx * dx + dy * dy).sqrt() / dab.radius;
+    if d >= 1.0 {
+        return p;
+    }
+    let fall = if d <= dab.hardness { 1.0 } else { 1.0 - (d - dab.hardness) / (1.0 - dab.hardness).max(1e-6) };
+    let w = fall * fall * (3.0 - 2.0 * fall) * dab.opacity;
+    for c in 0..3 {
+        p[c] += dab.colour[c] * w;
+    }
+    p[3] = (p[3] + w).min(1.0);
+    p
+}
+
 pub(crate) fn run(kernel: &HostKernel, src: Image, aux: Option<Image>, size: [u32; 2], out: &mut [Pixel]) {
     let top = aux.unwrap_or(Image { size, pixels: &[] });
     let width = size[0] as usize;
@@ -117,7 +151,23 @@ pub(crate) fn run(kernel: &HostKernel, src: Image, aux: Option<Image>, size: [u3
                 sum.map(|v| v / total)
             });
         }
+        HostKernel::Splat { dabs } => {
+            let (starts, indices, tiles_x) = dab_tiles(dabs, size);
+            each_row(
+                out,
+                width,
+                || (),
+                |_, y, row| {
+                    let tile_row = (y / DAB_TILE as usize) * tiles_x;
+                    for (x, (o, p)) in row.iter_mut().zip(src.row(y)).enumerate() {
+                        let tile = tile_row + x / DAB_TILE as usize;
+                        *o = indices[starts[tile] as usize..starts[tile + 1] as usize].iter().fold(*p, |p, i| stamp(p, &dabs[*i as usize], x, y));
+                    }
+                },
+            );
+        }
         HostKernel::Blend { .. }
+        | HostKernel::HslRange { .. }
         | HostKernel::Noise { .. }
         | HostKernel::Curves { .. }
         | HostKernel::Matrix { .. }

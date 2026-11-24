@@ -4,7 +4,7 @@ use std::ops::RangeInclusive;
 use serde::{Deserialize, Serialize};
 
 use crate::gradient::Gradient;
-use crate::kernels::{BlendMode, BlurShape, Encoding, Filter, HostKernel, Measure, Negatives, Taps};
+use crate::kernels::{BlendMode, BlurShape, Dab, Encoding, Filter, HostKernel, Measure, Negatives, Taps};
 use crate::viewer::{ToolEvent, ToolSpec};
 
 pub const ABI: u32 = 1;
@@ -910,6 +910,14 @@ impl PlanPass {
 
     pub fn noise(out: PlanImage, scale: f32, octaves: u32, seed: u32, origin: [i64; 2]) -> Self {
         PlanPass::host(HostKernel::Noise { scale, octaves, seed, origin }, PlanImage::Source, out)
+    }
+
+    pub fn hsl_range(src: PlanImage, out: PlanImage, hue: [f32; 2], saturation: [f32; 2], lightness: [f32; 2], softness: f32) -> Self {
+        PlanPass::host(HostKernel::HslRange { hue, saturation, lightness, softness }, src, out)
+    }
+
+    pub fn splat(src: PlanImage, out: PlanImage, dabs: Vec<Dab>) -> Self {
+        PlanPass::host(HostKernel::Splat { dabs }, src, out)
     }
 
     pub fn draw(kernel: &str, out: PlanImage) -> Self {
