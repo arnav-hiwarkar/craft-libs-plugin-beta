@@ -27,7 +27,7 @@ pub mod prelude {
     pub use crate::host;
     pub use crate::{
         AppEvent, AudioRequest, Aux, Bind, Blend, BlendMode, BlurShape, Camera, Canvas, Channel, Cull, Cursor, Curve, Cx, Dab, Drag, Dropped, Effect,
-        EffectSpec, Encoding, Error, FileErrorKind, Filter, Frame, FrameRequest, Gradient, Handle, HostKernel, Image, Key, LayerParam,
+        EffectSpec, Encoding, Error, FileErrorKind, Filter, Form, Frame, FrameRequest, Gradient, Handle, HostKernel, Image, Key, LayerParam,
         LayerPlacement, Layout, Light, LightKind, LogLevel, Mark, MaskPath, Measure, Modifiers, Negatives, Overlay, Paint, Panel, Param, Pass,
         PickFile, Pixel, Place, Plan, PlanData, PlanImage, PlanPass, Plugin, Pointer, PointerPhase, Rect, Result, Root, Rows, Scene, Space, Taps,
         Task, TaskState, TaskStatus, Tool, ToolEvent, ToolEventKind, Topic, Ui, Value,

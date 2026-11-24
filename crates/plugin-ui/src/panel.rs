@@ -42,7 +42,7 @@ fn plugin_id(widget: &Widget) -> Option<u64> {
     }
 }
 
-fn finite_or(value: f64, fallback: f64) -> f64 {
+pub(crate) fn finite_or(value: f64, fallback: f64) -> f64 {
     if value.is_finite() { value } else { fallback }
 }
 

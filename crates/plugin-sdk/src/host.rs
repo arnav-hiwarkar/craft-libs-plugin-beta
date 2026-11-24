@@ -5,7 +5,9 @@ use serde::de::DeserializeOwned;
 
 use crate::abi::{Buffer, call_host};
 use crate::effect::{Image, image_of};
-use crate::wire::{AudioDesc, AudioRequest, FileError, FrameRequest, HostCall, LogLevel, Outcome, PickFile, Place, ReadFailed, Root, TaskState};
+use crate::wire::{
+    AudioDesc, AudioRequest, FileError, Form, FrameRequest, HostCall, LogLevel, Outcome, PickFile, Place, ReadFailed, Root, TaskState, Value,
+};
 use crate::{Error, Result};
 
 pub fn call<T: DeserializeOwned>(call: &HostCall, bulk: &[u8]) -> Result<(T, Buffer)> {
@@ -101,6 +103,10 @@ fn bytemuck_floats(bytes: &[u8]) -> Vec<f32> {
 
 pub fn pick_file(request: PickFile) -> Result<Option<String>> {
     call(&HostCall::PickFile { request }, &[]).map(|(path, _)| path)
+}
+
+pub fn form(form: Form) -> Result<Option<std::collections::BTreeMap<String, Value>>> {
+    call(&HostCall::Form { form }, &[]).map(|(values, _)| values)
 }
 
 pub const MAX_IMAGE_SIDE: u32 = 8192;

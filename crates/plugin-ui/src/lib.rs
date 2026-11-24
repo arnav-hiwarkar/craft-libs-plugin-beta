@@ -1,11 +1,13 @@
 use craft_plugin::{Drag, Dropped, Paint};
 use egui::{Color32, FontFamily};
 
+mod form;
 mod marks;
 mod panel;
 #[cfg(test)]
 mod tests;
 
+pub use form::{Answer, draw_form};
 pub use marks::{draw_marks, filled_polygon};
 pub use panel::draw;
 

@@ -2,7 +2,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use craft_plugin::{AudioRequest, Channel, EffectSpec, FrameRequest, LayerPlacement, MaskPath, ParamsAt, Permission, PickFile, Pixel, Place, Scene};
+use craft_plugin::{
+    AudioRequest, Channel, EffectSpec, Form, FrameRequest, LayerPlacement, MaskPath, ParamsAt, Permission, PickFile, Pixel, Place, Scene,
+};
 use serde_json::Value;
 
 pub const MAX_FRAME_SCALE: f64 = 4.0;
@@ -107,6 +109,10 @@ pub trait Host {
 
     fn pick_file(&mut self, _request: &PickFile) -> Result<Option<PathBuf>, String> {
         Err("a file dialog is not available here".into())
+    }
+
+    fn form(&mut self, _form: &Form) -> Result<Option<std::collections::BTreeMap<String, craft_plugin::Value>>, String> {
+        Err("a form cannot open here".into())
     }
 
     fn params_at(&mut self, _layer_time: f64) -> Option<ParamsAt> {
