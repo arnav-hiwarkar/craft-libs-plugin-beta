@@ -730,13 +730,12 @@ fn called_off_after_a_band(loaded: &Loaded, effect: &str, pixels: &mut Vec<Pixel
 }
 
 #[test]
-fn a_pointwise_render_called_off_between_bands_keeps_its_input() {
+fn a_pointwise_render_called_off_between_bands_returns_cancelled_and_caches_nothing() {
     let loaded = load(Kind::Native, &[]);
-    let input: Vec<Pixel> = vec![[0.25, 0.25, 0.25, 1.0]; 2 * 256];
-    let mut pixels = input.clone();
+    let mut pixels: Vec<Pixel> = vec![[0.25, 0.25, 0.25, 1.0]; 2 * 256];
     let stopped = called_off_after_a_band(&loaded, "invert", &mut pixels);
     assert!(matches!(stopped, PluginError::Cancelled), "{stopped:?}");
-    assert!(pixels == input, "a render called off keeps its input");
+    assert_eq!(loaded.plugin.cached("invert"), None);
 }
 
 #[test]

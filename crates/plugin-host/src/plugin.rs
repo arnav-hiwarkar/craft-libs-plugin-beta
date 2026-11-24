@@ -247,6 +247,9 @@ impl Plugin {
         self.exchange(call, io, host, None)
     }
 
+    /// When the host's call-off flag stops this call it returns `PluginError::Cancelled`. The frame in `pixels` is then
+    /// unspecified (bands may be half written, the buffer may be cropped); the caller must discard it, never show or
+    /// cache it. The plugin cache and the journal's errors are untouched by a cancelled call.
     pub fn render<H: Host>(
         &self,
         effect: &str,
@@ -293,14 +296,7 @@ impl Plugin {
                 };
                 Call::Render { effect: effect.into(), cx: cx.clone(), frame }
             };
-            let mut staged = Vec::new();
-            let shown = match make_host().cancel() {
-                Some(_) => {
-                    staged = pixels[top * width..bottom * width].to_vec();
-                    &mut staged[..]
-                }
-                None => &mut pixels[top * width..bottom * width],
-            };
+            let shown = &mut pixels[top * width..bottom * width];
             let drawn = shown
                 .par_chunks_mut(even_rows * width)
                 .enumerate()
@@ -313,12 +309,8 @@ impl Plugin {
                 })
                 .collect::<Result<Vec<Rect>, PluginError>>()?;
             self.commit(memo, &make_host())?;
-            if staged.is_empty() {
-                pixels.truncate(bottom * width);
-                pixels.drain(..top * width);
-            } else {
-                *pixels = staged;
-            }
+            pixels.truncate(bottom * width);
+            pixels.drain(..top * width);
             return Ok(cropped(pixels, area, &drawn));
         }
         let reach = layout.reach.map(|reach| reach as usize);
@@ -431,6 +423,9 @@ impl Plugin {
         self.engine.pump(host)
     }
 
+    /// When the host's call-off flag stops this call it returns `PluginError::Cancelled`. The frame in `pixels` is then
+    /// unspecified (bands may be half written, the buffer may be cropped); the caller must discard it, never show or
+    /// cache it. The plugin cache and the journal's errors are untouched by a cancelled call.
     pub fn run_passes<H: Host>(
         &self,
         effect: &str,
