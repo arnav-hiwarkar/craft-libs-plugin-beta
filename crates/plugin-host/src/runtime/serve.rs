@@ -5,7 +5,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use craft_plugin::{AudioDesc, FileError, HostCall, ImageDesc, LogLevel, MAX_DATA_VALUE, Outcome, Permission, Pixel, Root};
+use craft_plugin::{AudioDesc, AuxDesc, Channel, FileError, HostCall, ImageDesc, LogLevel, MAX_DATA_VALUE, Outcome, Permission, Pixel, Root};
 use same_file::Handle;
 use serde_json::{Value, json};
 
@@ -208,6 +208,25 @@ fn oversized(call: &HostCall, bulk: usize) -> Option<String> {
     (bulk > limit).then_some(refused)
 }
 
+fn aux_reply(found: crate::AuxPlanes, asked: &[Channel], first_row: u32) -> Result<(Value, Bulk), String> {
+    let pixels = found.width as usize * found.height as usize;
+    let mut planes: Vec<(Channel, Vec<f32>)> = Vec::with_capacity(asked.len());
+    for (channel, plane) in found.planes {
+        if asked.contains(&channel)
+            && !planes.iter().any(|(kept, _)| *kept == channel)
+            && Some(plane.len()) == pixels.checked_mul(channel.components())
+        {
+            planes.push((channel, plane));
+        }
+    }
+    let kept: Vec<Channel> = planes.iter().map(|(channel, _)| channel.clone()).collect();
+    Channel::read_bytes(found.width, found.height, &kept)?;
+    let mut floats = Vec::with_capacity(planes.iter().map(|(_, plane)| plane.len()).sum());
+    planes.iter().for_each(|(_, plane)| floats.extend_from_slice(plane));
+    let channels = planes.into_iter().map(|(channel, _)| channel).collect();
+    Ok((json!(AuxDesc { width: found.width, height: found.height, first_row, channels }), Bulk::Floats(floats)))
+}
+
 fn reply(answered: Result<(Value, Bulk), String>) -> (Vec<u8>, Bulk) {
     let (outcome, bulk) = match answered {
         Ok((value, bulk)) => (Outcome::Ok(value), bulk),
@@ -238,6 +257,11 @@ fn answer(cx: &mut HostCx, call: HostCall, bulk: &[u8]) -> Result<(Value, Bulk),
         HostCall::Layer { param, time } => image(cx.host.layer(&param, time)),
         HostCall::Source { time } => image(cx.host.source(time)),
         HostCall::Masks => plain(json!(cx.host.masks())),
+        HostCall::Aux { channels, rows, size } => {
+            let channels = Channel::unique(&channels);
+            let first_row = rows.map_or(0, |[first, _]| first);
+            cx.host.aux(&channels, rows, size)?.map_or(Ok((Value::Null, Bulk::None)), |found| aux_reply(found, &channels, first_row))
+        }
         HostCall::Scene => cx.host.scene().map(|scene| (json!(scene), Bulk::None)).ok_or("no scene here".into()),
         HostCall::SceneAt { time } => cx.host.scene_at(time).map(|scene| (json!(scene), Bulk::None)).ok_or("no scene here".into()),
         HostCall::Placement { param, time } => {

@@ -113,6 +113,66 @@ pub struct EffectSpec {
     pub presets: Vec<Preset>,
     #[serde(default)]
     pub version: u32,
+    #[serde(default)]
+    pub reads_aux: Vec<Channel>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum Channel {
+    Depth,
+    Normal,
+    Uv,
+    ObjectId,
+    MaterialId,
+    Coverage,
+    Background,
+    Named(String),
+}
+
+pub const MAX_AUX_BYTES: usize = 256 << 20;
+pub const AUX_BACKGROUND_DEPTH: f32 = 1.0e10;
+
+impl Channel {
+    pub fn components(&self) -> usize {
+        match self {
+            Channel::Normal | Channel::Background => 3,
+            Channel::Uv => 2,
+            _ => 1,
+        }
+    }
+
+    pub fn unique(channels: &[Channel]) -> Vec<Channel> {
+        let mut unique: Vec<Channel> = Vec::with_capacity(channels.len());
+        for channel in channels {
+            if !unique.contains(channel) {
+                unique.push(channel.clone());
+            }
+        }
+        unique
+    }
+
+    pub fn read_bytes(width: u32, rows: u32, channels: &[Channel]) -> Result<usize, String> {
+        let components: usize = Channel::unique(channels).iter().map(Channel::components).sum();
+        let bytes =
+            (width as usize).checked_mul(rows as usize).and_then(|pixels| pixels.checked_mul(components)).and_then(|floats| floats.checked_mul(4));
+        match bytes {
+            Some(bytes) if bytes <= MAX_AUX_BYTES => Ok(bytes),
+            _ => Err(format!(
+                "reading {components} channel values for {rows} rows of {width} pixels is over the {} MiB a read may take; read fewer channels at a time, or read them in render, where each band reads only its own rows",
+                MAX_AUX_BYTES >> 20
+            )),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct AuxDesc {
+    pub width: u32,
+    pub height: u32,
+    #[serde(default)]
+    pub first_row: u32,
+    pub channels: Vec<Channel>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -161,6 +221,11 @@ impl EffectSpec {
 
     pub fn reads_scene(mut self) -> Self {
         self.reads_scene = true;
+        self
+    }
+
+    pub fn reads_aux(mut self, channels: impl IntoIterator<Item = Channel>) -> Self {
+        self.reads_aux.extend(channels);
         self
     }
 
@@ -1136,6 +1201,7 @@ pub enum HostCall {
     SceneAt { time: f64 },
     DataGet { place: Place, key: String },
     DataSet { place: Place, key: String, remove: bool },
+    Aux { channels: Vec<Channel>, rows: Option<[u32; 2]>, size: Option<[u32; 2]> },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -1672,6 +1738,16 @@ pub enum Paint {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_aux_read_counts_each_channel_once_and_refuses_more_than_its_budget() {
+        let one = Channel::read_bytes(3840, 2160, &[Channel::Depth]).unwrap();
+        assert_eq!(Channel::read_bytes(3840, 2160, &[Channel::Depth, Channel::Depth]), Ok(one));
+        assert!(Channel::read_bytes(3840, 2160, &[Channel::Normal, Channel::Depth]).unwrap() > one);
+        let refused = Channel::read_bytes(16384, 16384, &[Channel::Depth, Channel::Normal]).unwrap_err();
+        assert!(refused.contains("read fewer channels"), "{refused}");
+        assert!(Channel::read_bytes(u32::MAX, u32::MAX, &[Channel::Background]).is_err());
+    }
 
     const FRAME: [u32; 2] = [53, 37];
 

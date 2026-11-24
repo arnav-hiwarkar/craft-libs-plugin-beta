@@ -8,7 +8,8 @@ use crate::host;
 use crate::ui::Ui;
 use crate::viewer::Overlay;
 use crate::wire::{
-    EffectSpec, HostCall, ImageDesc, LayerPlacement, Layout, MaskPath, ParamsAt, Pixel, Rect, RenderCx, Rendered, Scene, Value, applied_padding,
+    AuxDesc, Channel, EffectSpec, HostCall, ImageDesc, LayerPlacement, Layout, MaskPath, ParamsAt, Pixel, Rect, RenderCx, Rendered, Scene, Value,
+    applied_padding,
 };
 
 pub trait Effect: Send + Sync + 'static {
@@ -74,7 +75,13 @@ impl<'a> Rows<'a> {
     }
 }
 
-pub struct Cx(RenderCx);
+#[derive(Clone, Copy, Default)]
+struct Band {
+    rows: Option<[u32; 2]>,
+    size: Option<[u32; 2]>,
+}
+
+pub struct Cx(RenderCx, Band);
 
 impl Deref for Cx {
     type Target = RenderCx;
@@ -86,7 +93,16 @@ impl Deref for Cx {
 
 impl Cx {
     pub fn new(cx: RenderCx) -> Self {
-        Cx(cx)
+        Cx(cx, Band::default())
+    }
+
+    pub(crate) fn band(self, first_row: usize, rows: usize) -> Self {
+        let rows = Some([first_row, rows].map(|n| u32::try_from(n).unwrap_or(u32::MAX)));
+        Cx(self.0, Band { rows, ..self.1 })
+    }
+
+    pub(crate) fn on_grid(self, size: [u32; 2]) -> Self {
+        Cx(self.0, Band { size: Some(size), ..self.1 })
     }
 
     pub fn f(&self, id: &str) -> f64 {
@@ -114,7 +130,7 @@ impl Cx {
                 point.iter_mut().zip(shift).for_each(|(c, by)| *c += by);
             }
         }
-        Cx(padded)
+        Cx(padded, self.1)
     }
 
     pub fn px(&self, id: &str) -> f64 {
@@ -197,6 +213,11 @@ impl Cx {
         host::call(&HostCall::Masks, &[]).map(|(masks, _)| masks).unwrap_or_default()
     }
 
+    pub fn aux(&self, channels: &[Channel]) -> Result<Option<Aux>> {
+        let (desc, bulk) = host::call::<Option<AuxDesc>>(&HostCall::Aux { channels: channels.to_vec(), rows: self.1.rows, size: self.1.size }, &[])?;
+        Ok(desc.map(|desc| Aux::of(desc, bulk.bytes())))
+    }
+
     pub fn recall(&self, name: &str) -> Option<Vec<u8>> {
         host::cache_get(&format!("{}/{name}", self.instance))
     }
@@ -211,7 +232,7 @@ impl Cx {
         cx.comp_time += layer_time - cx.time;
         cx.time = layer_time;
         cx.params = answer.params;
-        Some(Cx(cx))
+        Some(Cx(cx, self.1))
     }
 
     pub fn param_history(&self) -> Option<u64> {
@@ -352,6 +373,39 @@ impl Image {
         let top: Pixel = mix(self.at(x0, y0), self.at(x0 + 1, y0), fx);
         let bottom: Pixel = mix(self.at(x0, y0 + 1), self.at(x0 + 1, y0 + 1), fx);
         mix(top, bottom, fy)
+    }
+}
+
+pub struct Aux {
+    pub width: usize,
+    pub height: usize,
+    pub first_row: usize,
+    planes: Vec<(Channel, Vec<f32>)>,
+}
+
+impl Aux {
+    fn of(desc: AuxDesc, bytes: &[u8]) -> Aux {
+        let (width, height, first_row) = (desc.width as usize, desc.height as usize, desc.first_row as usize);
+        let mut floats = bytes.as_chunks::<4>().0.iter().map(|chunk| f32::from_le_bytes(*chunk));
+        let planes = desc.channels.into_iter().map(|channel| {
+            let plane = floats.by_ref().take(width * height * channel.components()).collect();
+            (channel, plane)
+        });
+        Aux { width, height, first_row, planes: planes.collect() }
+    }
+
+    pub fn plane(&self, channel: &Channel) -> Option<&[f32]> {
+        self.planes.iter().find(|(found, _)| found == channel).map(|(_, plane)| plane.as_slice())
+    }
+
+    pub fn at(&self, channel: &Channel, x: usize, y: usize) -> Option<&[f32]> {
+        let y = y.checked_sub(self.first_row)?;
+        if x >= self.width || y >= self.height {
+            return None;
+        }
+        let components = channel.components();
+        let start = (y * self.width + x) * components;
+        self.plane(channel)?.get(start..start + components)
     }
 }
 

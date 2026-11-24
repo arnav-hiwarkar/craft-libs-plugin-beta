@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
-use craft_plugin::{Place, Value};
+use craft_plugin::{Channel, Place, Value};
+use craft_plugin_host::AuxPlanes;
 use craft_plugin_host::testing::{Pattern, Picture, RENDER_LAYER, TestPlugin, check_frame, json, updating_frames};
 
 use super::{Kind, bundle};
@@ -209,4 +210,23 @@ fn the_test_host_refuses_what_the_app_refuses_and_fixtures_can_fail() {
     assert_eq!(plugin.task("frame", json!({"time": 0.0, "scale": 1.0})), Err("no layer 9".into()));
     plugin.reply("layer.newNull", |_| Err("the composition is gone".into()));
     assert!(plugin.task("edit", json!({})).unwrap_err().contains("the composition is gone"));
+}
+
+#[test]
+fn an_effect_reads_the_depth_and_normals_given_with_its_layer_and_nothing_on_a_plain_layer() {
+    let (_bundle, plugin) = probe();
+    let depth: Vec<f32> = (0..512).map(|i| (i / 2) as f32).collect();
+    let normal: Vec<f32> = (0..512).flat_map(|i| [0.0, 0.0, -((i % 2) as f32)]).collect();
+    let aux = AuxPlanes { width: 2, height: 256, planes: vec![(Channel::Normal, normal), (Channel::Depth, depth), (Channel::Uv, vec![0.0; 1024])] };
+    let read = plugin.render("aux-depth").size(2, 256).aux(aux).float().run().unwrap();
+    assert_eq!([read.at(0, 70), read.at(1, 200)], [[70.0 / 1000.0, 0.0, 0.0, 1.0], [200.0 / 1000.0, 1.0, 0.0, 1.0]]);
+    let plain = plugin.render("aux-depth").size(3, 2).float().run().unwrap();
+    assert_eq!(plain.at(1, 1), [0.0, 0.0, 1.0, 1.0]);
+}
+
+#[test]
+fn an_effect_reading_a_channel_it_did_not_declare_fails_and_says_what_to_declare() {
+    let (_bundle, plugin) = probe();
+    let error = plugin.render("aux-undeclared").size(4, 4).run().unwrap_err();
+    assert!(error.contains("effect `aux-undeclared` must declare `.reads_aux([Channel::Uv])`"), "{error}");
 }

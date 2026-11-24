@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use craft_plugin::{AudioRequest, EffectSpec, FrameRequest, LayerPlacement, MaskPath, ParamsAt, Permission, PickFile, Pixel, Place, Scene};
+use craft_plugin::{AudioRequest, Channel, EffectSpec, FrameRequest, LayerPlacement, MaskPath, ParamsAt, Permission, PickFile, Pixel, Place, Scene};
 use serde_json::Value;
 
 pub const MAX_FRAME_SCALE: f64 = 4.0;
@@ -47,6 +47,13 @@ pub struct Pixels {
     pub data: Vec<Pixel>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct AuxPlanes {
+    pub width: u32,
+    pub height: u32,
+    pub planes: Vec<(Channel, Vec<f32>)>,
+}
+
 pub trait Host {
     fn effect(&self) -> Option<&EffectSpec> {
         None
@@ -72,6 +79,10 @@ pub trait Host {
 
     fn masks(&mut self) -> Vec<MaskPath> {
         Vec::new()
+    }
+
+    fn aux(&mut self, _channels: &[Channel], _rows: Option<[u32; 2]>, _size: Option<[u32; 2]>) -> Result<Option<AuxPlanes>, String> {
+        Ok(None)
     }
 
     fn scene(&mut self) -> Option<Scene> {

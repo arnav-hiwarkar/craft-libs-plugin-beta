@@ -316,8 +316,17 @@ impl Effect for Passes {
         EffectSpec::new("passes", "Passes", "Probe")
     }
 
-    fn pass(&self, _cx: &Cx, pass: &Pass, out: &mut Frame) -> Result<()> {
+    fn pass(&self, cx: &Cx, pass: &Pass, out: &mut Frame) -> Result<()> {
         let src = pass.src;
+        if pass.kernel == "probe_aux_depth" {
+            let aux = cx.aux(&[Channel::Depth, Channel::Depth])?.ok_or("probe_aux_depth reads depth")?;
+            for (y, row) in out.rows_mut() {
+                for (x, pixel) in row.iter_mut().enumerate() {
+                    *pixel = [aux.at(&Channel::Depth, x, y).map_or(-1.0, |depth| depth[0]), aux.width as f32, aux.height as f32, 1.0];
+                }
+            }
+            return Ok(());
+        }
         let sum = |pixels: &[(Pixel, f32)]| -> Pixel { std::array::from_fn(|c| pixels.iter().map(|(pixel, weight)| pixel[c] * weight).sum()) };
         if pass.kernel == "probe_tall_aux" {
             let aux = pass.aux.ok_or("probe_tall_aux reads aux")?;
@@ -934,6 +943,48 @@ impl Effect for SceneLater {
     }
 }
 
+struct AuxDepth;
+
+impl Effect for AuxDepth {
+    fn spec(&self) -> EffectSpec {
+        EffectSpec::new("aux-depth", "Aux Depth", "Probe").reads_aux([Channel::Depth, Channel::Normal])
+    }
+
+    fn layout(&self, _cx: &Cx) -> Layout {
+        Layout::pointwise()
+    }
+
+    fn render(&self, cx: &Cx, frame: &mut Frame) -> Result<()> {
+        let aux = cx.aux(&[Channel::Depth, Channel::Normal])?;
+        let x0 = frame.origin[0];
+        for (y, row) in frame.rows_mut() {
+            for (x, pixel) in row.iter_mut().enumerate() {
+                *pixel = match &aux {
+                    None => [0.0, 0.0, 1.0, 1.0],
+                    Some(aux) => {
+                        let depth = aux.at(&Channel::Depth, x0 + x, y).map_or(-1.0, |depth| depth[0]);
+                        let facing = aux.at(&Channel::Normal, x0 + x, y).map_or(-1.0, |normal| -normal[2]);
+                        [depth / 1000.0, facing, 0.0, 1.0]
+                    }
+                };
+            }
+        }
+        Ok(())
+    }
+}
+
+struct AuxUndeclared;
+
+impl Effect for AuxUndeclared {
+    fn spec(&self) -> EffectSpec {
+        EffectSpec::new("aux-undeclared", "Aux Undeclared", "Probe").reads_aux([Channel::Depth])
+    }
+
+    fn render(&self, cx: &Cx, _frame: &mut Frame) -> Result<()> {
+        cx.aux(&[Channel::Depth, Channel::Uv]).map(|_| ())
+    }
+}
+
 struct HalfDone;
 
 impl Effect for HalfDone {
@@ -1206,6 +1257,8 @@ fn make() -> Plugin {
         .effect(Aim)
         .effect(Tuned)
         .effect(Lookout::default())
+        .effect(AuxDepth)
+        .effect(AuxUndeclared)
         .tool("stamp", "Stamp", Stamp::default())
         .panel("counter", "Counter", Counter::default())
         .panel("watch", "Watch", Watch::default())

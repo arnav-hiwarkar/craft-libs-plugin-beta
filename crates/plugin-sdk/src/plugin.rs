@@ -142,7 +142,7 @@ impl Plugin {
                         }
                         let (effect, input) =
                             (self.find_effect(&effect)?, Rows { width, height: cx.size[1] as usize, first_row: origin[1], pixels: &[] });
-                        let cx = Cx::new(cx);
+                        let cx = Cx::new(cx).band(origin[1], height);
                         return crate::abi::in_place(pixels, |pixels| {
                             let mut frame = Frame::new(width, height, origin, pixels, input);
                             effect.render(&cx, &mut frame)?;
@@ -165,7 +165,7 @@ impl Plugin {
                 }
                 let input = rows(window, read);
                 let mut frame = Frame::new(width, height, origin, out, input);
-                self.find_effect(&effect)?.render(&Cx::new(cx), &mut frame)?;
+                self.find_effect(&effect)?.render(&Cx::new(cx).band(origin[1], height), &mut frame)?;
                 json(&frame.reply())
             }
             Call::Input { effect, cx, out } => json(&self.find_effect(&effect)?.input(&Cx::new(cx), out)),
@@ -193,7 +193,8 @@ impl Plugin {
                 };
                 let input = rows(Window { size: out.size, first_row: 0, rows: 0 }, &[]);
                 let mut frame = Frame::new(out.size[0] as usize, out.rows as usize, [0, out.first_row as usize], band, input);
-                self.find_effect(&effect)?.pass(&Cx::new(cx), &pass, &mut frame)?;
+                let cx = Cx::new(cx).band(out.first_row as usize, out.rows as usize).on_grid(out.size);
+                self.find_effect(&effect)?.pass(&cx, &pass, &mut frame)?;
                 Ok(serde_json::Value::Null)
             }
             Call::Panel { panel, input } => {
