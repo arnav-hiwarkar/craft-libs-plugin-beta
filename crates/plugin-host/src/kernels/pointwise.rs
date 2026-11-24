@@ -77,7 +77,8 @@ fn hsl_range(p: Pixel, hue: [f32; 2], saturation: [f32; 2], lightness: [f32; 2],
         (60.0 * (sector - 6.0 * (sector / 6.0).floor()), (d / (1.0 - (2.0 * l - 1.0).abs()).max(f32::EPSILON)).clamp(0.0, 1.0))
     };
     let wrap = |v: f32| v - 360.0 * (v / 360.0).floor();
-    let (width, offset) = (wrap(hue[1] - hue[0]), wrap(h - hue[0]));
+    let width = if hue[1] - hue[0] >= 360.0 { 360.0 } else { wrap(hue[1] - hue[0]) };
+    let offset = wrap(h - hue[0]);
     let hue_outside = if offset <= width { 0.0 } else { (offset - width).min(360.0 - offset) };
     let band = |v: f32, range: [f32; 2]| soft_band((v - range[0]).min(range[1] - v), softness);
     soft_band(-hue_outside, softness * 360.0) * band(s, saturation) * band(l, lightness) * p[3]

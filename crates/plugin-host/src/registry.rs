@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 const STATE_FILE: &str = "state.json";
+const STATE_LOCK: &str = "state.lock";
 const RUNS_DIR: &str = ".runs";
 const UNCLEAN_EXIT: &str = "the app closed unexpectedly while it ran unsandboxed";
 const DATA_DIR: &str = ".data";
@@ -135,8 +136,7 @@ pub struct Registry {
 
 impl Registry {
     pub fn open(root: &Path) -> Registry {
-        let consents = std::fs::read_to_string(root.join(STATE_FILE)).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default();
-        Registry { root: root.to_path_buf(), consents, run: None }
+        Registry { root: root.to_path_buf(), consents: read_state(root), run: None }
     }
 
     pub fn root(&self) -> &Path {
@@ -273,21 +273,20 @@ impl Registry {
 
     pub fn uninstall(&mut self, id: &str) -> Result<(), BundleError> {
         let target = self.installed_dir(id)?;
-        let mut consents = self.consents.clone();
-        consents.remove(id);
-        self.commit(consents)?;
+        self.update(|consents| Ok(consents.remove(id)))?;
         std::fs::remove_dir_all(&target).map_err(|e| BundleError::Io(target, e))
     }
 
     pub fn approve(&mut self, bundle: &Bundle) -> Result<(), BundleError> {
         let manifest = &bundle.manifest;
-        let chosen = self.consents.get(&manifest.id).and_then(|consent| consent.unsandboxed.clone()).filter(|version| version == &manifest.version);
-        let unsandboxed = if manifest.has_wasm() || manifest.is_data_only() { chosen } else { Some(manifest.version.clone()) };
         let approved = Some(Approved { version: manifest.version.clone(), digest: bundle.digest()? });
-        let consent = Consent { enabled: true, granted: manifest.permissions.clone(), unsandboxed, approved, quarantined: None };
-        let mut consents = self.consents.clone();
-        consents.insert(manifest.id.clone(), consent);
-        self.commit(consents)
+        self.update(|consents| {
+            let chosen = consents.get(&manifest.id).and_then(|consent| consent.unsandboxed.clone()).filter(|version| version == &manifest.version);
+            let unsandboxed = if manifest.has_wasm() || manifest.is_data_only() { chosen } else { Some(manifest.version.clone()) };
+            let consent = Consent { enabled: true, granted: manifest.permissions.clone(), unsandboxed, approved, quarantined: None };
+            consents.insert(manifest.id.clone(), consent);
+            Ok(())
+        })
     }
 
     pub fn set_unsandboxed(&mut self, manifest: &Manifest, unsandboxed: bool) -> Result<(), BundleError> {
@@ -297,40 +296,41 @@ impl Registry {
         if !manifest.has_wasm() {
             return Ok(());
         }
-        let mut consents = self.consents.clone();
-        let consent = consents.entry(manifest.id.clone()).or_default();
-        consent.unsandboxed = unsandboxed.then(|| manifest.version.clone());
-        self.commit(consents)
+        self.update(|consents| {
+            consents.entry(manifest.id.clone()).or_default().unsandboxed = unsandboxed.then(|| manifest.version.clone());
+            Ok(())
+        })
     }
 
     pub fn disable(&mut self, id: &str) -> Result<(), BundleError> {
         self.installed_dir(id)?;
-        let mut consents = self.consents.clone();
-        consents.entry(id.to_string()).or_default().enabled = false;
-        self.commit(consents)
+        self.update(|consents| {
+            consents.entry(id.to_string()).or_default().enabled = false;
+            Ok(())
+        })
     }
 
     pub fn recover(&mut self) -> Result<Vec<String>, BundleError> {
         let Ok(entries) = std::fs::read_dir(self.root.join(RUNS_DIR)) else { return Ok(Vec::new()) };
-        let mut consents = self.consents.clone();
-        let mut quarantined = Vec::new();
-        for path in entries.filter_map(|entry| Some(entry.ok()?.path())) {
-            let Ok(file) = File::open(&path) else { continue };
-            if file.try_lock().is_err() {
-                continue;
-            }
-            let ids: Vec<String> = serde_json::from_reader(&file).unwrap_or_default();
-            for id in ids {
-                if let Some(consent) = consents.get_mut(&id) {
-                    consent.quarantined = Some(UNCLEAN_EXIT.into());
-                    quarantined.push(id);
+        self.update(|consents| {
+            let mut quarantined = Vec::new();
+            for path in entries.filter_map(|entry| Some(entry.ok()?.path())) {
+                let Ok(file) = File::open(&path) else { continue };
+                if file.try_lock().is_err() {
+                    continue;
                 }
+                let ids: Vec<String> = serde_json::from_reader(&file).unwrap_or_default();
+                for id in ids {
+                    if let Some(consent) = consents.get_mut(&id) {
+                        consent.quarantined = Some(UNCLEAN_EXIT.into());
+                        quarantined.push(id);
+                    }
+                }
+                drop(file);
+                std::fs::remove_file(&path).map_err(|e| BundleError::Io(path, e))?;
             }
-            drop(file);
-            std::fs::remove_file(&path).map_err(|e| BundleError::Io(path, e))?;
-        }
-        self.commit(consents)?;
-        Ok(quarantined)
+            Ok(quarantined)
+        })
     }
 
     pub fn mark_running(&mut self, unsandboxed: &BTreeSet<String>) -> Result<(), BundleError> {
@@ -362,17 +362,26 @@ impl Registry {
             .ok_or_else(|| BundleError::NotInstalled(id.to_string()))
     }
 
-    fn commit(&mut self, consents: BTreeMap<String, Consent>) -> Result<(), BundleError> {
+    fn update<T>(&mut self, change: impl FnOnce(&mut BTreeMap<String, Consent>) -> Result<T, BundleError>) -> Result<T, BundleError> {
         let file = self.root.join(STATE_FILE);
+        let lock = self.root.join(STATE_LOCK);
+        let held = std::fs::create_dir_all(&self.root)
+            .and_then(|()| File::create(&lock))
+            .and_then(|held| held.lock().map(|()| held))
+            .map_err(|e| BundleError::Io(lock, e))?;
+        let mut consents = read_state(&self.root);
+        let changed = change(&mut consents)?;
         let staging = self.root.join(format!("{STATE_FILE}.new"));
         let text = serde_json::to_string_pretty(&consents).unwrap_or_default();
-        std::fs::create_dir_all(&self.root)
-            .and_then(|()| std::fs::write(&staging, text))
-            .and_then(|()| std::fs::rename(&staging, &file))
-            .map_err(|e| BundleError::Io(file, e))?;
+        std::fs::write(&staging, text).and_then(|()| std::fs::rename(&staging, &file)).map_err(|e| BundleError::Io(file, e))?;
+        drop(held);
         self.consents = consents;
-        Ok(())
+        Ok(changed)
     }
+}
+
+fn read_state(root: &Path) -> BTreeMap<String, Consent> {
+    std::fs::read_to_string(root.join(STATE_FILE)).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default()
 }
 
 fn list_files(dir: &Path, prefix: &str, files: &mut Vec<String>) -> std::io::Result<()> {

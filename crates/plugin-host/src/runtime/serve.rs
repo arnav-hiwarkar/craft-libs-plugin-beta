@@ -5,7 +5,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use craft_plugin::{AudioDesc, FileError, HostCall, ImageDesc, LogLevel, Outcome, Permission, Pixel, Root};
+use craft_plugin::{AudioDesc, FileError, HostCall, ImageDesc, LogLevel, MAX_DATA_VALUE, Outcome, Permission, Pixel, Root};
 use same_file::Handle;
 use serde_json::{Value, json};
 
@@ -172,6 +172,9 @@ pub(crate) fn serve(cx: &mut HostCx, request: &[u8], bulk: &[u8]) -> (Vec<u8>, B
         Ok(call) => call,
         Err(e) => return reply(Err(format!("malformed host call: {e}"))),
     };
+    if let Some(refused) = oversized(&call, bulk.len()) {
+        return reply(Err(refused));
+    }
     if cx.on_task_thread
         && needs_the_app(&call)
         && let Some(task) = cx.task.clone()
@@ -179,6 +182,30 @@ pub(crate) fn serve(cx: &mut HostCx, request: &[u8], bulk: &[u8]) -> (Vec<u8>, B
         return cx.plugin.tasks.forward(&task, request, bulk).unwrap_or_else(|e| reply(Err(e)));
     }
     reply(answer(cx, call, bulk))
+}
+
+pub(crate) fn refuse_oversized(request: &[u8], bulk: usize) -> Option<(Vec<u8>, Bulk)> {
+    let call = serde_json::from_slice::<HostCall>(request).ok()?;
+    oversized(&call, bulk).map(|refused| reply(Err(refused)))
+}
+
+fn oversized(call: &HostCall, bulk: usize) -> Option<String> {
+    let (limit, refused) = match call {
+        HostCall::WriteFile { .. } | HostCall::CachePut { .. } => return None,
+        HostCall::UploadImage { width, height, .. } => {
+            let wanted = (*width as usize).saturating_mul(*height as usize).saturating_mul(4);
+            (wanted, format!("a {width}x{height} image has {wanted} bytes, not {bulk}"))
+        }
+        HostCall::DataSet { remove: false, key, .. } => (
+            MAX_DATA_VALUE,
+            format!(
+                "`{key}` would hold {bulk} bytes, and one data value holds at most {} KiB; split it over several keys or keep it in a file under Root::Data",
+                MAX_DATA_VALUE >> 10
+            ),
+        ),
+        _ => (0, format!("this host call takes no data, and {bulk} bytes came with it; send it without data")),
+    };
+    (bulk > limit).then_some(refused)
 }
 
 fn reply(answered: Result<(Value, Bulk), String>) -> (Vec<u8>, Bulk) {
@@ -360,7 +387,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use super::Identity;
+    use super::{Identity, refuse_oversized};
     use crate::cache::{BUDGET, Cache};
     use crate::images::{IMAGE_BUDGET, Images};
 
@@ -403,5 +430,26 @@ mod tests {
                 Err(format!("`{path}` is no longer the file the user picked; ask the user to pick it again"))
             );
         });
+    }
+
+    #[test]
+    fn a_data_write_over_its_limit_is_refused_from_the_request_before_its_bytes_are_read() {
+        let refused = |request: &str, bulk| refuse_oversized(request.as_bytes(), bulk).map(|(reply, _)| String::from_utf8(reply).unwrap());
+        let set = r#"{"call":"data_set","place":"project","key":"track","remove":false}"#;
+        assert_eq!(refused(set, 256 << 10), None);
+        assert_eq!(
+            refused(set, usize::MAX).unwrap(),
+            r#"{"err":"`track` would hold 18446744073709551615 bytes, and one data value holds at most 256 KiB; split it over several keys or keep it in a file under Root::Data"}"#
+        );
+        assert_eq!(refused(r#"{"call":"upload_image","key":"k","width":2,"height":3}"#, 24), None);
+        assert_eq!(
+            refused(r#"{"call":"upload_image","key":"k","width":2,"height":3}"#, 25).unwrap(),
+            r#"{"err":"a 2x3 image has 24 bytes, not 25"}"#
+        );
+        assert_eq!(refused(r#"{"call":"cache_put","key":"k"}"#, 1 << 30), None);
+        assert_eq!(
+            refused(r#"{"call":"log","level":"info","message":"hi"}"#, 1).unwrap(),
+            r#"{"err":"this host call takes no data, and 1 bytes came with it; send it without data"}"#
+        );
     }
 }

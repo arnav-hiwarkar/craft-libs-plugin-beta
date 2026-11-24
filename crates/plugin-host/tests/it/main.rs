@@ -681,6 +681,25 @@ fn a_run_that_ended_without_a_clean_quit_quarantines_its_unsandboxed_plugins() {
 }
 
 #[test]
+fn a_process_opened_before_a_restart_keeps_the_quarantine_that_restart_wrote() {
+    let (source, _) = bundle(Kind::Native, &[]);
+    let root = tempfile::tempdir().unwrap();
+    let mut crashed = Registry::open(root.path());
+    let installed = crashed.install(source.path()).unwrap();
+    crashed.approve(&installed).unwrap();
+    crashed.mark_running(&BTreeSet::from(["test.probe".to_string()])).unwrap();
+    let mut desktop = Registry::open(root.path());
+    drop(crashed);
+
+    assert_eq!(Registry::open(root.path()).recover().unwrap(), ["test.probe"]);
+    desktop.disable("test.probe").unwrap();
+    let why = "the app closed unexpectedly while it ran unsandboxed".to_string();
+    assert_eq!(Registry::open(root.path()).grants(&installed), Err(Refusal::Quarantined(why.clone())));
+    assert_eq!(desktop.grants(&installed), Err(Refusal::Quarantined(why)));
+    assert!(!Registry::open(root.path()).consent("test.probe").unwrap().enabled);
+}
+
+#[test]
 fn a_native_plugin_needs_explicit_trust_beyond_its_permissions() {
     let (source, _) = bundle(Kind::Native, &[]);
     let root = tempfile::tempdir().unwrap();
@@ -1425,6 +1444,22 @@ fn a_generator_that_ignores_its_input_and_reports_what_it_drew_gives_the_same_pi
         assert_eq!(area, Rect { left: 100, top: 30, right: 250, bottom: 230 }, "{kind:?} whole {whole}");
         assert!(shown == cut(&full, 300, area), "{kind:?} whole {whole}: the shown part differs");
     }
+}
+
+#[test]
+fn a_generator_whose_last_band_fails_leaves_its_input_whole() {
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+    each_kind(|kind| {
+        let loaded = load(kind, &[]);
+        let mut cx = cx(300, 260);
+        cx.params.insert("drawn".into(), craft_plugin_host::Value::Bool(true));
+        cx.params.insert("fails".into(), craft_plugin_host::Value::Bool(true));
+        let layout = loaded.plugin.call::<Layout>(&Call::Layout { effect: "sprite".into(), cx: cx.clone() }, None, &mut Recorder::default()).unwrap();
+        let mut pixels = vec![[0.5; 4]; 300 * 260];
+        let rendered = pool.install(|| loaded.plugin.render("sprite", &cx, &layout, None, &mut pixels, Recorder::default));
+        assert!(rendered.is_err(), "{kind:?}");
+        assert!(pixels == vec![[0.5; 4]; 300 * 260], "{kind:?}: {} pixels, the input is not kept", pixels.len());
+    });
 }
 
 #[test]

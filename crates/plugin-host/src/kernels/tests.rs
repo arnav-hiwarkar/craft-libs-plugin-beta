@@ -679,6 +679,8 @@ fn hsl_range_gives_a_soft_grey_mask_of_straight_colours_and_wraps_hue() {
     let ten_out = 1.0 - 10.0 / 18.0;
     assert!((soft[3] - ten_out).abs() < 1e-6 && (soft[5] - ten_out).abs() < 1e-6, "orange and pink are 10 degrees out each side: {soft:?}");
     assert!(host(select(0.05), &pixels, [6, 1], None, [6, 1]).iter().all(|p| p[0] == p[1] && p[1] == p[2] && p[3] == 1.0), "opaque grey");
+    let whole = HostKernel::HslRange { hue: [0.0, 360.0], saturation: [0.5, 1.0], lightness: [0.25, 0.75], softness: 0.0 };
+    assert_eq!(mask(whole), [1.0, 0.5, 1.0, 1.0, 0.0, 1.0], "the full circle keeps every hue, green included");
     let bad = HostKernel::HslRange { hue: [0.0, 400.0], saturation: [0.0, 1.0], lightness: [0.0, 1.0], softness: 0.0 };
     assert!(bad.check([5, 1], None, [5, 1]).unwrap_err().contains("hue in degrees 0 to 360"));
 }
