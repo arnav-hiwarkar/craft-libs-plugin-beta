@@ -302,7 +302,7 @@ impl<'a> Frame<'a> {
         Frame::new(width, height, [0, 0], pixels, Rows { width, height, first_row: 0, pixels: input })
     }
 
-    pub(crate) fn new(width: usize, height: usize, origin: [usize; 2], pixels: &'a mut [Pixel], input: Rows<'a>) -> Frame<'a> {
+    pub fn new(width: usize, height: usize, origin: [usize; 2], pixels: &'a mut [Pixel], input: Rows<'a>) -> Frame<'a> {
         Frame { width, height, origin, pixels, input, drawn: None }
     }
 
