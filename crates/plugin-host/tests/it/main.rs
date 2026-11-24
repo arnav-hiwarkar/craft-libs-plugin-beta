@@ -814,9 +814,10 @@ fn a_native_plugin_needs_explicit_trust_beyond_its_permissions() {
     registry.approve(&installed).unwrap();
     assert_eq!(registry.grants(&installed), Ok(BTreeSet::new()));
 
-    let mut next_version = installed.clone();
-    next_version.manifest.version = "1.0.1".into();
-    assert_eq!(registry.grants(&next_version), Err(Refusal::NotApproved), "a new native version waits for a new approval");
+    let manifest = installed.dir.join("plugin.json");
+    let current = std::fs::read_to_string(&manifest).unwrap();
+    std::fs::write(&manifest, current.replace("\"1.0.0\"", "\"1.0.1\"")).unwrap();
+    assert_eq!(registry.grants(&installed), Err(Refusal::NotApproved), "a new native version waits for a new approval");
 }
 
 #[test]
