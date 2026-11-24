@@ -81,8 +81,8 @@ pub trait Host {
         Vec::new()
     }
 
-    fn aux(&mut self, _channels: &[Channel], _rows: Option<[u32; 2]>) -> Option<AuxPlanes> {
-        None
+    fn aux(&mut self, _channels: &[Channel], _rows: Option<[u32; 2]>, _size: Option<[u32; 2]>) -> Result<Option<AuxPlanes>, String> {
+        Ok(None)
     }
 
     fn scene(&mut self) -> Option<Scene> {

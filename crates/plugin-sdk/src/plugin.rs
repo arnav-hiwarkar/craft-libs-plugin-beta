@@ -193,7 +193,8 @@ impl Plugin {
                 };
                 let input = rows(Window { size: out.size, first_row: 0, rows: 0 }, &[]);
                 let mut frame = Frame::new(out.size[0] as usize, out.rows as usize, [0, out.first_row as usize], band, input);
-                self.find_effect(&effect)?.pass(&Cx::new(cx), &pass, &mut frame)?;
+                let cx = Cx::new(cx).band(out.first_row as usize, out.rows as usize).on_grid(out.size);
+                self.find_effect(&effect)?.pass(&cx, &pass, &mut frame)?;
                 Ok(serde_json::Value::Null)
             }
             Call::Panel { panel, input } => {

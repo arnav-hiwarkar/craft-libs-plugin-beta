@@ -2,15 +2,15 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use craft_plugin::{
-    BlendMode, Call, FrameDesc, Layout, LogLevel, MaskPath, ParamsAt, Permission, Pixel, Plan, PlanImage, PlanPass, RenderCx, Taps, TaskState,
-    TaskStatus, UiEvent, UiEventKind, UiInput, Widget, native_target,
+    BlendMode, Call, Channel, FrameDesc, Layout, LogLevel, MaskPath, ParamsAt, Permission, Pixel, Plan, PlanImage, PlanPass, RenderCx, Taps,
+    TaskState, TaskStatus, UiEvent, UiEventKind, UiInput, Widget, native_target,
 };
 use craft_plugin_host::testing::probe_dir;
-use craft_plugin_host::{Access, Bundle, Host, Limits, Pixels, Plugin, PluginError, Rect, Refusal, Registry, Retained};
+use craft_plugin_host::{Access, AuxPlanes, Bundle, Host, Limits, Pixels, Plugin, PluginError, Rect, Refusal, Registry, Retained};
 use serde_json::{Value, json};
 
 mod package;
@@ -1568,4 +1568,48 @@ fn a_sandboxed_plugin_names_its_module_by_the_digest_of_its_compiled_cache_entry
     entries.sort();
     assert_eq!(entries, vec![format!("{digest}.cwasm"), format!("{digest}.mac"), "key".to_string()]);
     assert_eq!(load(Kind::Native, &[]).plugin.module_digest(), None);
+}
+
+type AuxAsked = (Vec<Channel>, Option<[u32; 2]>, Option<[u32; 2]>);
+
+#[derive(Clone, Default)]
+struct AuxGrid(Arc<Mutex<Vec<AuxAsked>>>);
+
+impl Host for AuxGrid {
+    fn aux(&mut self, channels: &[Channel], rows: Option<[u32; 2]>, size: Option<[u32; 2]>) -> Result<Option<AuxPlanes>, String> {
+        self.0.lock().unwrap().push((channels.to_vec(), rows, size));
+        let [width, height] = size.unwrap_or(PASS_FRAME);
+        let [first, count] = rows.unwrap_or([0, height]);
+        let depth = (first..first + count).flat_map(|y| (0..width).map(move |_| y as f32)).collect();
+        Ok(Some(AuxPlanes { width, height: count, planes: vec![(Channel::Depth, depth)] }))
+    }
+}
+
+#[test]
+fn a_cpu_pass_reads_aux_once_per_channel_on_its_own_grid_and_band() {
+    each_kind(|kind| {
+        let loaded = load(kind, &[]);
+        let mut plan = Plan::new();
+        let half = PASS_FRAME.map(|side| side.div_ceil(2));
+        let scratch = plan.scratch(half);
+        let plan = plan.pass(PlanPass::new("probe_aux_depth", PlanImage::Source, scratch).reach(0)).pass(PlanPass::new(
+            "probe_up",
+            scratch,
+            PlanImage::Output,
+        ));
+        let asked = AuxGrid::default();
+        let mut pixels = ramp();
+        loaded.plugin.run_passes("passes", &cx(PASS_FRAME[0], PASS_FRAME[1]), &plan, &mut pixels, || asked.clone()).unwrap();
+        let mut asked = asked.0.lock().unwrap().clone();
+        asked.sort_by_key(|(_, rows, _)| *rows);
+        assert!(asked.len() > 1, "{kind:?}: the pass ran in one band");
+        let mut covered = 0;
+        for (channels, rows, size) in &asked {
+            let [first, count] = rows.expect("a band asks for its rows");
+            assert_eq!((channels.as_slice(), first, *size), ([Channel::Depth].as_slice(), covered, Some(half)), "{kind:?}");
+            covered += count;
+        }
+        assert_eq!(covered, half[1], "{kind:?}");
+        assert_eq!(at(&pixels, 10, 75)[..2], [37.5, half[0] as f32], "{kind:?}");
+    });
 }

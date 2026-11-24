@@ -75,7 +75,13 @@ impl<'a> Rows<'a> {
     }
 }
 
-pub struct Cx(RenderCx, Option<[u32; 2]>);
+#[derive(Clone, Copy, Default)]
+struct Band {
+    rows: Option<[u32; 2]>,
+    size: Option<[u32; 2]>,
+}
+
+pub struct Cx(RenderCx, Band);
 
 impl Deref for Cx {
     type Target = RenderCx;
@@ -87,11 +93,16 @@ impl Deref for Cx {
 
 impl Cx {
     pub fn new(cx: RenderCx) -> Self {
-        Cx(cx, None)
+        Cx(cx, Band::default())
     }
 
     pub(crate) fn band(self, first_row: usize, rows: usize) -> Self {
-        Cx(self.0, Some([first_row, rows].map(|n| u32::try_from(n).unwrap_or(u32::MAX))))
+        let rows = Some([first_row, rows].map(|n| u32::try_from(n).unwrap_or(u32::MAX)));
+        Cx(self.0, Band { rows, ..self.1 })
+    }
+
+    pub(crate) fn on_grid(self, size: [u32; 2]) -> Self {
+        Cx(self.0, Band { size: Some(size), ..self.1 })
     }
 
     pub fn f(&self, id: &str) -> f64 {
@@ -203,7 +214,7 @@ impl Cx {
     }
 
     pub fn aux(&self, channels: &[Channel]) -> Result<Option<Aux>> {
-        let (desc, bulk) = host::call::<Option<AuxDesc>>(&HostCall::Aux { channels: channels.to_vec(), rows: self.1 }, &[])?;
+        let (desc, bulk) = host::call::<Option<AuxDesc>>(&HostCall::Aux { channels: channels.to_vec(), rows: self.1.rows, size: self.1.size }, &[])?;
         Ok(desc.map(|desc| Aux::of(desc, bulk.bytes())))
     }
 

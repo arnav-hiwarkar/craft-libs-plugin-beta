@@ -373,15 +373,25 @@ impl Host for TestHost<'_> {
         self.masks.to_vec()
     }
 
-    fn aux(&mut self, _channels: &[Channel], rows: Option<[u32; 2]>) -> Option<AuxPlanes> {
-        let aux = self.aux?;
-        let [first, count] = rows.unwrap_or([0, aux.height]);
-        let rows = first.min(aux.height) as usize..first.saturating_add(count).min(aux.height) as usize;
-        let cut = |(channel, plane): &(Channel, Vec<f32>)| {
-            let row = aux.width as usize * channel.components();
-            (channel.clone(), plane.get(rows.start * row..rows.end * row).unwrap_or_default().to_vec())
+    fn aux(&mut self, channels: &[Channel], rows: Option<[u32; 2]>, size: Option<[u32; 2]>) -> Result<Option<AuxPlanes>, String> {
+        let Some(aux) = self.aux else { return Ok(None) };
+        let [width, height] = size.unwrap_or([aux.width, aux.height]);
+        let [first, count] = rows.unwrap_or([0, height]);
+        let rows = first.min(height)..first.saturating_add(count).min(height);
+        let asked: Vec<Channel> = aux.planes.iter().map(|(channel, _)| channel.clone()).filter(|channel| channels.contains(channel)).collect();
+        Channel::read_bytes(width, rows.len() as u32, &asked)?;
+        let sample = |(channel, plane): &(Channel, Vec<f32>)| {
+            let n = channel.components();
+            let at = |at: u32, side: u32, of: u32| ((f64::from(at) + 0.5) * f64::from(of) / f64::from(side.max(1))) as usize;
+            let plane = rows
+                .clone()
+                .flat_map(|y| (0..width).map(move |x| (at(x, width, aux.width), at(y, height, aux.height))))
+                .flat_map(|(x, y)| (0..n).map(move |c| plane.get((y * aux.width as usize + x) * n + c).copied().unwrap_or_default()))
+                .collect();
+            (channel.clone(), plane)
         };
-        Some(AuxPlanes { width: aux.width, height: rows.len() as u32, planes: aux.planes.iter().map(cut).collect() })
+        let planes = aux.planes.iter().filter(|(channel, _)| channels.contains(channel)).map(sample).collect();
+        Ok(Some(AuxPlanes { width, height: rows.len() as u32, planes }))
     }
 
     fn frame(&mut self, request: &FrameRequest) -> Result<Pixels, String> {
@@ -598,7 +608,8 @@ fn padded_aux(aux: &AuxPlanes, [left, top, right, bottom]: [u32; 4]) -> AuxPlane
     let (width, height) = (aux.width + left + right, aux.height + top + bottom);
     let pad = |(channel, plane): &(Channel, Vec<f32>)| {
         let n = channel.components();
-        let mut out = vec![0.0; width as usize * height as usize * n];
+        let outside = if *channel == Channel::Depth { craft_plugin::AUX_BACKGROUND_DEPTH } else { 0.0 };
+        let mut out = vec![outside; width as usize * height as usize * n];
         for (y, row) in plane.chunks_exact((aux.width as usize * n).max(1)).take(aux.height as usize).enumerate() {
             let start = ((y + top as usize) * width as usize + left as usize) * n;
             out[start..start + row.len()].copy_from_slice(row);

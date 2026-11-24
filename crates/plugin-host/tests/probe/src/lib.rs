@@ -316,8 +316,17 @@ impl Effect for Passes {
         EffectSpec::new("passes", "Passes", "Probe")
     }
 
-    fn pass(&self, _cx: &Cx, pass: &Pass, out: &mut Frame) -> Result<()> {
+    fn pass(&self, cx: &Cx, pass: &Pass, out: &mut Frame) -> Result<()> {
         let src = pass.src;
+        if pass.kernel == "probe_aux_depth" {
+            let aux = cx.aux(&[Channel::Depth, Channel::Depth])?.ok_or("probe_aux_depth reads depth")?;
+            for (y, row) in out.rows_mut() {
+                for (x, pixel) in row.iter_mut().enumerate() {
+                    *pixel = [aux.at(&Channel::Depth, x, y).map_or(-1.0, |depth| depth[0]), aux.width as f32, aux.height as f32, 1.0];
+                }
+            }
+            return Ok(());
+        }
         let sum = |pixels: &[(Pixel, f32)]| -> Pixel { std::array::from_fn(|c| pixels.iter().map(|(pixel, weight)| pixel[c] * weight).sum()) };
         if pass.kernel == "probe_tall_aux" {
             let aux = pass.aux.ok_or("probe_tall_aux reads aux")?;
