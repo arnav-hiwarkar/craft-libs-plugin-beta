@@ -20,6 +20,10 @@ impl Engine {
         match *self {}
     }
 
+    pub fn module_digest(&self) -> Option<&str> {
+        match *self {}
+    }
+
     pub fn cached(&self, _: &str) -> Option<Arc<[u8]>> {
         match *self {}
     }

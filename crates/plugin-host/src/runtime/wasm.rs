@@ -61,15 +61,21 @@ fn engine() -> Result<&'static Engine, PluginError> {
 pub(crate) struct WasmModule {
     module: Module,
     linker: Linker<State>,
+    digest: String,
 }
 
 impl WasmModule {
     pub fn compile(bytes: &[u8], cache: &Path) -> Result<WasmModule, PluginError> {
         let engine = engine()?;
-        let module = cached(engine, bytes, cache)?;
+        let digest = cache_name(engine, bytes);
+        let module = cached(engine, bytes, &digest, cache)?;
         let mut linker = Linker::new(engine);
         linker.func_wrap("craft", "host_call", host_call).map_err(load_error)?;
-        Ok(WasmModule { module, linker })
+        Ok(WasmModule { module, linker, digest })
+    }
+
+    pub fn digest(&self) -> &str {
+        &self.digest
     }
 
     pub fn instantiate(&self) -> Result<WasmGuest, PluginError> {
@@ -253,8 +259,7 @@ const KEY_FILE: &str = "key";
 const MAC_LEN: usize = 32;
 const MAC_EXTENSION: &str = "mac";
 
-fn cached(engine: &Engine, bytes: &[u8], cache: &Path) -> Result<Module, PluginError> {
-    let name = cache_name(engine, bytes);
+fn cached(engine: &Engine, bytes: &[u8], name: &str, cache: &Path) -> Result<Module, PluginError> {
     let path = cache.join(format!("{name}.cwasm"));
     let key = match install_key(cache) {
         Ok(key) => key,
@@ -263,12 +268,12 @@ fn cached(engine: &Engine, bytes: &[u8], cache: &Path) -> Result<Module, PluginE
             return engine.precompile_module(bytes).and_then(|compiled| native::fresh_module(engine, &compiled)).map_err(load_error);
         }
     };
-    if let Some(module) = signed_entry(&key, &name, &path).and_then(|body| native::compiled_module(engine, &body)) {
+    if let Some(module) = signed_entry(&key, name, &path).and_then(|body| native::compiled_module(engine, &body)) {
         return Ok(module);
     }
     let compiled = engine.precompile_module(bytes).map_err(load_error)?;
     let module = native::fresh_module(engine, &compiled).map_err(load_error)?;
-    if let Err(error) = store(&key, &name, &path, &compiled) {
+    if let Err(error) = store(&key, name, &path, &compiled) {
         log::warn!("{}: the compiled plugin was not cached: {error}", path.display());
     }
     Ok(module)
@@ -453,7 +458,12 @@ fn missing(export: &str) -> PluginError {
 
 #[cfg(test)]
 mod tests {
-    use super::{KEY_FILE, WasmModule, cache_name, cached, engine, hmac, install_key, reply_bytes, signed_entry};
+    use super::{KEY_FILE, WasmModule, cache_name, engine, hmac, install_key, reply_bytes, signed_entry};
+    use crate::plugin::PluginError;
+
+    fn cached(engine: &wasmtime::Engine, bytes: &[u8], cache: &std::path::Path) -> Result<wasmtime::Module, PluginError> {
+        super::cached(engine, bytes, &cache_name(engine, bytes), cache)
+    }
 
     const EMPTY: &[u8] = &[0, 0x61, 0x73, 0x6d, 1, 0, 0, 0];
     const ONE_IMPORT: &[u8] = &[0, 0x61, 0x73, 0x6d, 1, 0, 0, 0, 1, 4, 1, 0x60, 0, 0, 2, 7, 1, 1, b'a', 1, b'b', 0, 0];

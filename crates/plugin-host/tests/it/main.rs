@@ -1471,3 +1471,14 @@ fn a_drawn_rectangle_reaching_outside_the_frame_is_clipped_to_it() {
         assert_eq!([pixels[0], pixels[200 * 150 - 1]], [[0.0, 0.125, 1.0, 1.0], [0.995, 0.87, 1.0 - 0.995 * 0.87, 1.0]], "{kind:?}");
     });
 }
+
+#[test]
+fn a_sandboxed_plugin_names_its_module_by_the_digest_of_its_compiled_cache_entry_and_a_native_one_has_none() {
+    let wasm = load_before_regions();
+    let digest = wasm.plugin.module_digest().unwrap().to_string();
+    let compiled = wasm.data.path().join(".compiled");
+    let mut entries: Vec<String> = std::fs::read_dir(&compiled).unwrap().map(|entry| entry.unwrap().file_name().into_string().unwrap()).collect();
+    entries.sort();
+    assert_eq!(entries, vec![format!("{digest}.cwasm"), format!("{digest}.mac"), "key".to_string()]);
+    assert_eq!(load(Kind::Native, &[]).plugin.module_digest(), None);
+}

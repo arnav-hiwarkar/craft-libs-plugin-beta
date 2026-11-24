@@ -126,6 +126,10 @@ impl Plugin {
         &self.manifest
     }
 
+    pub fn module_digest(&self) -> Option<&str> {
+        self.engine.module_digest()
+    }
+
     pub fn cached(&self, key: &str) -> Option<std::sync::Arc<[u8]>> {
         self.engine.cached(key)
     }
