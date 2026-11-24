@@ -215,11 +215,11 @@ fn the_test_host_refuses_what_the_app_refuses_and_fixtures_can_fail() {
 #[test]
 fn an_effect_reads_the_depth_and_normals_given_with_its_layer_and_nothing_on_a_plain_layer() {
     let (_bundle, plugin) = probe();
-    let depth: Vec<f32> = (0..6).map(|i| 100.0 * i as f32).collect();
-    let normal: Vec<f32> = (0..6).flat_map(|i| [0.0, 0.0, -(i as f32) / 10.0]).collect();
-    let aux = AuxPlanes { width: 3, height: 2, planes: vec![(Channel::Normal, normal), (Channel::Depth, depth), (Channel::Uv, vec![0.0; 12])] };
-    let read = plugin.render("aux-depth").size(3, 2).aux(aux).float().run().unwrap();
-    assert_eq!([read.at(0, 0), read.at(2, 1)], [[0.0, 0.0, 0.0, 1.0], [0.5, 0.5, 0.0, 1.0]]);
+    let depth: Vec<f32> = (0..512).map(|i| (i / 2) as f32).collect();
+    let normal: Vec<f32> = (0..512).flat_map(|i| [0.0, 0.0, -((i % 2) as f32)]).collect();
+    let aux = AuxPlanes { width: 2, height: 256, planes: vec![(Channel::Normal, normal), (Channel::Depth, depth), (Channel::Uv, vec![0.0; 1024])] };
+    let read = plugin.render("aux-depth").size(2, 256).aux(aux).float().run().unwrap();
+    assert_eq!([read.at(0, 70), read.at(1, 200)], [[70.0 / 1000.0, 0.0, 0.0, 1.0], [200.0 / 1000.0, 1.0, 0.0, 1.0]]);
     let plain = plugin.render("aux-depth").size(3, 2).float().run().unwrap();
     assert_eq!(plain.at(1, 1), [0.0, 0.0, 1.0, 1.0]);
 }
