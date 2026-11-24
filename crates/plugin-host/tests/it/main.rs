@@ -10,7 +10,7 @@ use craft_plugin::{
     TaskState, TaskStatus, UiEvent, UiEventKind, UiInput, Widget, native_target,
 };
 use craft_plugin_host::testing::probe_dir;
-use craft_plugin_host::{Access, AuxPlanes, Bundle, Host, Limits, Pixels, Plugin, PluginError, Rect, Refusal, Registry, Retained};
+use craft_plugin_host::{Access, AuxPlanes, Bundle, Host, Limits, Memo, Pixels, Plugin, PluginError, Rect, Refusal, Registry, Retained};
 use serde_json::{Value, json};
 
 mod package;
@@ -1072,6 +1072,19 @@ fn a_cache_put_outside_a_render_changes_the_cache_generation_and_one_inside_does
         command(&loaded, "put-table", &mut Recorder::default()).unwrap();
         assert_eq!(loaded.plugin.cached("table").as_deref(), Some(&[4u8, 5, 6][..]), "{kind:?}");
         assert!(loaded.plugin.cache_generation() > start, "{kind:?}");
+    });
+}
+
+#[test]
+fn a_staged_call_keeps_its_cache_writes_apart_until_they_are_kept() {
+    each_kind(|kind| {
+        let loaded = load(kind, &[]);
+        let memo = Memo::default();
+        loaded.plugin.call_staged::<()>(&Call::Command { command: "put-table".into() }, &mut Recorder::default(), &memo).unwrap();
+        assert_eq!(loaded.plugin.cached("table"), None, "{kind:?}: a staged write stays out of the plugin's cache");
+        assert_eq!(loaded.plugin.cached_in(&memo, "table").as_deref(), Some(&[4u8, 5, 6][..]), "{kind:?}");
+        loaded.plugin.keep(memo);
+        assert_eq!(loaded.plugin.cached("table").as_deref(), Some(&[4u8, 5, 6][..]), "{kind:?}");
     });
 }
 

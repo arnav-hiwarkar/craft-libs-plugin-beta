@@ -34,7 +34,7 @@ pub use package::{
 pub use panel::{MAX_BACKLOG, Retained};
 #[doc(hidden)]
 pub use plugin::pooled_generator_buffers;
-pub use plugin::{Limits, Plugin, PluginError, validate};
+pub use plugin::{Limits, Memo, Plugin, PluginError, validate};
 pub use registry::{Approved, ApprovedBundle, Bundle, BundleError, Consent, Refusal, Registry};
 
 pub mod ui {

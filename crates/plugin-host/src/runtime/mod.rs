@@ -168,6 +168,10 @@ impl Engine {
         self.identity.cache.changed_outside_a_render();
     }
 
+    pub fn cached_in(&self, memo: &Staged, key: &str) -> Option<Arc<[u8]>> {
+        memo.get(key).unwrap_or_else(|| self.cached(key))
+    }
+
     pub fn commit(&self, memo: Staged) {
         self.identity.cache.commit(memo);
     }

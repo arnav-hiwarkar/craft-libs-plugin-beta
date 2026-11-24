@@ -87,6 +87,10 @@ pub enum PluginError {
     Cancelled,
 }
 
+/// Cache writes of one call held apart from the plugin's cache (see [`Plugin::call_staged`]).
+#[derive(Default)]
+pub struct Memo(Staged);
+
 #[cfg_attr(target_family = "wasm", expect(dead_code, reason = "no engine reads pixels in the web build"))]
 pub(crate) struct Scope<'a> {
     pub cancel: Option<Arc<AtomicBool>>,
@@ -245,6 +249,24 @@ impl Plugin {
         }
         let io = pixels.map_or(Io::None, Io::InPlace);
         self.exchange(call, io, host, None)
+    }
+
+    /// [`Plugin::call`] whose cache writes and removals go to `memo` instead of the plugin's
+    /// cache: [`Plugin::cached_in`] reads them back, and [`Plugin::keep`] makes them visible
+    /// to every later call.
+    pub fn call_staged<R: DeserializeOwned>(&self, call: &Call, host: &mut dyn Host, memo: &Memo) -> Result<R, PluginError> {
+        if matches!(call, Call::Render { .. }) {
+            return Err(PluginError::Failed("a render call stages its frame through Plugin::render; call render".into()));
+        }
+        self.exchange(call, Io::None, host, Some(&memo.0))
+    }
+
+    pub fn cached_in(&self, memo: &Memo, key: &str) -> Option<std::sync::Arc<[u8]>> {
+        self.engine.cached_in(&memo.0, key)
+    }
+
+    pub fn keep(&self, memo: Memo) {
+        self.engine.commit(memo.0);
     }
 
     /// When the host's call-off flag stops this call it returns `PluginError::Cancelled`. The frame in `pixels` is then
