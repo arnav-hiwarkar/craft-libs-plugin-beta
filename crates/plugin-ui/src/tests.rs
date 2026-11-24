@@ -3,7 +3,7 @@ use egui::{Color32, FontFamily, vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 
-use crate::{Host, Theme, Triangulate, draw};
+use crate::{Answer, Host, Theme, Triangulate, draw, draw_form};
 
 struct Bare;
 
@@ -257,4 +257,51 @@ fn every_pointer_move_of_a_frame_reaches_the_canvas_in_order() {
         })
         .collect();
     assert_eq!(drags, vec![[20.0, 10.0], [30.0, 10.0], [40.0, 10.0]]);
+}
+
+type Asked = (std::collections::BTreeMap<String, craft_plugin::Value>, Option<Answer>);
+
+fn form_harness() -> Harness<'static, Asked> {
+    let form = craft_plugin::Form::new("Settings")
+        .field(craft_plugin::Param::checkbox("soft", "Soft", false))
+        .field(craft_plugin::Param::text("label", "Label", "none"));
+    Harness::new_ui_state(
+        move |ui, (values, answer): &mut Asked| {
+            *answer = answer.or(draw_form(ui, &form, values, "plugin.test.form", &mut Bare));
+        },
+        Asked::default(),
+    )
+}
+
+#[test]
+fn a_form_returns_the_entered_values_on_ok_and_nothing_but_cancel_on_cancel() {
+    let mut harness = form_harness();
+    harness.run();
+    assert_eq!(harness.state().0["label"], craft_plugin::Value::Text("none".into()));
+    harness.get_by_role(egui::Role::CheckBox).click();
+    let field = harness.get_by_role(egui::Role::TextInput);
+    field.click();
+    harness.run();
+    harness.get_by_role(egui::Role::TextInput).type_text("!");
+    harness.run();
+    harness.get_by_label("OK").click();
+    harness.run();
+    let (values, answer) = harness.state();
+    assert_eq!(*answer, Some(Answer::Ok));
+    assert_eq!(values["soft"], craft_plugin::Value::Bool(true));
+    assert_eq!(values["label"], craft_plugin::Value::Text("none!".into()));
+
+    let mut harness = form_harness();
+    harness.run();
+    harness.get_by_role(egui::Role::CheckBox).click();
+    harness.run();
+    harness.get_by_label("Cancel").click();
+    harness.run();
+    assert_eq!(harness.state().1, Some(Answer::Cancel));
+
+    let mut harness = form_harness();
+    harness.run();
+    harness.key_press(egui::Key::Escape);
+    harness.run();
+    assert_eq!(harness.state().1, Some(Answer::Cancel));
 }

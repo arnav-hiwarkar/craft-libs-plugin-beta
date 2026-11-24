@@ -85,6 +85,7 @@ struct Recorder {
     commands: Vec<String>,
     picked: Option<PathBuf>,
     clipboard: String,
+    answer: Option<serde_json::Value>,
 }
 
 impl Host for Recorder {
@@ -120,6 +121,11 @@ impl Host for Recorder {
 
     fn pick_file(&mut self, _request: &craft_plugin::PickFile) -> Result<Option<PathBuf>, String> {
         Ok(self.picked.clone())
+    }
+
+    fn form(&mut self, form: &craft_plugin::Form) -> Result<Option<std::collections::BTreeMap<String, craft_plugin::Value>>, String> {
+        self.commands.push(form.title.clone());
+        Ok(self.answer.clone().map(|answer| serde_json::from_value(answer).unwrap()))
     }
 
     fn params_at(&mut self, layer_time: f64) -> Option<ParamsAt> {
@@ -159,6 +165,34 @@ fn a_plugin_describes_its_effects_panels_and_commands() {
         assert!(["invert", "shift-down", "read-inputs", "spin"].iter().all(|id| effects.contains(id)), "{kind:?} {effects:?}");
         assert_eq!(found.panels[0].title, "Counter");
         assert!(found.commands.iter().any(|c| c.id == "edit"));
+        let ask = found.commands.iter().find(|c| c.id == "ask").unwrap();
+        assert_eq!((ask.title.as_str(), ask.shortcut.as_deref()), ("Ask For Settings", Some("Alt+Shift+F11")));
+        assert_eq!(found.commands.iter().find(|c| c.id == "edit").unwrap().shortcut, None);
+    });
+}
+
+#[test]
+fn a_command_opens_a_form_and_gets_the_answer_fitted_with_defaults_or_nothing_on_cancel() {
+    each_kind(|kind| {
+        let loaded = load(kind, &[]);
+        let form = || std::fs::read_to_string(loaded.data.path().join("data/form.json")).unwrap();
+        let mut host = Recorder { answer: Some(json!({"radius": 250.0, "soft": true, "stray": true})), ..Default::default() };
+        command(&loaded, "ask", &mut host).unwrap();
+        assert_eq!(host.commands, ["Settings"]);
+        let answered: Value = serde_json::from_str(&form()).unwrap();
+        assert_eq!(answered, json!({"radius": 100.0, "soft": true, "mode": 0.0, "label": "none"}), "{kind:?}");
+
+        command(&loaded, "ask", &mut Recorder::default()).unwrap();
+        assert_eq!(form(), "cancelled", "{kind:?}");
+
+        let mut wrong = Recorder { answer: Some(json!({"soft": 1.0})), ..Default::default() };
+        let error = command(&loaded, "ask", &mut wrong).unwrap_err().to_string();
+        assert!(error.contains("parameter `soft` takes true or false"), "{kind:?} {error}");
+
+        let mut asked = Recorder { answer: Some(json!({})), ..Default::default() };
+        let error = command(&loaded, "ask-layer", &mut asked).unwrap_err().to_string();
+        assert!(error.contains("form field `in` is a layer"), "{kind:?} {error}");
+        assert!(asked.commands.is_empty(), "{kind:?}");
     });
 }
 

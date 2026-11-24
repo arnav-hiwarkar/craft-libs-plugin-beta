@@ -102,6 +102,23 @@ impl FromParam for LayerParam {
 }
 
 impl Param {
+    pub fn default_value(&self, layer_size: [f64; 2]) -> Value {
+        let [w, h] = layer_size;
+        match &self.kind {
+            ParamKind::Slider { default, .. } | ParamKind::Percent { default, .. } | ParamKind::Angle { default } => Value::Number(*default),
+            ParamKind::Checkbox { default } => Value::Bool(*default),
+            ParamKind::Popup { default, .. } => Value::Number(f64::from(*default)),
+            ParamKind::Point { default } => Value::List(vec![default[0] * w, default[1] * h]),
+            ParamKind::Point3 { default } => Value::List(vec![default[0] * w, default[1] * h, default[2]]),
+            ParamKind::Color { default } => Value::List(default.to_vec()),
+            ParamKind::Text { default } | ParamKind::Custom { default } => Value::Text(default.clone()),
+            ParamKind::Layer => Value::Bool(false),
+            ParamKind::Mask => Value::Number(0.0),
+            ParamKind::Gradient { default } => Value::Gradient(default.clone()),
+            ParamKind::Curve { default, channels } => Value::Text(crate::curve::default_curves_text(default, *channels)),
+        }
+    }
+
     pub fn fit(&self, value: Value) -> Result<Value, String> {
         let list = |items: &[f64], n: usize| (items.len() == n).then(|| Value::List(items.to_vec()));
         let fitted = match (&self.kind, &value) {

@@ -286,23 +286,6 @@ pub fn value_of_json(value: &serde_json::Value) -> Option<Value> {
     })
 }
 
-pub fn default_value(kind: &ParamKind, layer_size: [f64; 2]) -> Option<Value> {
-    let [w, h] = layer_size;
-    Some(match kind {
-        ParamKind::Slider { default, .. } | ParamKind::Percent { default, .. } | ParamKind::Angle { default } => Value::Number(*default),
-        ParamKind::Checkbox { default } => Value::Bool(*default),
-        ParamKind::Popup { default, .. } => Value::Number(f64::from(*default)),
-        ParamKind::Point { default } => Value::List(vec![default[0] * w, default[1] * h]),
-        ParamKind::Point3 { default } => Value::List(vec![default[0] * w, default[1] * h, default[2]]),
-        ParamKind::Color { default } => Value::List(default.to_vec()),
-        ParamKind::Text { default } | ParamKind::Custom { default } => Value::Text(default.clone()),
-        ParamKind::Layer => Value::Bool(false),
-        ParamKind::Mask => Value::Number(0.0),
-        ParamKind::Gradient { default } => Value::Gradient(default.clone()),
-        ParamKind::Curve { default, channels } => Value::Text(crate::default_curves_text(default, *channels)),
-    })
-}
-
 type Reply = Arc<dyn Fn(&serde_json::Value) -> Result<serde_json::Value, String> + Send + Sync>;
 type Frames = Arc<dyn Fn(&FrameRequest) -> Result<Picture, String> + Send + Sync>;
 
@@ -669,8 +652,7 @@ impl Render<'_> {
 
     fn cx(&self, spec: &EffectSpec, source: &Picture, size: [u32; 2], offset: [f64; 2]) -> Result<RenderCx, String> {
         let layer_size = [f64::from(source.width), f64::from(source.height)].map(|side| side / self.scale);
-        let mut params: BTreeMap<String, Value> =
-            spec.params.iter().filter_map(|param| Some((param.id.clone(), default_value(&param.kind, layer_size)?))).collect();
+        let mut params: BTreeMap<String, Value> = spec.params.iter().map(|param| (param.id.clone(), param.default_value(layer_size))).collect();
         for (id, value) in &self.set {
             let Some(param) = spec.params.iter().find(|param| param.id == *id) else {
                 let known: Vec<&str> = spec.params.iter().map(|param| param.id.as_str()).collect();

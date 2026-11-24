@@ -321,6 +321,13 @@ fn answer(cx: &mut HostCx, call: HostCall, bulk: &[u8]) -> Result<(Value, Bulk),
             }
             plain(json!(chosen.map(|path| path.to_string_lossy().into_owned())))
         }
+        HostCall::Form { form } => {
+            form.check()?;
+            let started = Instant::now();
+            let answer = cx.host.form(&form);
+            cx.paused += started.elapsed();
+            plain(json!(answer?.map(|values| form.answer(values)).transpose()?))
+        }
         HostCall::UploadImage { key, width, height } => cx.plugin.images.put(key, width, height, bulk).map(|()| (Value::Null, Bulk::None)),
         HostCall::RemoveImage { key } => plain(json!(cx.plugin.images.remove(&key))),
         HostCall::ParamsAt { time } => cx.host.params_at(time).map(|answer| (json!(answer), Bulk::None)).ok_or("no parameters at that time".into()),

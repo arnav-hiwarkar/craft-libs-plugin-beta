@@ -1020,6 +1020,7 @@ pub struct PanelSpec {
 pub struct CommandSpec {
     pub id: String,
     pub title: String,
+    pub shortcut: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -1090,6 +1091,60 @@ pub struct PickFile {
     pub extensions: Vec<String>,
 }
 
+pub const MAX_FORM_FIELDS: usize = 64;
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct Form {
+    pub title: String,
+    pub fields: Vec<Param>,
+}
+
+impl Form {
+    pub fn new(title: &str) -> Self {
+        Form { title: title.into(), fields: Vec::new() }
+    }
+
+    pub fn field(mut self, field: Param) -> Self {
+        self.fields.push(field);
+        self
+    }
+
+    pub fn check(&self) -> Result<(), String> {
+        if self.fields.len() > MAX_FORM_FIELDS {
+            return Err(format!("a form has at most {MAX_FORM_FIELDS} fields, not {}", self.fields.len()));
+        }
+        if let Some(field) = self
+            .fields
+            .iter()
+            .find(|field| matches!(field.kind, ParamKind::Layer | ParamKind::Mask | ParamKind::Gradient { .. } | ParamKind::Curve { .. }))
+        {
+            return Err(format!(
+                "form field `{}` is a layer, mask, gradient or curve; a form takes numbers, checkboxes, popups, points, colours and text",
+                field.id
+            ));
+        }
+        match self.fields.iter().enumerate().find(|(at, field)| self.fields[..*at].iter().any(|before| before.id == field.id)) {
+            Some((_, field)) => Err(format!("form field `{}` appears twice; give each field its own id", field.id)),
+            None => Ok(()),
+        }
+    }
+
+    pub fn defaults(&self) -> BTreeMap<String, Value> {
+        self.fields.iter().map(|field| (field.id.clone(), field.default_value([1.0, 1.0]))).collect()
+    }
+
+    pub fn answer(&self, mut values: BTreeMap<String, Value>) -> Result<BTreeMap<String, Value>, String> {
+        let defaults = self.defaults();
+        self.fields
+            .iter()
+            .map(|field| match values.remove(&field.id) {
+                Some(value) => field.fit(value).map(|value| (field.id.clone(), value)),
+                None => Ok((field.id.clone(), defaults[&field.id].clone())),
+            })
+            .collect()
+    }
+}
+
 pub const MAX_DATA_KEYS: usize = 64;
 pub const MAX_DATA_KEY: usize = 256;
 pub const MAX_DATA_VALUE: usize = 256 << 10;
@@ -1136,6 +1191,7 @@ pub enum HostCall {
     SceneAt { time: f64 },
     DataGet { place: Place, key: String },
     DataSet { place: Place, key: String, remove: bool },
+    Form { form: Form },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]

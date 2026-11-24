@@ -25,7 +25,8 @@ fn access(call: &HostCall, host: &dyn Host, plugin: &Identity, origin: Origin) -
         HostCall::DataGet { .. } => Access::Needs(vec![Permission::DocumentRead]),
         HostCall::DataSet { .. } => Access::Needs(vec![Permission::DocumentWrite]),
         HostCall::PickFile { .. } if origin != Origin::Interactive => Access::Refused("a file can be picked only from a panel or a command".into()),
-        HostCall::PickFile { .. } => Access::Free,
+        HostCall::Form { .. } if origin != Origin::Interactive => Access::Refused("a form can open only from a panel or a command".into()),
+        HostCall::PickFile { .. } | HostCall::Form { .. } => Access::Free,
         HostCall::ReadFile { root: Root::User, path, .. } | HostCall::ListFiles { root: Root::User, path } if plugin.picked(path, false) => {
             Access::Free
         }

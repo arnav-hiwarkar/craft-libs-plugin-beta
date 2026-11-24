@@ -90,7 +90,14 @@ impl Plugin {
     }
 
     pub fn command(mut self, id: &str, title: &str, run: impl Fn() -> Result<()> + Send + Sync + 'static) -> Self {
-        self.commands.push((CommandSpec { id: id.into(), title: title.into() }, Box::new(run)));
+        self.commands.push((CommandSpec { id: id.into(), title: title.into(), shortcut: None }, Box::new(run)));
+        self
+    }
+
+    pub fn shortcut(mut self, keys: &str) -> Self {
+        if let Some((spec, _)) = self.commands.last_mut() {
+            spec.shortcut = Some(keys.into());
+        }
         self
     }
 

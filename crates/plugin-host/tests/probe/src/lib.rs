@@ -1216,6 +1216,18 @@ fn make() -> Plugin {
             host::write_file(Root::Data, "last-reply.json", reply.to_string().as_bytes())
         })
         .command("read", "Read Document", || host::command("comp.info", json!({})).map(|_| ()))
+        .shortcut("Cmd+Shift+J")
+        .command("ask", "Ask For Settings", || {
+            let form = Form::new("Settings")
+                .field(Param::slider("radius", "Radius", 10.0, 0.0..=100.0))
+                .field(Param::checkbox("soft", "Soft", false))
+                .field(Param::popup("mode", "Mode", &["Fast", "Best"], 0))
+                .field(Param::text("label", "Label", "none"));
+            let answer = host::form(form)?.map_or("cancelled".to_string(), |values| json!(values).to_string());
+            host::write_file(Root::Data, "form.json", answer.as_bytes())
+        })
+        .shortcut("Alt+Shift+F11")
+        .command("ask-layer", "Ask For A Layer", || host::form(Form::new("Layer").field(Param::layer("in", "Input"))).map(drop))
         .command("swap-clipboard", "Swap Clipboard", || {
             let before = host::clipboard()?;
             host::set_clipboard(&format!("probe saw {before}"))
