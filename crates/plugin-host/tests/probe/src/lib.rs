@@ -773,8 +773,10 @@ impl Effect for Switches {
     }
 
     fn button(&self, press: &Press) -> Result<()> {
-        host::command("layer.newNull", json!({"name": "Reset Mark"}))?;
-        host::command("prop.set", json!({"layer": press.layer, "path": format!("@{}/softness", press.instance), "value": 0.0})).map(drop)
+        for param in ["softness", "amount"] {
+            host::command("prop.set", json!({"layer": press.layer, "path": format!("effects/@{}/{param}", press.instance), "value": 0.0}))?;
+        }
+        Ok(())
     }
 }
 

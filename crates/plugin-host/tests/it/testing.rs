@@ -235,9 +235,8 @@ fn an_effect_reading_a_channel_it_did_not_declare_fails_and_says_what_to_declare
 fn a_button_press_runs_the_effects_host_commands_and_the_button_sends_no_value_to_a_render() {
     let (_bundle, plugin) = probe();
     plugin.press("switches", "reset").unwrap();
-    let names: Vec<String> = plugin.commands().into_iter().map(|(name, _)| name).collect();
-    assert_eq!(names, ["layer.newNull", "prop.set"]);
-    assert_eq!(plugin.commands()[1].1["path"], "@1/softness");
+    let paths: Vec<serde_json::Value> = plugin.commands().into_iter().map(|(_, params)| params["path"].clone()).collect();
+    assert_eq!(paths, ["effects/@1/softness", "effects/@1/amount"]);
     let error = plugin.render("switches").set("reset", true).run().unwrap_err();
     assert_eq!(error, "parameter `reset` takes no value, as it is a button, not true");
     let error = plugin.press("plain", "go").unwrap_err();
