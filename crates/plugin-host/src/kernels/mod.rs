@@ -106,7 +106,7 @@ pub(crate) fn stamp(mut p: Pixel, dab: &Dab, x: usize, y: usize) -> Pixel {
     p
 }
 
-pub(crate) fn run(kernel: &HostKernel, src: Image, aux: Option<Image>, size: [u32; 2], out: &mut [Pixel]) {
+pub(crate) fn run(kernel: &HostKernel, src: Image, aux: Option<Image>, size: [u32; 2], out: &mut [Pixel], stop: &(dyn Fn() -> bool + Sync)) -> bool {
     let top = aux.unwrap_or(Image { size, pixels: &[] });
     let width = size[0] as usize;
     match kernel {
@@ -167,7 +167,7 @@ pub(crate) fn run(kernel: &HostKernel, src: Image, aux: Option<Image>, size: [u3
                 },
             );
         }
-        HostKernel::Flow { levels, radius, iterations } => flow::run(*levels, *radius, *iterations, src, top, size, out),
+        HostKernel::Flow { levels, radius, iterations } => return flow::run([*levels, *radius, *iterations], src, top, size, out, stop),
         HostKernel::Blend { .. }
         | HostKernel::HslRange { .. }
         | HostKernel::Noise { .. }
@@ -188,6 +188,7 @@ pub(crate) fn run(kernel: &HostKernel, src: Image, aux: Option<Image>, size: [u3
             );
         }
     }
+    true
 }
 
 fn rows_per_task(width: usize) -> usize {

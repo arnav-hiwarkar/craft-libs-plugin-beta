@@ -642,6 +642,7 @@ pub const MAX_PASS_UINTS: usize = 16;
 pub const MAX_BUFFERS: usize = 64;
 pub const MAX_TEXTURES: usize = 16;
 pub const MAX_TEXELS: u64 = 1 << 24;
+pub const MAX_SOURCE_FRAMES: usize = 4;
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct Plan {
@@ -839,9 +840,12 @@ impl Plan {
         if self.buffers.len() > MAX_BUFFERS {
             return Err(format!("a plan has at most {MAX_BUFFERS} buffers, this one has {}", self.buffers.len()));
         }
-        let pictures = self.textures.len() + self.layers.len() + self.sources.len();
+        let pictures = self.textures.len() + self.layers.len();
         if pictures > MAX_TEXTURES {
-            return Err(format!("a plan has at most {MAX_TEXTURES} textures, layers and source frames together, this one has {pictures}"));
+            return Err(format!("a plan has at most {MAX_TEXTURES} textures and layers together, this one has {pictures}"));
+        }
+        if self.sources.len() > MAX_SOURCE_FRAMES {
+            return Err(format!("a plan reads at most {MAX_SOURCE_FRAMES} source frames at other times, this one reads {}", self.sources.len()));
         }
         if let Some(time) = self.sources.iter().find(|time| !time.is_finite()) {
             return Err(format!("a source frame is asked at layer time {time}; give a finite time in seconds"));
@@ -849,11 +853,8 @@ impl Plan {
         if let Some((i, texture)) = self.textures.iter().enumerate().find(|(_, texture)| area(texture.size) == 0) {
             return Err(format!("texture {i} ({:?}) is {}x{}; it must be non-empty", texture.key, texture.size[0], texture.size[1]));
         }
-        let texels = self
-            .textures
-            .iter()
-            .map(|texture| area(texture.size))
-            .fold(((self.layers.len() + self.sources.len()) as u64).saturating_mul(area(frame)), u64::saturating_add);
+        let texels =
+            self.textures.iter().map(|texture| area(texture.size)).fold((self.layers.len() as u64).saturating_mul(area(frame)), u64::saturating_add);
         if texels > MAX_TEXELS {
             return Err(format!("the textures and layers hold {texels} pixels; the limit is {MAX_TEXELS}"));
         }
@@ -1840,6 +1841,27 @@ mod tests {
     }
 
     #[test]
+    fn source_frames_have_their_own_budget_so_two_dci_4k_frames_fit() {
+        let dci = [4096, 2160];
+        let mut two = plan(vec![dci], vec![finish()]);
+        let (before, after) = (two.source_at(0.0), two.source_at(1.0));
+        two.passes =
+            vec![PlanPass::flow(before, after, PlanImage::Scratch(0)), PlanPass::warp(before, PlanImage::Scratch(0), PlanImage::Output, [0.5; 2])];
+        assert_eq!(two.validate(dci), Ok(()));
+        let mut with_layers = plan(vec![], vec![finish()]);
+        for i in 0..MAX_TEXTURES {
+            with_layers.layer(&format!("layer{i}"));
+        }
+        with_layers.source_at(0.0);
+        assert!(with_layers.validate([16, 16]).is_ok(), "source frames do not count against textures and layers");
+        let mut too_many = plan(vec![], vec![finish()]);
+        for i in 0..=MAX_SOURCE_FRAMES {
+            too_many.source_at(i as f64);
+        }
+        assert!(too_many.validate(dci).unwrap_err().contains("at most 4 source frames"));
+    }
+
+    #[test]
     fn a_read_asks_for_its_error_kind_as_a_field_and_a_read_from_an_older_sdk_does_not() {
         let asked = HostCall::ReadFile { root: Root::Data, path: "a".into(), error_kind: Some(true) };
         assert_eq!(serde_json::to_string(&asked).unwrap(), r#"{"call":"read_file","root":"data","path":"a","error_kind":true}"#);
@@ -1928,7 +1950,7 @@ mod tests {
             ("scratch at the limit and a draw target", scratch_and_draw, "together exceed 8 times"),
             ("97 floats", plan(vec![], vec![finish().floats(&[0.0; 97])]), "97 floats"),
             ("17 uints", plan(vec![], vec![finish().uints(&[0; 17])]), "17 uints"),
-            ("17 pictures", too_many_pictures, "at most 16 textures, layers and source frames"),
+            ("17 pictures", too_many_pictures, "at most 16 textures and layers"),
             (
                 "a source frame at no time",
                 {

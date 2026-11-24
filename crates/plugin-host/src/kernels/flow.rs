@@ -3,6 +3,7 @@ use craft_plugin::{Filter, Pixel, flow_levels};
 use super::{CLEAR, Image, each_row, resample, resample_scale};
 
 const STEEPEST: f32 = 1e-4;
+const RELATIVE: f32 = 1e-4;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum FlowOp {
@@ -68,34 +69,47 @@ pub(crate) fn flow_steps(size: [u32; 2], levels: u32, iterations: u32) -> (Vec<F
     (steps, temps)
 }
 
-pub(crate) fn run(levels: u32, radius: u32, iterations: u32, from: Image, to: Image, size: [u32; 2], out: &mut [Pixel]) {
+pub(crate) fn run(
+    [levels, radius, iterations]: [u32; 3],
+    from: Image,
+    to: Image,
+    size: [u32; 2],
+    out: &mut [Pixel],
+    stop: &(dyn Fn() -> bool + Sync),
+) -> bool {
     let (steps, sizes) = flow_steps(size, levels, iterations);
     let mut temps: Vec<Vec<Pixel>> = sizes.iter().map(|_| Vec::new()).collect();
     for step in steps {
-        let target_size = match step.out {
-            Slot::Temp(index) => sizes[index],
-            _ => size,
-        };
+        if stop() {
+            return false;
+        }
         let mut target = match step.out {
-            Slot::Temp(index) => std::mem::take(&mut temps[index]),
-            _ => Vec::new(),
+            Slot::Temp(index) => {
+                let mut target = std::mem::take(&mut temps[index]);
+                target.resize((sizes[index][0] * sizes[index][1]) as usize, CLEAR);
+                Some((index, target))
+            }
+            _ => None,
         };
-        target.resize((target_size[0] * target_size[1]) as usize, CLEAR);
         let read = |slot: Slot| match slot {
             Slot::From => from,
             Slot::To => to,
             Slot::Temp(index) => Image { size: sizes[index], pixels: &temps[index] },
             Slot::Out => Image { size, pixels: &[] },
         };
-        let written: &mut [Pixel] = if step.out == Slot::Out { out } else { &mut target };
-        apply(step.op, radius, read(step.src), step.aux.map(read), target_size, written);
-        if let Slot::Temp(index) = step.out {
-            temps[index] = target;
+        let (src, aux) = (read(step.src), step.aux.map(read));
+        match &mut target {
+            Some((index, pixels)) => apply(step.op, radius, src, aux, sizes[*index], pixels, stop),
+            None => apply(step.op, radius, src, aux, size, out, stop),
+        }
+        if let Some((index, pixels)) = target {
+            temps[index] = pixels;
         }
     }
+    !stop()
 }
 
-fn apply(op: FlowOp, radius: u32, src: Image, aux: Option<Image>, size: [u32; 2], out: &mut [Pixel]) {
+fn apply(op: FlowOp, radius: u32, src: Image, aux: Option<Image>, size: [u32; 2], out: &mut [Pixel], stop: &(dyn Fn() -> bool + Sync)) {
     let width = size[0] as usize;
     match op {
         FlowOp::Reduce => resample(src, Filter::Bilinear, resample_scale(None, src.size, size), size, out),
@@ -127,6 +141,9 @@ fn apply(op: FlowOp, radius: u32, src: Image, aux: Option<Image>, size: [u32; 2]
             width,
             || (),
             |_, y, row| {
+                if stop() {
+                    return;
+                }
                 for (x, o) in row.iter_mut().enumerate() {
                     let start = match (init, aux) {
                         (Init::Coarser, Some(coarse)) => coarser(coarse, size, x as f32, y as f32),
@@ -188,11 +205,14 @@ fn track(level: Image, radius: i32, x: i32, y: i32, start: [f32; 2]) -> Pixel {
             yt += p[3] * t;
         }
     }
-    let steady = STEEPEST * ((2 * radius + 1) * (2 * radius + 1)) as f32;
-    let (xx, yy) = (xx + steady, yy + steady);
-    let det = xx * yy - xy * xy;
+    let steady = STEEPEST * ((2 * radius + 1) * (2 * radius + 1)) as f32 + RELATIVE * (xx + yy);
+    let (sxx, syy) = (xx + steady, yy + steady);
+    let det = sxx * syy - xy * xy;
+    let (du, dv) = (xy * yt - syy * xt, xy * xt - sxx * yt);
+    let solvable = det > 0.0 && det <= f32::MAX && du.abs() <= f32::MAX && dv.abs() <= f32::MAX;
+    if !solvable {
+        return [start[0], start[1], 0.0, 1.0];
+    }
     let limit = (radius + 1) as f32;
-    let du = ((xy * yt - yy * xt) / det).clamp(-limit, limit);
-    let dv = ((xy * xt - xx * yt) / det).clamp(-limit, limit);
-    [start[0] + du, start[1] + dv, 0.0, 1.0]
+    [start[0] + (du / det).clamp(-limit, limit), start[1] + (dv / det).clamp(-limit, limit), 0.0, 1.0]
 }

@@ -28,7 +28,7 @@ fn at(pixels: &[Pixel], size: [u32; 2], x: isize, y: isize) -> Pixel {
 fn host(kernel: HostKernel, src: &[Pixel], src_size: [u32; 2], aux: Option<&[Pixel]>, size: [u32; 2]) -> Vec<Pixel> {
     let mut out = vec![[f32::NAN; 4]; (size[0] * size[1]) as usize];
     let aux = aux.map(|pixels| Image { size, pixels });
-    run(&kernel, Image { size: src_size, pixels: src }, aux, size, &mut out);
+    run(&kernel, Image { size: src_size, pixels: src }, aux, size, &mut out, &|| false);
     out
 }
 
@@ -342,7 +342,7 @@ fn sequential(plan: &Plan, source: &[Pixel]) -> Vec<Pixel> {
     for pass in &plan.passes {
         let read = |image: PlanImage| Image { size: SIZE, pixels: if image == PlanImage::Source { source } else { &images[index(image)] } };
         let mut out = vec![[0.0; 4]; source.len()];
-        run(pass.host.as_ref().expect("a host kernel"), read(pass.src), pass.aux.map(read), SIZE, &mut out);
+        run(pass.host.as_ref().expect("a host kernel"), read(pass.src), pass.aux.map(read), SIZE, &mut out, &|| false);
         images[index(pass.out)] = out;
     }
     std::mem::take(&mut images[0])
@@ -840,4 +840,29 @@ fn flow_on_the_gpu_runs_the_same_steps_and_two_flows_share_their_working_images(
     assert_eq!(entries.len(), 2 * one + 1);
     assert_eq!(&entries[..4], ["craft_flow_pack", "craft_flow_gradient", "craft_resample", "craft_flow_gradient"]);
     assert_eq!(temps.len(), 3 * levels, "the second flow reuses the first one's images");
+}
+
+#[test]
+fn flow_stays_finite_and_still_on_flat_and_bright_still_frames() {
+    let size = [16, 16];
+    let ramp: Vec<Pixel> = (0..256).map(|i| [0.0, 128.0 * ((i % 16 + i / 16) as f32), 0.0, 1.0]).collect();
+    let flat = vec![[0.5, 0.5, 0.5, 1.0]; 256];
+    for (name, frame) in [("bright ramp", &ramp), ("flat", &flat)] {
+        let flow = host(HostKernel::Flow { levels: 1, radius: 3, iterations: 1 }, frame, size, Some(frame), size);
+        let still = |p: &&Pixel| p[0].abs() < 1e-3 && p[1].abs() < 1e-3;
+        assert!(flow.iter().all(|p| still(&p)), "{name}: {:?}", flow.iter().find(|p| !still(p)));
+    }
+}
+
+#[test]
+fn a_flow_stops_between_its_steps_when_called_off() {
+    let size = [64, 48];
+    let frame = moved(size, |x, y| (x, y));
+    let checks = std::sync::atomic::AtomicUsize::new(0);
+    let stop = || checks.fetch_add(1, std::sync::atomic::Ordering::Relaxed) >= 2;
+    let mut out = vec![[0.0; 4]; 64 * 48];
+    let image = Image { size, pixels: &frame };
+    let finished = run(&HostKernel::Flow { levels: 4, radius: 3, iterations: 2 }, image, Some(image), size, &mut out, &stop);
+    let steps = super::flow::flow_steps(size, 4, 2).0.len();
+    assert!(!finished && checks.into_inner() < steps, "the flow ran on after being called off");
 }
