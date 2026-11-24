@@ -1,3 +1,4 @@
+mod flow;
 mod fuse;
 mod gpu;
 mod pointwise;
@@ -166,6 +167,7 @@ pub(crate) fn run(kernel: &HostKernel, src: Image, aux: Option<Image>, size: [u3
                 },
             );
         }
+        HostKernel::Flow { levels, radius, iterations } => flow::run(*levels, *radius, *iterations, src, top, size, out),
         HostKernel::Blend { .. }
         | HostKernel::HslRange { .. }
         | HostKernel::Noise { .. }

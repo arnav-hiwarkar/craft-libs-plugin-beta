@@ -488,6 +488,7 @@ impl Effect for HostKernels {
             "noise grain",
             "hsl range mask",
             "splat",
+            "flow",
         ];
         let modes = ["over", "add", "subtract", "multiply", "screen", "overlay", "darken", "lighten", "difference", "screen hdr"];
         EffectSpec::new("host-kernels", "Host Kernels", "Probe")
@@ -574,6 +575,14 @@ impl Effect for HostKernels {
                     )
                 };
                 plan.pass(PlanPass::splat(source, output, (0..400).map(dab).collect()))
+            }
+            33 => {
+                let mut plan = plan;
+                let (moved, flow) = (plan.scratch(frame), plan.scratch(frame));
+                plan.pass(blurred)
+                    .pass(PlanPass::warp(source, soft, moved, [3.0, -2.0]))
+                    .pass(PlanPass::flow(source, moved, flow))
+                    .pass(PlanPass::warp(moved, flow, output, [1.0, 1.0]))
             }
             _ => {
                 let quarter = frame.map(|side| side.div_ceil(4));

@@ -653,6 +653,8 @@ pub struct Plan {
     pub textures: Vec<GpuTexture>,
     #[serde(default)]
     pub layers: Vec<String>,
+    #[serde(default)]
+    pub sources: Vec<f64>,
     pub passes: Vec<PlanPass>,
 }
 
@@ -756,6 +758,11 @@ impl Plan {
         PlanImage::Layer(self.layers.len().saturating_sub(1) as u32)
     }
 
+    pub fn source_at(&mut self, layer_time: f64) -> PlanImage {
+        self.sources.push(layer_time);
+        PlanImage::SourceAt(self.sources.len().saturating_sub(1) as u32)
+    }
+
     pub fn pass(mut self, pass: PlanPass) -> Self {
         self.passes.push(pass);
         self
@@ -767,6 +774,7 @@ impl Plan {
             PlanImage::Scratch(index) => self.images.get(index as usize).copied(),
             PlanImage::Texture(index) => self.textures.get(index as usize).map(|texture| texture.size),
             PlanImage::Layer(index) => ((index as usize) < self.layers.len()).then_some(frame),
+            PlanImage::SourceAt(index) => ((index as usize) < self.sources.len()).then_some(frame),
         }
     }
 
@@ -790,6 +798,9 @@ impl Plan {
             let (Some(src), Some(out)) = (self.size_of(pass.src, frame), self.size_of(pass.out, frame)) else { continue };
             match (&pass.host, &pass.draw) {
                 (Some(kernel), _) if kernel.needs_temporary() => working.push((out, PIXEL_BYTES as u64)),
+                (Some(HostKernel::Flow { levels, .. }), _) => {
+                    working.extend(crate::kernels::flow_levels(out, *levels).into_iter().flat_map(|level| [(level, PIXEL_BYTES as u64); 3]))
+                }
                 (Some(HostKernel::Resample { .. }), _) => {
                     largest_intermediate = largest_intermediate.max(bytes([out[0], src[1]], PIXEL_BYTES as u64))
                 }
@@ -826,15 +837,21 @@ impl Plan {
         if self.buffers.len() > MAX_BUFFERS {
             return Err(format!("a plan has at most {MAX_BUFFERS} buffers, this one has {}", self.buffers.len()));
         }
-        let pictures = self.textures.len() + self.layers.len();
+        let pictures = self.textures.len() + self.layers.len() + self.sources.len();
         if pictures > MAX_TEXTURES {
-            return Err(format!("a plan has at most {MAX_TEXTURES} textures and layers together, this one has {pictures}"));
+            return Err(format!("a plan has at most {MAX_TEXTURES} textures, layers and source frames together, this one has {pictures}"));
+        }
+        if let Some(time) = self.sources.iter().find(|time| !time.is_finite()) {
+            return Err(format!("a source frame is asked at layer time {time}; give a finite time in seconds"));
         }
         if let Some((i, texture)) = self.textures.iter().enumerate().find(|(_, texture)| area(texture.size) == 0) {
             return Err(format!("texture {i} ({:?}) is {}x{}; it must be non-empty", texture.key, texture.size[0], texture.size[1]));
         }
-        let texels =
-            self.textures.iter().map(|texture| area(texture.size)).fold((self.layers.len() as u64).saturating_mul(area(frame)), u64::saturating_add);
+        let texels = self
+            .textures
+            .iter()
+            .map(|texture| area(texture.size))
+            .fold(((self.layers.len() + self.sources.len()) as u64).saturating_mul(area(frame)), u64::saturating_add);
         if texels > MAX_TEXELS {
             return Err(format!("the textures and layers hold {texels} pixels; the limit is {MAX_TEXELS}"));
         }
@@ -845,7 +862,7 @@ impl Plan {
                 let (floats, uints) = (pass.f.len(), pass.u.len());
                 return Err(format!("pass {n} has {floats} floats and {uints} uints; the limits are {MAX_PASS_FLOATS} and {MAX_PASS_UINTS}"));
             }
-            if matches!(pass.out, PlanImage::Source | PlanImage::Texture(_) | PlanImage::Layer(_)) {
+            if matches!(pass.out, PlanImage::Source | PlanImage::Texture(_) | PlanImage::Layer(_) | PlanImage::SourceAt(_)) {
                 return Err(format!("pass {n} writes {:?}, which passes only read", pass.out));
             }
             for image in std::iter::once(pass.src).chain(pass.aux) {
@@ -993,6 +1010,10 @@ impl PlanPass {
         PlanPass::host(HostKernel::Splat { dabs }, src, out)
     }
 
+    pub fn flow(from: PlanImage, to: PlanImage, out: PlanImage) -> Self {
+        PlanPass::host(HostKernel::Flow { levels: 6, radius: 3, iterations: 2 }, from, out).aux(to)
+    }
+
     pub fn draw(kernel: &str, out: PlanImage) -> Self {
         PlanPass { draw: Some(Draw::default()), ..PlanPass::new(kernel, PlanImage::Source, out) }
     }
@@ -1073,6 +1094,7 @@ pub enum PlanImage {
     Scratch(u32),
     Texture(u32),
     Layer(u32),
+    SourceAt(u32),
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]

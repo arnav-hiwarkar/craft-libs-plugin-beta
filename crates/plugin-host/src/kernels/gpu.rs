@@ -2,6 +2,7 @@ use std::fmt::Write;
 
 use craft_plugin::{BlendMode, Encoding, Filter, HostKernel, Measure, Negatives, Plan, PlanImage, PlanPass, Taps};
 
+use super::flow::{FlowOp, Slot, flow_steps};
 use super::fuse::{Fused, Op, Ref, Step, live_after, steps};
 use super::{bilateral_space, blur_taps, dab_tiles, directional_steps, resample_scale};
 
@@ -105,6 +106,51 @@ pub fn lower(plan: &Plan, frame: [u32; 2]) -> (Vec<Lowered<'_>>, Vec<[u32; 2]>) 
                         vec![step("craft_resample", resample_scale(*scale, size(pass.src), size(pass.out)).to_vec(), vec![filter], Vec::new())]
                     }
                     HostKernel::Warp { amount } => vec![step("craft_warp", amount.to_vec(), Vec::new(), Vec::new())],
+                    HostKernel::Flow { levels, radius, iterations } => {
+                        let (flow, sizes) = flow_steps(size(pass.out), *levels, *iterations);
+                        let places: Vec<StepImage> = sizes
+                            .iter()
+                            .enumerate()
+                            .map(|(at, wanted)| {
+                                let nth = sizes[..at].iter().filter(|size| *size == wanted).count();
+                                let found = temps.iter().enumerate().filter(|(_, known)| *known == wanted).nth(nth).map(|(index, _)| index);
+                                StepImage::Temp(found.unwrap_or_else(|| {
+                                    temps.push(*wanted);
+                                    temps.len() - 1
+                                }))
+                            })
+                            .collect();
+                        let place = |slot: Slot| match slot {
+                            Slot::From => src,
+                            Slot::To => aux.unwrap_or(src),
+                            Slot::Temp(index) => places[index],
+                            Slot::Out => out,
+                        };
+                        let sized = |slot: Slot| match slot {
+                            Slot::Temp(index) => sizes[index],
+                            _ => size(pass.out),
+                        };
+                        flow.into_iter()
+                            .map(|part| {
+                                let (entry, f, u) = match part.op {
+                                    FlowOp::Pack => ("craft_flow_pack", Vec::new(), Vec::new()),
+                                    FlowOp::Reduce => ("craft_resample", resample_scale(None, sized(part.src), sized(part.out)).to_vec(), vec![0]),
+                                    FlowOp::Gradient => ("craft_flow_gradient", Vec::new(), Vec::new()),
+                                    FlowOp::Track(init) => ("craft_flow_track", Vec::new(), vec![*radius, init as u32]),
+                                };
+                                GpuStep {
+                                    entry,
+                                    src: place(part.src),
+                                    aux: part.aux.map(place),
+                                    out: place(part.out),
+                                    f,
+                                    u,
+                                    data: Vec::new(),
+                                    wgsl: String::new(),
+                                }
+                            })
+                            .collect()
+                    }
                     pointwise_kernel => {
                         let op = Op { kernel: pointwise_kernel, src: Ref::Input(0), aux: pass.aux.map(|_| Ref::Input(1)) };
                         let single = Fused {
@@ -206,7 +252,8 @@ fn pointwise(fused: &Fused, resampled: Option<(usize, Filter)>, f: Vec<f32>) -> 
             | HostKernel::Erode { .. }
             | HostKernel::DirectionalBlur { .. }
             | HostKernel::Bilateral { .. }
-            | HostKernel::Splat { .. } => v,
+            | HostKernel::Splat { .. }
+            | HostKernel::Flow { .. } => v,
         };
         let _ = writeln!(wgsl, "    let v{k} = {expr};");
     }

@@ -16,6 +16,9 @@ pub const MAX_DABS: usize = 65536;
 pub const MAX_DAB_RADIUS: f32 = 256.0;
 pub const DAB_TILE: u32 = 16;
 pub const MAX_DAB_TILES: u64 = 1 << 21;
+pub const MAX_FLOW_LEVELS: u32 = 8;
+pub const MAX_FLOW_RADIUS: u32 = 8;
+pub const MAX_FLOW_ITERATIONS: u32 = 8;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -89,6 +92,11 @@ pub enum HostKernel {
     },
     Splat {
         dabs: Vec<Dab>,
+    },
+    Flow {
+        levels: u32,
+        radius: u32,
+        iterations: u32,
     },
 }
 
@@ -211,6 +219,7 @@ impl HostKernel {
             HostKernel::Noise { .. } => "noise",
             HostKernel::HslRange { .. } => "hsl_range",
             HostKernel::Splat { .. } => "splat",
+            HostKernel::Flow { .. } => "flow",
         }
     }
 
@@ -226,6 +235,7 @@ impl HostKernel {
                 | HostKernel::DirectionalBlur { .. }
                 | HostKernel::Bilateral { .. }
                 | HostKernel::Splat { .. }
+                | HostKernel::Flow { .. }
         )
     }
 
@@ -370,6 +380,18 @@ impl HostKernel {
                 }
                 same("src", src)
             }
+            HostKernel::Flow { levels, radius, iterations } => {
+                if !(1..=MAX_FLOW_LEVELS).contains(levels)
+                    || !(1..=MAX_FLOW_RADIUS).contains(radius)
+                    || !(1..=MAX_FLOW_ITERATIONS).contains(iterations)
+                {
+                    return Err(format!(
+                        "`levels` is {levels}, `radius` {radius} and `iterations` {iterations}; give 1 to {MAX_FLOW_LEVELS} levels, a radius of 1 to {MAX_FLOW_RADIUS} and 1 to {MAX_FLOW_ITERATIONS} iterations"
+                    ));
+                }
+                same("src", src)?;
+                same("aux", needs_aux("frame to track to")?)
+            }
             HostKernel::ToLinear | HostKernel::ToSrgb | HostKernel::Transfer { .. } | HostKernel::Dither { .. } | HostKernel::LightAlpha => {
                 same("src", src)
             }
@@ -417,4 +439,17 @@ pub fn histogram<'a>(pixels: impl IntoIterator<Item = &'a Pixel>) -> [[u32; 256]
         }
     }
     counts
+}
+
+pub const MIN_FLOW_LEVEL_SIDE: u32 = 8;
+
+pub fn flow_levels(size: [u32; 2], levels: u32) -> Vec<[u32; 2]> {
+    let mut sizes = vec![size];
+    while let Some(&last) = sizes.last()
+        && sizes.len() < levels as usize
+        && last.iter().all(|side| side.div_ceil(2) >= MIN_FLOW_LEVEL_SIDE)
+    {
+        sizes.push(last.map(|side| side.div_ceil(2)));
+    }
+    sizes
 }
