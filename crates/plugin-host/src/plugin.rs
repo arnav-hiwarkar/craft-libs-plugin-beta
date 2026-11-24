@@ -244,15 +244,8 @@ impl Plugin {
             Some(reach) if even_rows.max(reach + 1) + 2 * reach < rows => even_rows.max(reach + 1),
             _ => rows,
         };
-        let mut reused = Vec::new();
-        if ignores {
-            reused = std::mem::take(pixels);
-            reused.truncate(out_width * rows);
-        }
         let input: &[Pixel] = pixels;
-        let mut output = if ignores {
-            reused
-        } else if pointwise {
+        let mut output = if pointwise && !ignores {
             let mut shown = Vec::with_capacity(out_width * rows);
             for row in input.chunks_exact(width).skip(area.top as usize).take(rows) {
                 shown.extend_from_slice(&row[area.left as usize..area.right as usize]);

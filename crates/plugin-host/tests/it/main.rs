@@ -1428,6 +1428,22 @@ fn a_generator_that_ignores_its_input_and_reports_what_it_drew_gives_the_same_pi
 }
 
 #[test]
+fn a_generator_whose_last_band_fails_leaves_its_input_whole() {
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+    each_kind(|kind| {
+        let loaded = load(kind, &[]);
+        let mut cx = cx(300, 260);
+        cx.params.insert("drawn".into(), craft_plugin_host::Value::Bool(true));
+        cx.params.insert("fails".into(), craft_plugin_host::Value::Bool(true));
+        let layout = loaded.plugin.call::<Layout>(&Call::Layout { effect: "sprite".into(), cx: cx.clone() }, None, &mut Recorder::default()).unwrap();
+        let mut pixels = vec![[0.5; 4]; 300 * 260];
+        let rendered = pool.install(|| loaded.plugin.render("sprite", &cx, &layout, None, &mut pixels, Recorder::default));
+        assert!(rendered.is_err(), "{kind:?}");
+        assert!(pixels == vec![[0.5; 4]; 300 * 260], "{kind:?}: {} pixels, the input is not kept", pixels.len());
+    });
+}
+
+#[test]
 fn a_drawn_rectangle_reaching_outside_the_frame_is_clipped_to_it() {
     each_kind(|kind| {
         let (area, pixels) = sprite(kind, false, true, [300, 150], None);

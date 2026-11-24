@@ -628,6 +628,7 @@ impl Effect for Sprite {
             "Ignores Input, Reports Drawn",
             false,
         ))
+        .param(Param::checkbox("fails", "Last Band Fails", false))
     }
 
     fn layout(&self, cx: &Cx) -> Layout {
@@ -656,6 +657,9 @@ impl Effect for Sprite {
         }
         if drawn {
             frame.drawn(Rect { left, top, right: left + side, bottom: top + side });
+        }
+        if cx.bool("fails") && frame.origin[1] + frame.height >= cx.size[1] as usize {
+            return Err("the last band failed".into());
         }
         Ok(())
     }
