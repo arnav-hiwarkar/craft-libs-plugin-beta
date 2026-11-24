@@ -628,6 +628,25 @@ impl Effect for Swap {
     }
 }
 
+struct SmallSwap;
+
+impl Effect for SmallSwap {
+    fn spec(&self) -> EffectSpec {
+        EffectSpec::new("small-swap", "Small Swap", "Probe")
+    }
+
+    fn layout(&self, cx: &Cx) -> Layout {
+        match cx.size[0] <= 512 {
+            true => Layout::pointwise().passes(Plan::new().pass(PlanPass::matrix(PlanImage::Source, PlanImage::Output, SWAP))),
+            false => Layout::pointwise(),
+        }
+    }
+
+    fn render(&self, cx: &Cx, frame: &mut Frame) -> Result<()> {
+        Swap.render(cx, frame)
+    }
+}
+
 struct Streak;
 
 impl Effect for Streak {
@@ -1207,6 +1226,7 @@ fn make() -> Plugin {
         .effect(GpuSoften)
         .effect(HostKernels)
         .effect(Swap)
+        .effect(SmallSwap)
         .effect(HostCalls)
         .effect(Passes)
         .effect(GpuFill)
