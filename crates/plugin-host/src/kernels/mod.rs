@@ -98,8 +98,8 @@ pub(crate) fn stamp(mut p: Pixel, dab: &Dab, x: usize, y: usize) -> Pixel {
     }
     let fall = if d <= dab.hardness { 1.0 } else { 1.0 - (d - dab.hardness) / (1.0 - dab.hardness).max(1e-6) };
     let w = fall * fall * (3.0 - 2.0 * fall) * dab.opacity;
-    for c in 0..3 {
-        p[c] += dab.colour[c] * w;
+    for (value, colour) in p[..3].iter_mut().zip(dab.colour) {
+        *value += colour * w;
     }
     p[3] = (p[3] + w).min(1.0);
     p
