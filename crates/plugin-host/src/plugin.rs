@@ -232,10 +232,10 @@ impl Plugin {
                     let first = (top + band * even_rows) as i32;
                     Ok(drawn_in(reply, Rect { top: first, bottom: first + (rows.len() / width) as i32, ..area }))
                 })
-                .try_reduce(Rect::default, |a, b| Ok(covering(a, b)))?;
+                .collect::<Result<Vec<Rect>, PluginError>>()?;
             pixels.truncate(bottom * width);
             pixels.drain(..top * width);
-            return Ok(cropped(pixels, area, drawn));
+            return Ok(cropped(pixels, area, &drawn));
         }
         let reach = layout.reach.map(|reach| reach as usize);
         let band_rows = match reach {
@@ -303,9 +303,9 @@ impl Plugin {
             host.finish(written);
             Ok(drawn_in(reply, out))
         });
-        let drawn = drawn.try_reduce(Rect::default, |a, b| Ok(covering(a, b)))?;
+        let drawn = drawn.collect::<Result<Vec<Rect>, PluginError>>()?;
         *pixels = output;
-        Ok(cropped(pixels, area, drawn))
+        Ok(cropped(pixels, area, &drawn))
     }
 
     pub fn accept_drop(&self, path: &std::path::Path) -> Result<(), String> {
@@ -522,25 +522,25 @@ pub(crate) fn drawn_in(reply: Option<Rendered>, band: Rect) -> Rect {
     reply.and_then(|reply| reply.drawn).map_or(band, |drawn| drawn.intersection(band))
 }
 
-fn covering(a: Rect, b: Rect) -> Rect {
-    match (a.is_empty(), b.is_empty()) {
-        (true, _) => b,
-        (_, true) => a,
-        _ => a.union(b),
-    }
-}
-
-fn cropped(pixels: &mut Vec<Pixel>, area: Rect, drawn: Rect) -> Rect {
-    if drawn == area {
+fn cropped(pixels: &mut Vec<Pixel>, area: Rect, bands: &[Rect]) -> Rect {
+    let size = |rect: &Rect| rect.width() as usize * rect.height() as usize;
+    if bands.iter().map(size).sum::<usize>() == size(&area) {
         return area;
     }
-    let (left, right) = ((drawn.left - area.left) as usize, (drawn.right - area.left) as usize);
-    let mut kept = Vec::with_capacity(drawn.width() as usize * drawn.height() as usize);
-    for row in pixels.chunks_exact(area.width() as usize).skip((drawn.top - area.top) as usize).take(drawn.height() as usize) {
-        kept.extend_from_slice(&row[left..right]);
+    let drawn: Vec<Rect> = bands.iter().copied().filter(|band| !band.is_empty()).collect();
+    let Some(union) = drawn.iter().copied().reduce(Rect::union) else {
+        *pixels = Vec::new();
+        return Rect { right: area.left, bottom: area.top, ..area };
+    };
+    let mut kept = Vec::with_capacity(size(&union));
+    for (y, row) in (area.top..).zip(pixels.chunks_exact(area.width() as usize)).filter(|(y, _)| (union.top..union.bottom).contains(y)) {
+        let band = drawn.iter().find(|band| (band.top..band.bottom).contains(&y)).map_or(union.left..union.left, |band| band.left..band.right);
+        kept.resize(kept.len() + (band.start - union.left) as usize, [0.0; 4]);
+        kept.extend_from_slice(&row[(band.start - area.left) as usize..(band.end - area.left) as usize]);
+        kept.resize(kept.len() + (union.right - band.end) as usize, [0.0; 4]);
     }
     *pixels = kept;
-    drawn
+    union
 }
 
 fn copied_band_rows(area: Rect, height: usize, width: usize, reach: usize, bands: usize, budget: usize) -> usize {
@@ -593,6 +593,20 @@ fn origin(call: &Call) -> Origin {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bands_that_drew_different_rectangles_are_cropped_to_their_union_and_transparent_where_none_drew() {
+        let area = Rect { left: 10, top: 20, right: 14, bottom: 23 };
+        let mut pixels: Vec<Pixel> = (0..12).map(|i| [i as f32; 4]).collect();
+        let bands = [Rect { left: 11, top: 20, right: 12, bottom: 21 }, Rect { left: 12, top: 22, right: 14, bottom: 23 }];
+        assert_eq!(cropped(&mut pixels, area, &bands), Rect { left: 11, top: 20, right: 14, bottom: 23 });
+        assert_eq!(pixels.iter().map(|pixel| pixel[0]).collect::<Vec<_>>(), [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 10.0, 11.0]);
+        let mut whole: Vec<Pixel> = vec![[1.0; 4]; 12];
+        assert_eq!(cropped(&mut whole, area, &[Rect { bottom: 21, ..area }, Rect { top: 21, ..area }]), area);
+        assert_eq!(whole.len(), 12);
+        assert_eq!(cropped(&mut whole, area, &[Rect { right: 10, ..area }]), Rect { right: 10, bottom: 20, ..area });
+        assert!(whole.is_empty());
+    }
 
     #[test]
     fn a_sandboxed_render_uses_one_band_when_its_reach_covers_the_frame_and_bounds_what_its_bands_stage() {
