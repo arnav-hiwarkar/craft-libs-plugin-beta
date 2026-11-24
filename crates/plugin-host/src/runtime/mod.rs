@@ -6,7 +6,6 @@ mod wasm;
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -17,10 +16,11 @@ use self::native::NativeGuest;
 use self::serve::{HostCx, Identity};
 use self::tasks::{PROJECT_CLOSED, Project, Slot, Tasks};
 use self::wasm::{WasmGuest, WasmModule};
+pub(crate) use crate::cache::Staged;
 use crate::cache::{BUDGET, Cache};
 use crate::host::{Host, Origin};
 use crate::images::{IMAGE_BUDGET, Images, PluginImage};
-use crate::plugin::{Io, PluginError};
+use crate::plugin::{Io, PluginError, Scope};
 use crate::registry::Bundle;
 
 const COMPILED_DIR: &str = ".compiled";
@@ -168,6 +168,10 @@ impl Engine {
         self.identity.cache.changed_outside_a_render();
     }
 
+    pub fn commit(&self, memo: Staged) {
+        self.identity.cache.commit(memo);
+    }
+
     pub fn cache_generation(&self) -> u64 {
         self.identity.cache.generation()
     }
@@ -183,10 +187,10 @@ impl Engine {
         host: &mut dyn Host,
         origin: Origin,
         budget: Duration,
-        cancel: Option<Arc<AtomicBool>>,
+        Scope { cancel, memo }: Scope,
     ) -> Result<Vec<u8>, PluginError> {
         let stateful = origin == Origin::Interactive;
-        let mut cx = HostCx { host, plugin: &self.identity, engine: self, origin, task: None, on_task_thread: false, paused: Duration::ZERO };
+        let mut cx = HostCx { host, plugin: &self.identity, engine: self, origin, task: None, on_task_thread: false, paused: Duration::ZERO, memo };
         match &self.kind {
             Kind::Native(guest) => match io {
                 Io::None => Ok(guest.call(request, None, &mut cx)),
@@ -259,6 +263,7 @@ impl Engine {
             task: Some(slot.clone()),
             on_task_thread: true,
             paused: Duration::ZERO,
+            memo: None,
         };
         let reply = match &self.kind {
             Kind::Native(guest) => guest.call(request, None, &mut cx),
@@ -303,6 +308,7 @@ impl Engine {
                 task: Some(forwarded.task.clone()),
                 on_task_thread: false,
                 paused: Duration::ZERO,
+                memo: None,
             };
             let answer = native::guarded(&mut cx, &forwarded.request, &forwarded.bulk);
             let _ = forwarded.reply.send(answer);

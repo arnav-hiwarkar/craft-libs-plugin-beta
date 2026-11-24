@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 
 use super::tasks::{Slot, Tasks};
 use super::{Engine, gate};
-use crate::cache::Cache;
+use crate::cache::{Cache, Staged};
 use crate::host::{Host, Origin, Pixels};
 use crate::images::Images;
 
@@ -131,6 +131,7 @@ pub(crate) struct HostCx<'a> {
     pub task: Option<Arc<Slot>>,
     pub on_task_thread: bool,
     pub paused: Duration,
+    pub memo: Option<&'a Staged>,
 }
 
 pub(crate) enum Bulk {
@@ -182,6 +183,13 @@ pub(crate) fn serve(cx: &mut HostCx, request: &[u8], bulk: &[u8]) -> (Vec<u8>, B
         return cx.plugin.tasks.forward(&task, request, bulk).unwrap_or_else(|e| reply(Err(e)));
     }
     reply(answer(cx, call, bulk))
+}
+
+fn memo_get(cx: &HostCx, key: &str) -> Option<Arc<[u8]>> {
+    match cx.memo.and_then(|memo| memo.get(key)) {
+        Some(staged) => staged,
+        None => cx.plugin.cache.get(key),
+    }
 }
 
 pub(crate) fn refuse_oversized(request: &[u8], bulk: usize) -> Option<(Vec<u8>, Bulk)> {
@@ -298,20 +306,26 @@ fn answer(cx: &mut HostCx, call: HostCall, bulk: &[u8]) -> Result<(Value, Bulk),
             names.sort();
             plain(json!(names))
         }
-        HostCall::CacheGet { key } => Ok(match cx.plugin.cache.get(&key) {
+        HostCall::CacheGet { key } => Ok(match memo_get(cx, &key) {
             Some(bytes) => (Value::Bool(true), Bulk::Shared(bytes)),
             None => (Value::Bool(false), Bulk::None),
         }),
         HostCall::CachePut { key } => {
-            cx.plugin.cache.put(key, bulk)?;
+            match cx.memo {
+                Some(memo) => cx.plugin.cache.check(&key, bulk).map(|()| memo.set(key, Some(bulk.into())))?,
+                None => cx.plugin.cache.put(key, bulk)?,
+            }
             if cx.origin != Origin::Render {
                 cx.plugin.cache.changed_outside_a_render();
             }
             plain(Value::Null)
         }
-        HostCall::CacheHas { key } => plain(Value::Bool(cx.plugin.cache.get(&key).is_some())),
+        HostCall::CacheHas { key } => plain(Value::Bool(memo_get(cx, &key).is_some())),
         HostCall::CacheRemove { key } => {
-            cx.plugin.cache.remove(&key);
+            match cx.memo {
+                Some(memo) => memo.set(key, None),
+                None => cx.plugin.cache.remove(&key),
+            }
             if cx.origin != Origin::Render {
                 cx.plugin.cache.changed_outside_a_render();
             }

@@ -22,6 +22,19 @@ struct Inner {
     clock: u64,
 }
 
+#[derive(Default)]
+pub(crate) struct Staged(Mutex<HashMap<String, Option<Arc<[u8]>>>>);
+
+impl Staged {
+    pub fn get(&self, key: &str) -> Option<Option<Arc<[u8]>>> {
+        self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).get(key).cloned()
+    }
+
+    pub fn set(&self, key: String, bytes: Option<Arc<[u8]>>) {
+        self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(key, bytes);
+    }
+}
+
 pub(crate) struct Cache {
     budget: usize,
     inner: Mutex<Inner>,
@@ -50,21 +63,31 @@ impl Cache {
         Some(entry.bytes.clone())
     }
 
-    pub fn put(&self, key: String, bytes: &[u8]) -> Result<(), String> {
+    pub fn check(&self, key: &str, bytes: &[u8]) -> Result<(), String> {
         if key.len() > KEY_LIMIT {
             return Err(format!("a cache key of {} bytes is longer than {KEY_LIMIT}", key.len()));
         }
-        let cost = charge(&key, bytes);
-        if cost > self.budget {
+        if charge(key, bytes) > self.budget {
             return Err(format!("{} bytes is more than the plugin cache holds", bytes.len()));
         }
+        Ok(())
+    }
+
+    pub fn put(&self, key: String, bytes: &[u8]) -> Result<(), String> {
+        self.check(&key, bytes)?;
+        self.insert(key, bytes.into());
+        Ok(())
+    }
+
+    fn insert(&self, key: String, bytes: Arc<[u8]>) {
+        let cost = charge(&key, &bytes);
         let mut inner = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         inner.clock += 1;
         let used = inner.clock;
         if let Some(old) = inner.entries.remove(&key) {
             inner.bytes -= charge(&key, &old.bytes);
         }
-        inner.entries.insert(key, Entry { bytes: bytes.into(), used });
+        inner.entries.insert(key, Entry { bytes, used });
         inner.bytes += cost;
         while inner.bytes > self.budget {
             let Some(oldest) = inner.entries.iter().min_by_key(|(_, entry)| entry.used).map(|(key, _)| key.clone()) else { break };
@@ -72,7 +95,15 @@ impl Cache {
                 inner.bytes -= charge(&oldest, &evicted.bytes);
             }
         }
-        Ok(())
+    }
+
+    pub fn commit(&self, staged: Staged) {
+        for (key, bytes) in staged.0.into_inner().unwrap_or_else(|poisoned| poisoned.into_inner()) {
+            match bytes {
+                Some(bytes) => self.insert(key, bytes),
+                None => self.remove(&key),
+            }
+        }
     }
 
     pub fn remove(&self, key: &str) {

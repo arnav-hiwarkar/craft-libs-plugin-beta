@@ -709,6 +709,49 @@ fn a_render_called_off_stops_at_the_next_pass_and_keeps_its_input() {
     assert_eq!(pixels[0], [0.25, 0.25, 0.25, 1.0]);
 }
 
+struct CallsOffAfterABand(Arc<AtomicBool>);
+
+impl Host for CallsOffAfterABand {
+    fn cancel(&self) -> Option<Arc<AtomicBool>> {
+        Some(self.0.clone())
+    }
+
+    fn finish(&mut self, _written: &mut [Pixel]) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
+fn called_off_after_a_band(loaded: &Loaded, effect: &str, pixels: &mut Vec<Pixel>) -> PluginError {
+    let cancel = Arc::new(AtomicBool::new(false));
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap();
+    let mut cx = cx(2, 256);
+    cx.params.insert("amount".into(), craft_plugin::Value::Number(1.0));
+    pool.install(|| loaded.plugin.render(effect, &cx, &Layout::pointwise(), None, pixels, || CallsOffAfterABand(cancel.clone())).unwrap_err())
+}
+
+#[test]
+fn a_pointwise_render_called_off_between_bands_keeps_its_input() {
+    let loaded = load(Kind::Native, &[]);
+    let input: Vec<Pixel> = vec![[0.25, 0.25, 0.25, 1.0]; 2 * 256];
+    let mut pixels = input.clone();
+    let stopped = called_off_after_a_band(&loaded, "invert", &mut pixels);
+    assert!(matches!(stopped, PluginError::Cancelled), "{stopped:?}");
+    assert!(pixels == input, "a render called off keeps its input");
+}
+
+#[test]
+fn a_render_called_off_after_a_band_leaves_no_cache_entry_behind() {
+    let loaded = load(Kind::Native, &[]);
+    let mut pixels: Vec<Pixel> = vec![[0.25, 0.25, 0.25, 1.0]; 2 * 256];
+    let stopped = called_off_after_a_band(&loaded, "tally", &mut pixels);
+    assert!(matches!(stopped, PluginError::Cancelled), "{stopped:?}");
+    assert_eq!(loaded.plugin.cached("tally"), None, "a cancelled render's cache writes stay unseen");
+    let mut cx = cx(2, 256);
+    cx.params.insert("amount".into(), craft_plugin::Value::Number(1.0));
+    loaded.plugin.render("tally", &cx, &Layout::pointwise(), None, &mut pixels, Recorder::default).unwrap();
+    assert!(loaded.plugin.cached("tally").is_some(), "a finished render keeps its cache writes");
+}
+
 #[test]
 fn an_installed_plugin_runs_only_after_the_user_approves_exactly_what_it_asks_for() {
     let (source, _) = bundle(Kind::Wasm, &["document.read"]);
