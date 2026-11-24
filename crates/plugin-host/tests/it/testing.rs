@@ -101,6 +101,13 @@ fn a_failed_call_is_journalled_with_the_call_and_the_effect() {
 }
 
 #[test]
+fn the_app_can_warn_into_the_plugins_own_log() {
+    let (_bundle, plugin) = probe();
+    plugin.plugin().warn("effect `invert`: its GPU shader is turned off".into());
+    assert_eq!(plugin.logs(), ["effect `invert`: its GPU shader is turned off"]);
+}
+
+#[test]
 fn a_test_render_clamps_to_the_hard_range_and_refuses_text_for_a_number_like_the_app() {
     let (_bundle, plugin) = probe();
     let render = |amount: f64| plugin.render("invert").on(Pattern::Checker).size(2, 1).set("amount", amount).run().unwrap();
