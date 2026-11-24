@@ -5,6 +5,22 @@ use std::sync::atomic::AtomicBool;
 use craft_plugin::{AudioRequest, EffectSpec, FrameRequest, LayerPlacement, MaskPath, ParamsAt, Permission, PickFile, Pixel, Place, Scene};
 use serde_json::Value;
 
+pub const MAX_FRAME_SCALE: f64 = 4.0;
+
+pub fn check_frame(request: &FrameRequest) -> Result<(), String> {
+    if !(request.scale > 0.0 && request.scale <= MAX_FRAME_SCALE) || !request.time.is_finite() {
+        return Err(format!("a frame needs a scale above 0 and at most {MAX_FRAME_SCALE}, and a finite time"));
+    }
+    if request.source && request.layer.is_none() {
+        return Err("a source frame names its layer".into());
+    }
+    let numeric = |name: &Option<String>| name.as_ref().is_none_or(|name| name.parse::<u64>().is_ok());
+    if request.ids && !(numeric(&request.comp) && numeric(&request.layer)) {
+        return Err("a frame asked for by ids names its composition and layer by number".into());
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Origin {
     Interactive,

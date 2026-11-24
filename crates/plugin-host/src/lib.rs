@@ -25,7 +25,7 @@ pub use craft_plugin::{
     Permission, PickFile, Pixel, Place, Plan, PlanData, PlanImage, PlanPass, Rect, RenderCx, RunMode, Scene, TaskSpec, TaskState, TaskStatus,
     UiEvent, UiEventKind, UiInput, Value, Widget, applied_padding, default_curves_text,
 };
-pub use host::{Access, Host, Origin, Pixels, Samples};
+pub use host::{Access, Host, MAX_FRAME_SCALE, Origin, Pixels, Samples, check_frame};
 pub use images::{MAX_IMAGE_SIDE, PluginImage};
 pub use journal::{LogLine, LogPage};
 pub use package::{
