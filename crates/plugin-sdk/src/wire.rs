@@ -420,6 +420,11 @@ impl Rect {
         }
     }
 
+    pub fn intersection(self, other: Rect) -> Rect {
+        let (left, top) = (self.left.max(other.left), self.top.max(other.top));
+        Rect { left, top, right: self.right.min(other.right).max(left), bottom: self.bottom.min(other.bottom).max(top) }
+    }
+
     pub fn contains(&self, other: Rect) -> bool {
         other.left >= self.left && other.top >= self.top && other.right <= self.right && other.bottom <= self.bottom
     }
@@ -427,6 +432,11 @@ impl Rect {
 
 fn span(from: i32, to: i32) -> u32 {
     u32::try_from((i64::from(to) - i64::from(from)).max(0)).unwrap_or(u32::MAX)
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Rendered {
+    pub drawn: Option<Rect>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq)]
@@ -454,6 +464,8 @@ pub struct Layout {
     pub cpu: bool,
     #[serde(default)]
     pub maps_input: bool,
+    #[serde(default)]
+    pub ignores_input: bool,
 }
 
 fn four_sides<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<[u32; 4], D::Error> {
@@ -494,6 +506,11 @@ impl Layout {
 
     pub fn maps_input(mut self) -> Self {
         self.maps_input = true;
+        self
+    }
+
+    pub fn ignores_input(mut self) -> Self {
+        self.ignores_input = true;
         self
     }
 

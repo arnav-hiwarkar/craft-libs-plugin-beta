@@ -402,7 +402,9 @@ impl Effect for HostKernels {
                 craft_plugin::Taps::Full { width: 3, weights: vec![0.0, -1.0, 0.0, -1.0, 5.0, -1.0, 0.0, -1.0, 0.0] },
             )),
             7 => plan.pass(blurred).pass(PlanPass::warp(source, soft, output, [6.0, -4.0])),
-            8 => plan.pass(PlanPass::matrix(source, output, [[0.0, 0.0, 1.0, 0.0], [0.3, 0.6, 0.1, 0.0], [1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]])),
+            8 => {
+                plan.pass(PlanPass::matrix(source, output, [[0.0, 0.0, 1.0, 0.0], [0.3, 0.6, 0.1, 0.0], [1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]]))
+            }
             10 => plan.pass(PlanPass::to_linear(source, output)),
             11 => plan.pass(PlanPass::to_srgb(source, output)),
             12 => plan.pass(PlanPass::brightness_curve(source, output, Measure::MaxChannel, vec![0.0, 0.0, 0.3, 1.2], 1.5)),
@@ -547,28 +549,39 @@ const SPRITE: usize = 200;
 
 impl Effect for Sprite {
     fn spec(&self) -> EffectSpec {
-        EffectSpec::new("sprite", "Sprite", "Probe").param(Param::checkbox("whole", "Whole Frame", false))
+        EffectSpec::new("sprite", "Sprite", "Probe").param(Param::checkbox("whole", "Whole Frame", false)).param(Param::checkbox(
+            "drawn",
+            "Ignores Input, Reports Drawn",
+            false,
+        ))
     }
 
     fn layout(&self, cx: &Cx) -> Layout {
-        if cx.bool("whole") { Layout::whole_frame() } else { Layout::pointwise() }
+        let layout = if cx.bool("whole") { Layout::whole_frame() } else { Layout::pointwise() };
+        if cx.bool("drawn") { layout.ignores_input() } else { layout }
     }
 
     fn render(&self, cx: &Cx, frame: &mut Frame) -> Result<()> {
-        let (left, top) = ((cx.size[0] as usize).saturating_sub(SPRITE) / 2, (cx.size[1] as usize).saturating_sub(SPRITE) / 2);
-        let (x0, width, cleared) = (frame.origin[0], frame.width, cx.bool("whole"));
+        let side = SPRITE as i32;
+        let (left, top) = ((cx.size[0] as i32 - side) / 2, (cx.size[1] as i32 - side) / 2);
+        let (x0, width, drawn) = (frame.origin[0] as i32, frame.width as i32, cx.bool("drawn"));
+        let cleared = cx.bool("whole") || drawn;
         for (y, row) in frame.rows_mut() {
             if !cleared {
                 row.fill([0.0; 4]);
             }
-            if !(top..top + SPRITE).contains(&y) {
+            let y = y as i32;
+            if !(top..top + side).contains(&y) {
                 continue;
             }
             let v = (y - top) as f32 / SPRITE as f32;
-            for x in left.max(x0)..(left + SPRITE).min(x0 + width) {
+            for x in left.max(x0)..(left + side).min(x0 + width) {
                 let u = (x - left) as f32 / SPRITE as f32;
-                row[x - x0] = [u, v, 1.0 - u * v, 1.0];
+                row[(x - x0) as usize] = [u, v, 1.0 - u * v, 1.0];
             }
+        }
+        if drawn {
+            frame.drawn(Rect { left, top, right: left + side, bottom: top + side });
         }
         Ok(())
     }
@@ -798,7 +811,12 @@ impl Effect for Placed {
         let later = cx.scene_at(1.0)?.camera.ok_or("no scene camera at 1 s")?;
         let focus = camera.focus.unwrap_or_default();
         let m = placed.matrix.map(|row| row.map(|v| v as f32));
-        frame.pixels[..4].copy_from_slice(&[[m[0][0], m[0][1], m[0][2], m[0][3]], [m[1][0], m[1][1], m[1][2], m[1][3]], [m[2][0], m[2][1], m[2][2], 1.0], [m[2][3], m[3][0], m[3][1], 1.0]]);
+        frame.pixels[..4].copy_from_slice(&[
+            [m[0][0], m[0][1], m[0][2], m[0][3]],
+            [m[1][0], m[1][1], m[1][2], m[1][3]],
+            [m[2][0], m[2][1], m[2][2], 1.0],
+            [m[2][3], m[3][0], m[3][1], 1.0],
+        ]);
         frame.pixels[4] = [m[3][2], m[3][3], placed.opacity as f32, 1.0];
         frame.pixels[5] = [placed.size[0] as f32, placed.size[1] as f32, 0.0, 1.0];
         frame.pixels[6] = [focus.distance as f32, focus.aperture as f32, focus.blur as f32, 1.0];
@@ -1194,8 +1212,12 @@ fn make() -> Plugin {
         .task("frame", "Read A Frame", |task: &Task| {
             let args = task.args();
             let layer = args["layer"].as_str().map(String::from);
-            let request =
-                craft_plugin::FrameRequest { comp: None, layer, time: args["time"].as_f64().unwrap_or(0.0), scale: args["scale"].as_f64().unwrap_or(1.0) };
+            let request = craft_plugin::FrameRequest {
+                comp: None,
+                layer,
+                time: args["time"].as_f64().unwrap_or(0.0),
+                scale: args["scale"].as_f64().unwrap_or(1.0),
+            };
             let image = host::frame(request)?;
             let center = image.at(image.width as isize / 2, image.height as isize / 2);
             Ok(json!({"width": image.width, "height": image.height, "center": center}))

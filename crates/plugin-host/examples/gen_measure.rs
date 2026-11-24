@@ -31,9 +31,10 @@ fn plugin(wasm: bool) -> Plugin {
     Plugin::load(&Bundle::open(&dir).unwrap(), Default::default(), dir.join("data"), Limits::default()).unwrap()
 }
 
-fn cx(whole: bool) -> RenderCx {
+fn cx(whole: bool, drawn: bool) -> RenderCx {
     let mut cx = RenderCx { size: SIZE, scale: 1.0, frame_rate: 24.0, layer_size: [f64::from(SIZE[0]), f64::from(SIZE[1])], ..Default::default() };
     cx.params.insert("whole".into(), Value::Bool(whole));
+    cx.params.insert("drawn".into(), Value::Bool(drawn));
     cx
 }
 
@@ -41,13 +42,20 @@ fn layer() -> Vec<Pixel> {
     vec![[0.25, 0.5, 0.75, 1.0]; SIZE[0] as usize * SIZE[1] as usize]
 }
 
-fn host_ms(plugin: &Plugin, whole: bool) -> (f64, Vec<Pixel>) {
-    let cx = cx(whole);
+fn host_ms(plugin: &Plugin, whole: bool, drawn: bool) -> (f64, Vec<Pixel>) {
+    let cx = cx(whole, drawn);
     let layout = if whole { Layout::whole_frame() } else { Layout::pointwise() };
+    let layout = if drawn { layout.ignores_input() } else { layout };
     let mut pixels = layer();
     let start = Instant::now();
-    plugin.render("sprite", &cx, &layout, None, &mut pixels, || NoHost).unwrap();
+    let area = plugin.render("sprite", &cx, &layout, None, &mut pixels, || NoHost).unwrap();
+    assert_eq!(pixels.len(), area.width() as usize * area.height() as usize);
     (start.elapsed().as_secs_f64() * 1000.0, pixels)
+}
+
+fn sprite_part(pixels: &[Pixel]) -> Vec<Pixel> {
+    let (width, left, top) = (SIZE[0] as usize, (SIZE[0] as usize - SPRITE) / 2, (SIZE[1] as usize - SPRITE) / 2);
+    (top..top + SPRITE).flat_map(|y| pixels[y * width + left..y * width + left + SPRITE].to_vec()).collect()
 }
 
 struct Guest {
@@ -131,7 +139,7 @@ impl Sandboxed {
         let (width, height) = (SIZE[0], SIZE[1]);
         let input = whole.then_some(Window { size: SIZE, first_row: 0, rows: height });
         let frame = FrameDesc { width, height, origin: [0, 0], input, spread: false };
-        let request = serde_json::to_vec(&Call::Render { effect: "sprite".into(), cx: cx(whole), frame }).unwrap();
+        let request = serde_json::to_vec(&Call::Render { effect: "sprite".into(), cx: cx(whole, false), frame }).unwrap();
         let frame_bytes = width as usize * height as usize * size_of::<Pixel>();
         let staged = if whole { 2 * frame_bytes } else { frame_bytes };
         Sandboxed { guest: Guest::new(staged), whole, request, input: layer(), frame_bytes }
@@ -192,15 +200,19 @@ fn main() {
         let mut sandboxed = Sandboxed::new(whole);
         let mut out = layer();
         let mut best = [[f64::MAX; 3]; 3];
-        let mut native_best = f64::MAX;
-        let mut wasm_best = f64::MAX;
+        let mut host_best = [f64::MAX; 4];
         for _ in 0..rounds {
-            let (ms, pixels) = host_ms(&native, whole);
-            native_best = native_best.min(ms);
+            let (ms, pixels) = host_ms(&native, whole, false);
+            host_best[0] = host_best[0].min(ms);
             let reference = pixels;
-            let (ms, pixels) = host_ms(&wasm, whole);
-            wasm_best = wasm_best.min(ms);
+            let (ms, pixels) = host_ms(&wasm, whole, false);
+            host_best[1] = host_best[1].min(ms);
             assert!(pixels == reference, "the sandboxed host render matches native");
+            for (slot, plugin) in [(2, &native), (3, &wasm)] {
+                let (ms, pixels) = host_ms(plugin, whole, true);
+                host_best[slot] = host_best[slot].min(ms);
+                assert!(pixels == sprite_part(&reference), "the render that ignores its input and reports what it drew is the sprite");
+            }
             for (slot, (way, _)) in ways.iter().enumerate() {
                 let split = sandboxed.run(*way, &mut out);
                 best[slot] = [best[slot][0].min(split.copy_in), best[slot][1].min(split.call), best[slot][2].min(split.copy_out)];
@@ -210,7 +222,9 @@ fn main() {
             }
         }
         println!("layout {}:", if whole { "whole_frame (host zeroes the output)" } else { "pointwise (guest clears)" });
+        let [native_best, wasm_best, native_drawn, wasm_drawn] = host_best;
         println!("  host render, {} threads: native {native_best:.2} ms (no copies), sandboxed {wasm_best:.2} ms", rayon::current_num_threads());
+        println!("  host render, ignores input + drawn: native {native_drawn:.2} ms, sandboxed {wasm_drawn:.2} ms");
         for (slot, (_, name)) in ways.iter().enumerate() {
             let [copy_in, call, copy_out] = best[slot];
             let total = copy_in + call + copy_out;
@@ -228,7 +242,7 @@ fn instructions(phase: &str, whole: bool, rounds: usize) {
     let n = sandboxed.frame_bytes;
     let input = sandboxed.input.clone();
     let from = sandboxed.output_at();
-    let host = phase.strip_prefix("host-").map(|kind| plugin(kind == "wasm"));
+    let host = phase.strip_prefix("host-").map(|kind| plugin(kind.starts_with("wasm")));
     for _ in 0..rounds {
         match phase {
             "copy-in" => sandboxed.guest.place(0, n).copy_from_slice(bytemuck::cast_slice(&input)),
@@ -244,7 +258,8 @@ fn instructions(phase: &str, whole: bool, rounds: usize) {
                 let top = (SIZE[1] as usize - SPRITE) / 2;
                 read_back(&mut sandboxed.guest, from + top * row, &mut bytemuck::cast_slice_mut(&mut out)[top * row..(top + SPRITE) * row]);
             }
-            "host-native" | "host-wasm" => drop(host_ms(host.as_ref().unwrap(), whole)),
+            "host-native" | "host-wasm" => drop(host_ms(host.as_ref().unwrap(), whole, false)),
+            "host-native-drawn" | "host-wasm-drawn" => drop(host_ms(host.as_ref().unwrap(), whole, true)),
             "none" => {}
             other => panic!("unknown phase {other}"),
         }

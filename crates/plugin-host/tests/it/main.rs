@@ -1340,3 +1340,48 @@ fn an_app_with_only_sliders_refuses_a_curve_at_load_and_names_it() {
     found.effects[0].params.retain(|param| matches!(param.kind, ParamKind::Slider { .. }));
     assert_eq!(SlidersOnly.admit(&found), Ok(()));
 }
+
+fn sprite(kind: Kind, whole: bool, drawn: bool, size: [u32; 2], part: Option<Rect>) -> (Rect, Vec<Pixel>) {
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+    let loaded = load(kind, &[]);
+    let mut cx = cx(size[0], size[1]);
+    cx.params.insert("whole".into(), craft_plugin_host::Value::Bool(whole));
+    cx.params.insert("drawn".into(), craft_plugin_host::Value::Bool(drawn));
+    let layout = loaded.plugin.call::<Layout>(&Call::Layout { effect: "sprite".into(), cx: cx.clone() }, None, &mut Recorder::default()).unwrap();
+    assert_eq!(layout.ignores_input, drawn);
+    let mut pixels = vec![[0.5; 4]; size[0] as usize * size[1] as usize];
+    let area = pool.install(|| loaded.plugin.render("sprite", &cx, &layout, part, &mut pixels, Recorder::default)).unwrap();
+    (area, pixels)
+}
+
+#[test]
+fn a_generator_that_ignores_its_input_and_reports_what_it_drew_gives_the_same_pixels_cropped_to_that_rectangle() {
+    let frame = Rect::of_size([300, 260]);
+    let drawn = Rect { left: 50, top: 30, right: 250, bottom: 230 };
+    let part = Rect { left: 100, top: 0, right: 300, bottom: 260 };
+    for (kind, whole) in [(Kind::Wasm, false), (Kind::Wasm, true), (Kind::Native, false), (Kind::Native, true)] {
+        let (area, full) = sprite(kind, whole, false, [300, 260], None);
+        assert_eq!(area, frame, "{kind:?} whole {whole}");
+        let (area, cropped) = sprite(kind, whole, true, [300, 260], None);
+        assert_eq!(area, drawn, "{kind:?} whole {whole}");
+        assert!(cropped == cut(&full, 300, drawn), "{kind:?} whole {whole}: the drawn rectangle differs");
+        let inside = |i: usize| (drawn.left..drawn.right).contains(&((i % 300) as i32)) && (drawn.top..drawn.bottom).contains(&((i / 300) as i32));
+        assert!(
+            full.iter().enumerate().all(|(i, pixel)| inside(i) || *pixel == [0.0; 4]),
+            "{kind:?} whole {whole}: outside the sprite is transparent"
+        );
+        let (area, shown) = sprite(kind, whole, true, [300, 260], Some(part));
+        assert_eq!(area, Rect { left: 100, top: 30, right: 250, bottom: 230 }, "{kind:?} whole {whole}");
+        assert!(shown == cut(&full, 300, area), "{kind:?} whole {whole}: the shown part differs");
+    }
+}
+
+#[test]
+fn a_drawn_rectangle_reaching_outside_the_frame_is_clipped_to_it() {
+    each_kind(|kind| {
+        let (area, pixels) = sprite(kind, false, true, [300, 150], None);
+        assert_eq!(area, Rect { left: 50, top: 0, right: 250, bottom: 150 }, "{kind:?}");
+        assert_eq!(pixels.len(), 200 * 150, "{kind:?}");
+        assert_eq!([pixels[0], pixels[200 * 150 - 1]], [[0.0, 0.125, 1.0, 1.0], [0.995, 0.87, 1.0 - 0.995 * 0.87, 1.0]], "{kind:?}");
+    });
+}
