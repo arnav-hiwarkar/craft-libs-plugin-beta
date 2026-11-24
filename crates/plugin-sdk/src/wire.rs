@@ -27,6 +27,7 @@ pub enum Call {
     Overlay { effect: String, cx: RenderCx },
     Drag { effect: String, cx: RenderCx, key: String, to: [f64; 2], value: String },
     Tool { tool: String, event: ToolEvent },
+    Migrate { effect: String, from: u32, values: BTreeMap<String, Value> },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -110,6 +111,8 @@ pub struct EffectSpec {
     pub reads_param_history: bool,
     #[serde(default)]
     pub presets: Vec<Preset>,
+    #[serde(default)]
+    pub version: u32,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -121,6 +124,11 @@ pub struct Preset {
 impl EffectSpec {
     pub fn new(id: &str, name: &str, category: &str) -> Self {
         EffectSpec { id: id.into(), name: name.into(), category: category.into(), ..Default::default() }
+    }
+
+    pub fn version(mut self, version: u32) -> Self {
+        self.version = version;
+        self
     }
 
     pub fn param(mut self, param: Param) -> Self {

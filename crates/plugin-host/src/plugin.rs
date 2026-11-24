@@ -472,6 +472,7 @@ impl Plugin {
             | Call::Controls { .. }
             | Call::Overlay { .. }
             | Call::Drag { .. }
+            | Call::Migrate { .. }
             | Call::Tool { .. } => self.limits.interactive,
             Call::Render { .. } | Call::Pass { .. } | Call::Command { .. } | Call::Task { .. } => self.limits.work,
         }
@@ -589,6 +590,7 @@ fn what(call: &Call) -> String {
         Call::Overlay { effect, .. } => format!("overlay of effect `{effect}`"),
         Call::Drag { effect, key, .. } => format!("drag of handle `{key}` in effect `{effect}`"),
         Call::Tool { tool, .. } => format!("tool `{tool}`"),
+        Call::Migrate { effect, from, .. } => format!("migration of effect `{effect}` from state version {from}"),
     }
 }
 
@@ -600,6 +602,7 @@ fn origin(call: &Call) -> Origin {
         | Call::Command { .. }
         | Call::Overlay { .. }
         | Call::Drag { .. }
+        | Call::Migrate { .. }
         | Call::Tool { .. } => Origin::Interactive,
         Call::Layout { .. } | Call::Input { .. } | Call::Render { .. } | Call::Pass { .. } => Origin::Render,
         Call::Task { .. } => Origin::Task,

@@ -27,7 +27,9 @@ None of them may name an app type. An app type that the kit needs is a trait the
 | A command gate policy | app side | Any plugin that runs app commands. Which command families a plugin may run at all, which need write, which name files. |
 
 Optional by kind of plugin: panels and commands need only `Host` (with `access`, `command`, `project_closed`)
-and the UI crate. Tasks add `frame`, `audio` and `pick_file` if offered. Effects add `ParamValues`,
+and the UI crate. Effects that declare `EffectSpec::version` need the app to store that version on each saved
+instance and, when a project opens with an older one, send `Call::Migrate` with the instance's values and write
+back what comes back; a saved version newer than the plugin's is kept as it is and reported. Tasks add `frame`, `audio` and `pick_file` if offered. Effects add `ParamValues`,
 `EffectRegistry` and the render methods of `Host`. Viewer overlays and tools need the UI crate's marks and
 the app's own viewer mapping.
 
@@ -84,6 +86,7 @@ Paths in the EffectCraft fork (`pluginkit/effectcraft`, branch `pluginkit`).
 | Script refusal of plugin management | `crates/engine/src/cmd/plugin.rs` |
 | Effects: `EffectRegistry`, `ParamValues`, the render `Host`, margins | `crates/plugin/src/effects.rs` (`impl EffectRegistry for Engine`, `impl ParamValues for Placed`, `RenderHost`, `margin`) |
 | One queue per plugin, request identity, the panel worker's `Host` | `crates/plugin/src/panels.rs` (`Panels`, `Remote`) |
+| State versions: stamp, migrate on open, keep newer | `crates/plugin/src/effects.rs` (`migrate`), `crates/engine/src/session/edit.rs` (`upgrade_effects`) |
 | Overlays, handles, caps | `crates/plugin/src/viewer.rs` |
 | UI `Host` and `Theme` | `crates/ui-egui/src/panels/plugin_view.rs` (`AppHost`, `theme`) |
 | Effect Controls rows, overlay drawing, handles | `crates/ui-egui/src/panels/effect_controls/{rows,plugin_overlay,viewer}.rs` |
