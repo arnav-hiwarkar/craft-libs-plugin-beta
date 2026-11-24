@@ -35,6 +35,10 @@ impl Gradient {
         Ok(())
     }
 
+    pub fn dropped_stops(&self) -> usize {
+        self.colors.len().saturating_sub(MAX_GRADIENT_STOPS) + self.opacities.len().saturating_sub(MAX_GRADIENT_STOPS)
+    }
+
     pub(crate) fn limited(mut self) -> Self {
         self.colors.truncate(MAX_GRADIENT_STOPS);
         self.opacities.truncate(MAX_GRADIENT_STOPS);

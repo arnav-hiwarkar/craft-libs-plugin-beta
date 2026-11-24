@@ -125,3 +125,22 @@ fn an_effect_that_reads_the_scene_at_another_time_without_declaring_other_frames
     let error = plugin.render("scene-later").size(8, 8).run().unwrap_err();
     assert!(error.contains("effect `scene-later` must declare `.reads_other_frames()`"), "{error}");
 }
+
+#[test]
+fn a_gradient_past_the_stop_limit_reaches_the_plugin_cut_and_is_warned_about_once_per_value() {
+    let (_bundle, plugin) = probe();
+    let ramp = |count: usize| craft_plugin::Gradient {
+        colors: (0..count).map(|i| (i as f64 / 69.0, [i as f64 / 69.0, 0.0, 0.0, 1.0])).collect(),
+        opacities: vec![(0.0, 1.0), (1.0, 1.0)],
+    };
+    let red = |count: usize| plugin.render("ramp").size(1, 1).set("ramp", ramp(count)).set("at", 1.0).float().run().unwrap().at(0, 0)[0];
+    assert_eq!(red(70), 63.0 / 69.0);
+    assert_eq!(red(70), 63.0 / 69.0);
+    let warning =
+        "effect `ramp`: gradient parameter `ramp` has 6 stops beyond the limit of 64; the plugin received only the first 64 colour and opacity stops";
+    assert_eq!(plugin.logs(), [warning]);
+    assert_eq!(red(64), 63.0 / 69.0);
+    assert_eq!(red(71), 63.0 / 69.0);
+    let second = warning.replace("has 6 stops", "has 7 stops");
+    assert_eq!(plugin.logs(), [warning, second.as_str()]);
+}

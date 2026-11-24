@@ -607,6 +607,7 @@ impl Render<'_> {
                 let known: Vec<&str> = spec.params.iter().map(|param| param.id.as_str()).collect();
                 return Err(format!("effect `{}` has no parameter `{id}`; its parameters are {known:?}", spec.id));
             };
+            self.plugin.plugin().warn_dropped_stops(&spec.id, id, value);
             params.insert(id.clone(), param.fit(value.clone())?);
         }
         for param in &spec.params {
