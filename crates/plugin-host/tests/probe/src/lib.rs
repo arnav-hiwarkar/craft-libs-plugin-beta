@@ -763,7 +763,9 @@ impl Effect for Switches {
             Param::checkbox("manual", "Manual", false),
             Param::slider("amount", "Amount", 1.0, 0.0..=10.0).enabled_when("manual", Is::On),
             Param::button("reset", "Reset"),
+            Param::button("ask", "Ask Then Reset").visible_when("mode", Is::Equals(0.0)),
         ])
+        .preset("Calm", [("softness", craft_plugin::Value::Number(2.0)), ("amount", craft_plugin::Value::Number(5.0))])
     }
 
     fn render(&self, cx: &Cx, frame: &mut Frame) -> Result<()> {
@@ -773,10 +775,12 @@ impl Effect for Switches {
     }
 
     fn button(&self, press: &Press) -> Result<()> {
-        for param in ["softness", "amount"] {
-            host::command("prop.set", json!({"layer": press.layer, "path": format!("effects/@{}/{param}", press.instance), "value": 0.0}))?;
+        let zero = |param: &str| host::command("prop.set", json!({"layer": press.layer, "path": format!("effects/@{}/{param}", press.instance), "value": 0.0}));
+        zero("softness")?;
+        if press.param == "ask" {
+            host::form(Form::new("Go on?"))?;
         }
-        Ok(())
+        zero("amount").map(drop)
     }
 }
 

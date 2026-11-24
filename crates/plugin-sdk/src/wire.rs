@@ -1259,6 +1259,19 @@ impl Form {
             })
             .collect()
     }
+
+    pub fn answer_over(&self, prior: &BTreeMap<String, Value>, proposed: BTreeMap<String, Value>) -> Result<BTreeMap<String, Value>, String> {
+        let mut merged = prior.clone();
+        merged.extend(proposed);
+        let mut answered = self.answer(merged)?;
+        let turned_off: Vec<&Param> = self.fields.iter().filter(|field| !field.enabled(|id| answered.get(id).cloned())).collect();
+        for field in turned_off {
+            if let Some(kept) = prior.get(&field.id) {
+                answered.insert(field.id.clone(), kept.clone());
+            }
+        }
+        Ok(answered)
+    }
 }
 
 pub const MAX_DATA_KEYS: usize = 64;
@@ -1845,6 +1858,19 @@ pub enum Paint {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_answer_keeps_the_prior_value_of_a_field_its_own_answer_turns_off() {
+        let form = Form::new("Settings")
+            .field(Param::checkbox("manual", "Manual", false))
+            .field(Param::slider("amount", "Amount", 1.0, 0.0..=10.0).enabled_when("manual", Is::On));
+        let prior = form.defaults();
+        let number = |n| BTreeMap::from([("amount".to_string(), Value::Number(n))]);
+        assert_eq!(form.answer_over(&prior, number(7.0)).unwrap()["amount"], Value::Number(1.0));
+        let mut switched = number(7.0);
+        switched.insert("manual".into(), Value::Bool(true));
+        assert_eq!(form.answer_over(&prior, switched).unwrap()["amount"], Value::Number(7.0));
+    }
 
     #[test]
     fn an_aux_read_counts_each_channel_once_and_refuses_more_than_its_budget() {
