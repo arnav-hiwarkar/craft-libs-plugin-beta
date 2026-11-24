@@ -488,6 +488,7 @@ impl Effect for HostKernels {
             "noise grain",
             "hsl range mask",
             "splat",
+            "flow",
         ];
         let modes = ["over", "add", "subtract", "multiply", "screen", "overlay", "darken", "lighten", "difference", "screen hdr"];
         EffectSpec::new("host-kernels", "Host Kernels", "Probe")
@@ -574,6 +575,14 @@ impl Effect for HostKernels {
                     )
                 };
                 plan.pass(PlanPass::splat(source, output, (0..400).map(dab).collect()))
+            }
+            33 => {
+                let mut plan = plan;
+                let (moved, flow) = (plan.scratch(frame), plan.scratch(frame));
+                plan.pass(blurred)
+                    .pass(PlanPass::warp(source, soft, moved, [3.0, -2.0]))
+                    .pass(PlanPass::flow(source, moved, flow))
+                    .pass(PlanPass::warp(moved, flow, output, [1.0, 1.0]))
             }
             _ => {
                 let quarter = frame.map(|side| side.div_ceil(4));
@@ -843,6 +852,24 @@ impl Effect for Tally {
         frame.map(|pixel| pixel);
         let before = host::cache_get("tally").and_then(|bytes| <[u8; 8]>::try_from(bytes.as_slice()).ok()).map_or(0, u64::from_le_bytes);
         host::cache_put("tally", &(before + (frame.width * frame.height) as u64).to_le_bytes())
+    }
+}
+
+struct Rewind {
+    declared: bool,
+}
+
+impl Effect for Rewind {
+    fn spec(&self) -> EffectSpec {
+        let spec = EffectSpec::new(if self.declared { "rewind" } else { "silent-rewind" }, "Rewind", "Probe").time_dependent();
+        if self.declared { spec.reads_other_frames() } else { spec }
+    }
+
+    fn layout(&self, cx: &Cx) -> Layout {
+        let mut plan = Plan::new();
+        let (earlier, flow) = (plan.source_at(cx.time - 0.5), plan.scratch(cx.size));
+        let plan = plan.pass(PlanPass::flow(PlanImage::Source, earlier, flow)).pass(PlanPass::warp(earlier, flow, PlanImage::Output, [1.0, 1.0]));
+        Layout::whole_frame().passes(plan)
     }
 }
 
@@ -1276,6 +1303,8 @@ fn make() -> Plugin {
         .effect(Renamed)
         .effect(Drift { declared: true })
         .effect(Drift { declared: false })
+        .effect(Rewind { declared: true })
+        .effect(Rewind { declared: false })
         .effect(FastMaths)
         .effect(Scale)
         .effect(ShiftDown)

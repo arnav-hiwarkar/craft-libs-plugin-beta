@@ -32,6 +32,10 @@ instance and, when a project opens with an older one, send `Call::Migrate` with 
 back what comes back; a saved version newer than the plugin's is kept as it is and reported. Tasks add `frame`, `audio` and `pick_file` if offered. Effects add `ParamValues`,
 `EffectRegistry` and the render methods of `Host`. Viewer overlays and tools need the UI crate's marks and
 the app's own viewer mapping.
+A plan's `sources` (from `plan.source_at`) reach the CPU through `Host::source` on the padded frame grid;
+an app that runs plans on its own GPU binds those frames as read-only images after the plan's layers,
+fitted to the padded frame as `source` does, and refuses the plan unless the effect declares
+`reads_other_frames` (`run_passes` does this check on the CPU).
 
 ## Steps for a new adapter, smallest first
 

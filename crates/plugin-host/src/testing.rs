@@ -288,6 +288,7 @@ pub fn value_of_json(value: &serde_json::Value) -> Option<Value> {
 
 type Reply = Arc<dyn Fn(&serde_json::Value) -> Result<serde_json::Value, String> + Send + Sync>;
 type Frames = Arc<dyn Fn(&FrameRequest) -> Result<Picture, String> + Send + Sync>;
+type SourceFrames = Arc<dyn Fn(f64) -> Picture + Send + Sync>;
 
 #[derive(Default)]
 struct Recorder {
@@ -309,6 +310,7 @@ struct TestHost<'a> {
     layers: Option<&'a BTreeMap<String, Picture>>,
     masks: &'a [MaskPath],
     aux: Option<&'a AuxPlanes>,
+    other_frames: Option<(&'a SourceFrames, [u32; 4])>,
     params: Option<&'a BTreeMap<String, Value>>,
     layer_size: [f64; 2],
     spec: Option<&'a EffectSpec>,
@@ -316,7 +318,7 @@ struct TestHost<'a> {
 
 impl<'a> TestHost<'a> {
     fn bare(recorder: &'a Mutex<Recorder>) -> TestHost<'a> {
-        TestHost { recorder, source: None, layers: None, masks: &[], aux: None, params: None, layer_size: [0.0; 2], spec: None }
+        TestHost { recorder, source: None, layers: None, masks: &[], aux: None, other_frames: None, params: None, layer_size: [0.0; 2], spec: None }
     }
 }
 
@@ -348,8 +350,11 @@ impl Host for TestHost<'_> {
         self.layers?.get(param).map(Picture::pixels)
     }
 
-    fn source(&mut self, _layer_time: f64) -> Option<Pixels> {
-        self.source.map(Picture::pixels)
+    fn source(&mut self, layer_time: f64) -> Option<Pixels> {
+        match self.other_frames {
+            Some((frames, pad)) => Some(frames(layer_time).padded(pad).pixels()),
+            None => self.source.map(Picture::pixels),
+        }
     }
 
     fn masks(&mut self) -> Vec<MaskPath> {
@@ -482,6 +487,7 @@ impl TestPlugin {
             layers: BTreeMap::new(),
             masks: Vec::new(),
             aux: None,
+            other_frames: None,
             time: 0.0,
             scale: 1.0,
             float: false,
@@ -613,6 +619,7 @@ pub struct Render<'a> {
     layers: BTreeMap<String, Picture>,
     masks: Vec<MaskPath>,
     aux: Option<AuxPlanes>,
+    other_frames: Option<SourceFrames>,
     time: f64,
     scale: f64,
     float: bool,
@@ -671,6 +678,11 @@ impl Render<'_> {
 
     pub fn aux(mut self, planes: AuxPlanes) -> Self {
         self.aux = Some(planes);
+        self
+    }
+
+    pub fn source_at(mut self, frames: impl Fn(f64) -> Picture + Send + Sync + 'static) -> Self {
+        self.other_frames = Some(Arc::new(frames));
         self
     }
 
@@ -738,7 +750,7 @@ impl Render<'_> {
     fn layout_on(&self, source: &Picture) -> Result<Layout, String> {
         let spec = self.plugin.spec(&self.effect)?;
         let cx = self.cx(spec, source, [source.width, source.height], [0.0; 2])?;
-        let mut host = self.host(source, &self.layers, &self.masks, self.aux.as_ref(), &cx);
+        let mut host = self.host(source, &self.layers, &self.masks, self.aux.as_ref(), &cx, [0; 4]);
         let layout: Layout =
             self.plugin.plugin.call(&Call::Layout { effect: self.effect.clone(), cx: cx.clone() }, None, &mut host).map_err(|e| e.to_string())?;
         Ok(Layout { padding: layout.padding.map(|side| side.min(MAX_PADDING)), ..layout })
@@ -748,7 +760,7 @@ impl Render<'_> {
         let source = self.source();
         let spec = self.plugin.spec(&self.effect)?;
         let cx = RenderCx { scale: 1.0, ..self.cx(spec, &source, [source.width, source.height], [0.0; 2])? };
-        let mut host = self.host(&source, &self.layers, &self.masks, self.aux.as_ref(), &cx);
+        let mut host = self.host(&source, &self.layers, &self.masks, self.aux.as_ref(), &cx, [0; 4]);
         self.plugin.plugin.call(&Call::Overlay { effect: self.effect.clone(), cx: cx.clone() }, None, &mut host).map_err(|e| e.to_string())
     }
 
@@ -759,6 +771,7 @@ impl Render<'_> {
         masks: &'h [MaskPath],
         aux: Option<&'h AuxPlanes>,
         cx: &'h RenderCx,
+        pad: [u32; 4],
     ) -> TestHost<'h> {
         TestHost {
             recorder: &self.plugin.recorder,
@@ -766,6 +779,7 @@ impl Render<'_> {
             layers: Some(layers),
             masks,
             aux,
+            other_frames: self.other_frames.as_ref().map(|frames| (frames, pad)),
             params: Some(&cx.params),
             layer_size: cx.layer_size,
             spec: self.plugin.spec(&self.effect).ok(),
@@ -811,7 +825,7 @@ impl Render<'_> {
             .collect();
         let cx = self.cx(spec, &unpadded, [source.width, source.height], shift)?;
         let aux = self.aux.as_ref().map(|aux| padded_aux(aux, pad));
-        let host = || self.host(&source, &layers, &masks, aux.as_ref(), &cx);
+        let host = || self.host(&source, &layers, &masks, aux.as_ref(), &cx, pad);
         let plan = layout.gpu.as_ref().filter(|plan| layout.cpu && plan.runs_on_cpu());
         let render = |reach: Option<u32>, plan: Option<&Plan>| {
             let mut pixels = source.pixels.clone();

@@ -49,7 +49,8 @@ pub(crate) fn row(kernel: &HostKernel, src: &[Pixel], top: &[Pixel], y: usize, o
         | HostKernel::Erode { .. }
         | HostKernel::DirectionalBlur { .. }
         | HostKernel::Bilateral { .. }
-        | HostKernel::Splat { .. } => {}
+        | HostKernel::Splat { .. }
+        | HostKernel::Flow { .. } => {}
     }
 }
 

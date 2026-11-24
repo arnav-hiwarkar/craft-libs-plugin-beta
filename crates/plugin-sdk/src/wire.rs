@@ -642,6 +642,7 @@ pub const MAX_PASS_UINTS: usize = 16;
 pub const MAX_BUFFERS: usize = 64;
 pub const MAX_TEXTURES: usize = 16;
 pub const MAX_TEXELS: u64 = 1 << 24;
+pub const MAX_SOURCE_FRAMES: usize = 4;
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct Plan {
@@ -653,6 +654,8 @@ pub struct Plan {
     pub textures: Vec<GpuTexture>,
     #[serde(default)]
     pub layers: Vec<String>,
+    #[serde(default)]
+    pub sources: Vec<f64>,
     pub passes: Vec<PlanPass>,
 }
 
@@ -756,6 +759,11 @@ impl Plan {
         PlanImage::Layer(self.layers.len().saturating_sub(1) as u32)
     }
 
+    pub fn source_at(&mut self, layer_time: f64) -> PlanImage {
+        self.sources.push(layer_time);
+        PlanImage::SourceAt(self.sources.len().saturating_sub(1) as u32)
+    }
+
     pub fn pass(mut self, pass: PlanPass) -> Self {
         self.passes.push(pass);
         self
@@ -767,6 +775,7 @@ impl Plan {
             PlanImage::Scratch(index) => self.images.get(index as usize).copied(),
             PlanImage::Texture(index) => self.textures.get(index as usize).map(|texture| texture.size),
             PlanImage::Layer(index) => ((index as usize) < self.layers.len()).then_some(frame),
+            PlanImage::SourceAt(index) => ((index as usize) < self.sources.len()).then_some(frame),
         }
     }
 
@@ -784,22 +793,27 @@ impl Plan {
     fn scratch_bytes(&self, frame: [u32; 2]) -> u64 {
         let bytes = |[w, h]: [u32; 2], per_pixel: u64| (u64::from(w) * u64::from(h)).saturating_mul(per_pixel);
         let mut kept: Vec<([u32; 2], u64)> = self.images.iter().map(|size| (*size, PIXEL_BYTES as u64)).collect();
-        let mut working: Vec<([u32; 2], u64)> = Vec::new();
+        let mut working: Vec<([u32; 2], u64, usize)> = Vec::new();
         let mut largest_intermediate = 0;
         for pass in &self.passes {
             let (Some(src), Some(out)) = (self.size_of(pass.src, frame), self.size_of(pass.out, frame)) else { continue };
             match (&pass.host, &pass.draw) {
-                (Some(kernel), _) if kernel.needs_temporary() => working.push((out, PIXEL_BYTES as u64)),
+                (Some(kernel), _) if kernel.needs_temporary() => working.push((out, PIXEL_BYTES as u64, 0)),
+                (Some(HostKernel::Flow { levels, .. }), _) => working.extend(
+                    crate::kernels::flow_levels(out, *levels).into_iter().flat_map(|level| [0, 1, 2].map(|nth| (level, PIXEL_BYTES as u64, nth))),
+                ),
                 (Some(HostKernel::Resample { .. }), _) => {
                     largest_intermediate = largest_intermediate.max(bytes([out[0], src[1]], PIXEL_BYTES as u64))
                 }
-                (None, Some(draw)) => working.extend(std::iter::once((out, DRAW_PIXEL_BYTES)).chain(draw.depth.then_some((out, DEPTH_PIXEL_BYTES)))),
+                (None, Some(draw)) => {
+                    working.extend(std::iter::once((out, DRAW_PIXEL_BYTES, 0)).chain(draw.depth.then_some((out, DEPTH_PIXEL_BYTES, 0))))
+                }
                 _ => {}
             }
         }
         working.sort_unstable();
         working.dedup();
-        kept.extend(working);
+        kept.extend(working.into_iter().map(|(size, per_pixel, _)| (size, per_pixel)));
         kept.iter().map(|&(size, per_pixel)| bytes(size, per_pixel)).fold(largest_intermediate, u64::saturating_add)
     }
 
@@ -820,7 +834,7 @@ impl Plan {
         let area = |[w, h]: [u32; 2]| u64::from(w) * u64::from(h);
         if self.scratch_bytes(frame) > MAX_SCRATCH_FRAMES.saturating_mul(area(frame)).saturating_mul(PIXEL_BYTES as u64) {
             return Err(format!(
-                "the scratch images and the images the passes work in (blur temporaries, resample intermediates, draw targets) together exceed {MAX_SCRATCH_FRAMES} times the {fw}x{fh} padded frame"
+                "the scratch images and the images the passes work in (blur temporaries, resample intermediates, flow levels, draw targets) together exceed {MAX_SCRATCH_FRAMES} times the {fw}x{fh} padded frame"
             ));
         }
         if self.buffers.len() > MAX_BUFFERS {
@@ -829,6 +843,12 @@ impl Plan {
         let pictures = self.textures.len() + self.layers.len();
         if pictures > MAX_TEXTURES {
             return Err(format!("a plan has at most {MAX_TEXTURES} textures and layers together, this one has {pictures}"));
+        }
+        if self.sources.len() > MAX_SOURCE_FRAMES {
+            return Err(format!("a plan reads at most {MAX_SOURCE_FRAMES} source frames at other times, this one reads {}", self.sources.len()));
+        }
+        if let Some(time) = self.sources.iter().find(|time| !time.is_finite()) {
+            return Err(format!("a source frame is asked at layer time {time}; give a finite time in seconds"));
         }
         if let Some((i, texture)) = self.textures.iter().enumerate().find(|(_, texture)| area(texture.size) == 0) {
             return Err(format!("texture {i} ({:?}) is {}x{}; it must be non-empty", texture.key, texture.size[0], texture.size[1]));
@@ -845,7 +865,7 @@ impl Plan {
                 let (floats, uints) = (pass.f.len(), pass.u.len());
                 return Err(format!("pass {n} has {floats} floats and {uints} uints; the limits are {MAX_PASS_FLOATS} and {MAX_PASS_UINTS}"));
             }
-            if matches!(pass.out, PlanImage::Source | PlanImage::Texture(_) | PlanImage::Layer(_)) {
+            if matches!(pass.out, PlanImage::Source | PlanImage::Texture(_) | PlanImage::Layer(_) | PlanImage::SourceAt(_)) {
                 return Err(format!("pass {n} writes {:?}, which passes only read", pass.out));
             }
             for image in std::iter::once(pass.src).chain(pass.aux) {
@@ -993,6 +1013,10 @@ impl PlanPass {
         PlanPass::host(HostKernel::Splat { dabs }, src, out)
     }
 
+    pub fn flow(from: PlanImage, to: PlanImage, out: PlanImage) -> Self {
+        PlanPass::host(HostKernel::Flow { levels: 6, radius: 3, iterations: 2 }, from, out).aux(to)
+    }
+
     pub fn draw(kernel: &str, out: PlanImage) -> Self {
         PlanPass { draw: Some(Draw::default()), ..PlanPass::new(kernel, PlanImage::Source, out) }
     }
@@ -1073,6 +1097,7 @@ pub enum PlanImage {
     Scratch(u32),
     Texture(u32),
     Layer(u32),
+    SourceAt(u32),
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -1816,6 +1841,27 @@ mod tests {
     }
 
     #[test]
+    fn source_frames_have_their_own_budget_so_two_dci_4k_frames_fit() {
+        let dci = [4096, 2160];
+        let mut two = plan(vec![dci], vec![finish()]);
+        let (before, after) = (two.source_at(0.0), two.source_at(1.0));
+        two.passes =
+            vec![PlanPass::flow(before, after, PlanImage::Scratch(0)), PlanPass::warp(before, PlanImage::Scratch(0), PlanImage::Output, [0.5; 2])];
+        assert_eq!(two.validate(dci), Ok(()));
+        let mut with_layers = plan(vec![], vec![finish()]);
+        for i in 0..MAX_TEXTURES {
+            with_layers.layer(&format!("layer{i}"));
+        }
+        with_layers.source_at(0.0);
+        assert!(with_layers.validate([16, 16]).is_ok(), "source frames do not count against textures and layers");
+        let mut too_many = plan(vec![], vec![finish()]);
+        for i in 0..=MAX_SOURCE_FRAMES {
+            too_many.source_at(i as f64);
+        }
+        assert!(too_many.validate(dci).unwrap_err().contains("at most 4 source frames"));
+    }
+
+    #[test]
     fn a_read_asks_for_its_error_kind_as_a_field_and_a_read_from_an_older_sdk_does_not() {
         let asked = HostCall::ReadFile { root: Root::Data, path: "a".into(), error_kind: Some(true) };
         assert_eq!(serde_json::to_string(&asked).unwrap(), r#"{"call":"read_file","root":"data","path":"a","error_kind":true}"#);
@@ -1898,13 +1944,37 @@ mod tests {
             (
                 "scratch at the limit and a blur temporary",
                 plan(vec![[53, 37]; 8], vec![PlanPass::blur(source, scratch, [1.0; 2]), finish()]),
-                "the scratch images and the images the passes work in (blur temporaries, resample intermediates, draw targets) together exceed 8 times",
+                "the scratch images and the images the passes work in (blur temporaries, resample intermediates, flow levels, draw targets) together exceed 8 times",
             ),
             ("scratch at the limit and a resample's intermediate", resampled_through_tall_and_wide, "together exceed 8 times"),
             ("scratch at the limit and a draw target", scratch_and_draw, "together exceed 8 times"),
             ("97 floats", plan(vec![], vec![finish().floats(&[0.0; 97])]), "97 floats"),
             ("17 uints", plan(vec![], vec![finish().uints(&[0; 17])]), "17 uints"),
             ("17 pictures", too_many_pictures, "at most 16 textures and layers"),
+            (
+                "a source frame at no time",
+                {
+                    let mut p = plan(vec![], vec![finish()]);
+                    p.source_at(f64::NAN);
+                    p
+                },
+                "give a finite time",
+            ),
+            (
+                "writes a source frame",
+                {
+                    let mut p = plan(vec![], vec![finish()]);
+                    let frame = p.source_at(0.5);
+                    p.passes.push(tint(PlanImage::Source, frame));
+                    p
+                },
+                "which passes only read",
+            ),
+            (
+                "scratch and a flow's levels",
+                plan(vec![[53, 37]; 5], vec![PlanPass::flow(source, source, scratch), finish()]),
+                "flow levels, draw targets) together exceed 8 times",
+            ),
             ("too many texels", too_many_texels, "the limit is 16777216"),
             ("texels that wrap", wrapping_texels, "hold 18446744073709551615 pixels; the limit is 16777216"),
             ("draw without its buffer", draw_without_buffer, "names buffer 0"),

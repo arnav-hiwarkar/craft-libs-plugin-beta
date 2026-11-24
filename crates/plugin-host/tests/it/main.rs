@@ -1825,3 +1825,71 @@ fn an_approved_start_reads_its_manifest_from_the_bytes_it_hashed_not_from_an_old
     assert_eq!(approved.bundle.manifest.name, "Renamed");
     assert_eq!(approved.digest, older.digest().unwrap());
 }
+
+#[derive(Clone)]
+struct OtherFrames {
+    declared: bool,
+    short: bool,
+    cancel: Arc<AtomicBool>,
+    asked: Arc<AtomicUsize>,
+    spec: craft_plugin::EffectSpec,
+}
+
+impl OtherFrames {
+    fn new(declared: bool, short: bool) -> OtherFrames {
+        let spec = craft_plugin::EffectSpec::new("passes", "Passes", "Probe");
+        let spec = if declared { spec.reads_other_frames() } else { spec };
+        OtherFrames { declared, short, cancel: Arc::default(), asked: Arc::default(), spec }
+    }
+
+    fn run(&self, times: &[f64]) -> Result<Vec<Pixel>, PluginError> {
+        let loaded = load(Kind::Native, &[]);
+        let mut plan = Plan::new();
+        let frames: Vec<PlanImage> = times.iter().map(|time| plan.source_at(*time)).collect();
+        let identity = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
+        let plan = plan.pass(PlanPass::matrix(frames[0], PlanImage::Output, identity));
+        let mut pixels = ramp();
+        loaded.plugin.run_passes("passes", &cx(PASS_FRAME[0], PASS_FRAME[1]), &plan, &mut pixels, || self.clone())?;
+        Ok(pixels)
+    }
+}
+
+impl Host for OtherFrames {
+    fn effect(&self) -> Option<&craft_plugin::EffectSpec> {
+        self.declared.then_some(&self.spec)
+    }
+
+    fn cancel(&self) -> Option<Arc<AtomicBool>> {
+        Some(self.cancel.clone())
+    }
+
+    fn source(&mut self, layer_time: f64) -> Option<Pixels> {
+        self.asked.fetch_add(1, Ordering::Relaxed);
+        let [width, height] = PASS_FRAME;
+        let count = (width * height) as usize - usize::from(self.short);
+        Some(Pixels { width, height, data: vec![[layer_time as f32, 0.0, 0.0, 1.0]; count] })
+    }
+}
+
+#[test]
+fn a_plan_reading_other_frames_needs_a_declaring_spec_from_the_host() {
+    let error = OtherFrames::new(false, false).run(&[0.25]).unwrap_err().to_string();
+    assert!(error.contains("declare `.reads_other_frames()`"), "{error}");
+    let pixels = OtherFrames::new(true, false).run(&[0.25]).unwrap();
+    assert!(pixels.iter().all(|p| *p == [0.25, 0.0, 0.0, 1.0]));
+}
+
+#[test]
+fn a_source_frame_with_too_few_pixels_reads_as_a_missing_frame() {
+    let pixels = OtherFrames::new(true, true).run(&[0.25]).unwrap();
+    assert!(pixels.iter().all(|p| *p == [0.0; 4]));
+}
+
+#[test]
+fn a_plan_called_off_while_loading_frames_loads_no_more() {
+    let frames = OtherFrames::new(true, false);
+    frames.cancel.store(true, Ordering::Relaxed);
+    let stopped = frames.run(&[0.25, 0.5, 0.75]).unwrap_err();
+    assert!(matches!(stopped, PluginError::Cancelled), "{stopped}");
+    assert_eq!(frames.asked.load(Ordering::Relaxed), 0);
+}

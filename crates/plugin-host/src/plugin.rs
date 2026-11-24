@@ -464,13 +464,26 @@ impl Plugin {
             return Ok(());
         }
         plan.check(cx.size).map_err(PluginError::Failed)?;
+        if !plan.sources.is_empty() && !make_host().effect().is_some_and(|spec| spec.reads_other_frames) {
+            return Err(PluginError::Failed("the plan reads source frames at other times; declare `.reads_other_frames()` on the effect".into()));
+        }
+        let mut sources: Vec<Vec<Pixel>> = Vec::with_capacity(plan.sources.len());
+        for time in &plan.sources {
+            if called_off(&make_host()) {
+                return Err(PluginError::Cancelled);
+            }
+            let frame = make_host().source(*time).filter(|frame| [frame.width, frame.height] == cx.size && frame.data.len() == area(cx.size));
+            sources.push(frame.map_or_else(|| vec![[0.0; 4]; area(cx.size)], |frame| frame.data));
+        }
+        let cancel = make_host().cancel();
+        let stop = || cancel.as_ref().is_some_and(|cancel| cancel.load(std::sync::atomic::Ordering::Relaxed));
         let sizes: Vec<[u32; 2]> = [cx.size].into_iter().chain(plan.images.iter().copied()).collect();
         let mut written: Vec<Vec<Pixel>> = vec![Vec::new(); sizes.len()];
         let slot = |image: PlanImage| match image {
             PlanImage::Source => None,
             PlanImage::Output => Some(0),
             PlanImage::Scratch(index) => Some(index as usize + 1),
-            PlanImage::Texture(_) | PlanImage::Layer(_) => None,
+            PlanImage::Texture(_) | PlanImage::Layer(_) | PlanImage::SourceAt(_) => None,
         };
         let mut spare: Vec<Vec<Pixel>> = Vec::new();
         let memo = Staged::default();
@@ -501,9 +514,10 @@ impl Plugin {
             } else {
                 std::mem::take(&mut written[target])
             };
-            let read = |image: PlanImage| match slot(image) {
-                None => Image { size: cx.size, pixels },
-                Some(index) => Image { size: sizes[index], pixels: &written[index] },
+            let read = |image: PlanImage| match (image, slot(image)) {
+                (PlanImage::SourceAt(index), _) => Image { size: cx.size, pixels: &sources[index as usize] },
+                (_, None) => Image { size: cx.size, pixels },
+                (_, Some(index)) => Image { size: sizes[index], pixels: &written[index] },
             };
             let ran = match &step {
                 Step::Fused(fused) => {
@@ -514,10 +528,10 @@ impl Plugin {
                 Step::Single(index) => {
                     let pass = &plan.passes[*index];
                     match &pass.host {
-                        Some(kernel) => {
-                            kernels::run(kernel, read(pass.src), pass.aux.map(read), sizes[target], &mut out);
-                            Ok(())
-                        }
+                        Some(kernel) => match kernels::run(kernel, read(pass.src), pass.aux.map(read), sizes[target], &mut out, &stop) {
+                            true => Ok(()),
+                            false => Err(PluginError::Cancelled),
+                        },
                         None => self.run_pass(effect, cx, pass, read(pass.src), pass.aux.map(read), sizes[target], &mut out, &make_host, &memo),
                     }
                 }

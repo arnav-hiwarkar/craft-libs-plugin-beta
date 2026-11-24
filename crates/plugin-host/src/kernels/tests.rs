@@ -28,7 +28,7 @@ fn at(pixels: &[Pixel], size: [u32; 2], x: isize, y: isize) -> Pixel {
 fn host(kernel: HostKernel, src: &[Pixel], src_size: [u32; 2], aux: Option<&[Pixel]>, size: [u32; 2]) -> Vec<Pixel> {
     let mut out = vec![[f32::NAN; 4]; (size[0] * size[1]) as usize];
     let aux = aux.map(|pixels| Image { size, pixels });
-    run(&kernel, Image { size: src_size, pixels: src }, aux, size, &mut out);
+    run(&kernel, Image { size: src_size, pixels: src }, aux, size, &mut out, &|| false);
     out
 }
 
@@ -342,7 +342,7 @@ fn sequential(plan: &Plan, source: &[Pixel]) -> Vec<Pixel> {
     for pass in &plan.passes {
         let read = |image: PlanImage| Image { size: SIZE, pixels: if image == PlanImage::Source { source } else { &images[index(image)] } };
         let mut out = vec![[0.0; 4]; source.len()];
-        run(pass.host.as_ref().expect("a host kernel"), read(pass.src), pass.aux.map(read), SIZE, &mut out);
+        run(pass.host.as_ref().expect("a host kernel"), read(pass.src), pass.aux.map(read), SIZE, &mut out, &|| false);
         images[index(pass.out)] = out;
     }
     std::mem::take(&mut images[0])
@@ -749,4 +749,120 @@ fn a_histogram_counts_straight_values_per_channel() {
     let counts = craft_plugin::histogram(&[[0.5, 0.25, 0.0, 0.5], [1.0, 1.0, 1.0, 1.0], [0.0; 4], [2.0, -1.0, 0.5, 1.0]]);
     assert_eq!([counts[0][255], counts[0][0], counts[1][128], counts[1][0], counts[2][128], counts[3][128]], [3, 1, 1, 2, 1, 1]);
     assert_eq!(counts.map(|channel| channel.iter().sum::<u32>()), [4; 4]);
+}
+
+fn pattern(x: f32, y: f32) -> f32 {
+    (0..6)
+        .map(|octave| {
+            let (frequency, angle) = (0.4 / (1 << octave) as f32, 0.9 + 2.1 * octave as f32);
+            let along = x * angle.cos() + y * angle.sin();
+            let across = -x * angle.sin() + y * angle.cos();
+            0.08 * ((along * frequency).sin() + (across * frequency * 0.7 + octave as f32).sin())
+        })
+        .sum::<f32>()
+        + 0.5
+}
+
+fn moved(size: [u32; 2], to_source: impl Fn(f32, f32) -> (f32, f32)) -> Vec<Pixel> {
+    (0..size[1])
+        .flat_map(|y| (0..size[0]).map(move |x| (x as f32, y as f32)))
+        .map(|(x, y)| {
+            let (sx, sy) = to_source(x, y);
+            let v = pattern(sx, sy);
+            [v, v, v, 1.0]
+        })
+        .collect()
+}
+
+fn endpoint_error(flow: &[Pixel], size: [u32; 2], truth: impl Fn(f32, f32) -> [f32; 2], margin: u32) -> (f32, f32) {
+    let (mut sum, mut worst, mut n) = (0.0, 0.0f32, 0);
+    for y in margin..size[1] - margin {
+        for x in margin..size[0] - margin {
+            let p = flow[(y * size[0] + x) as usize];
+            let t = truth(x as f32, y as f32);
+            let e = ((p[0] - t[0]).powi(2) + (p[1] - t[1]).powi(2)).sqrt();
+            sum += e;
+            worst = worst.max(e);
+            n += 1;
+        }
+    }
+    (sum / n as f32, worst)
+}
+
+#[test]
+fn flow_follows_a_translated_and_a_rotated_pattern_within_a_tenth_of_a_pixel_on_average() {
+    let size = [256, 192];
+    let centre = [128.0, 96.0];
+    let (shift, angle) = ([6.3, -4.6], 3.0f32.to_radians());
+    let still = moved(size, |x, y| (x, y));
+    let translated = moved(size, |x, y| (x - shift[0], y - shift[1]));
+    let rotated = moved(size, |x, y| {
+        let (dx, dy) = (x - centre[0], y - centre[1]);
+        (centre[0] + angle.cos() * dx + angle.sin() * dy, centre[1] - angle.sin() * dx + angle.cos() * dy)
+    });
+    let flow = |to: &[Pixel]| host(HostKernel::Flow { levels: 6, radius: 3, iterations: 2 }, &still, size, Some(to), size);
+    let (mean, worst) = endpoint_error(&flow(&translated), size, |_, _| shift, 32);
+    assert!(mean < 0.05 && worst < 0.3, "translation: mean {mean} worst {worst}");
+    let turned = |x: f32, y: f32| {
+        let (dx, dy) = (x - centre[0], y - centre[1]);
+        [centre[0] + angle.cos() * dx - angle.sin() * dy - x, centre[1] + angle.sin() * dx + angle.cos() * dy - y]
+    };
+    let (mean, worst) = endpoint_error(&flow(&rotated), size, turned, 32);
+    assert!(mean < 0.2 && worst < 0.7, "rotation: mean {mean} worst {worst}");
+}
+
+#[test]
+fn flow_refuses_settings_out_of_range_and_a_missing_second_frame() {
+    let check = |levels, radius, iterations, aux| HostKernel::Flow { levels, radius, iterations }.check([64, 64], aux, [64, 64]);
+    assert_eq!(check(6, 3, 2, Some([64, 64])), Ok(()));
+    for (levels, radius, iterations) in [(0, 3, 2), (9, 3, 2), (6, 0, 2), (6, 9, 2), (6, 3, 0), (6, 3, 9)] {
+        assert!(check(levels, radius, iterations, Some([64, 64])).unwrap_err().contains("give 1 to 8 levels"), "{levels} {radius} {iterations}");
+    }
+    assert!(check(6, 3, 2, None).unwrap_err().contains("frame to track to"));
+    assert!(check(6, 3, 2, Some([32, 64])).unwrap_err().contains("must be the same size"));
+}
+
+#[test]
+fn flow_on_the_gpu_runs_the_same_steps_and_two_flows_share_their_working_images() {
+    let mut plan = Plan::new();
+    let (forward, backward) = (plan.scratch([64, 48]), plan.scratch([64, 48]));
+    let later = plan.source_at(1.0);
+    let plan = plan
+        .pass(PlanPass::flow(PlanImage::Source, later, forward))
+        .pass(PlanPass::flow(later, PlanImage::Source, backward))
+        .pass(PlanPass::warp(PlanImage::Source, forward, PlanImage::Output, [1.0, 1.0]));
+    assert_eq!(plan.validate([64, 48]), Ok(()));
+    let (lowered, temps) = lower(&plan, [64, 48]);
+    let entries: Vec<&str> = lowered.iter().filter_map(|step| if let Lowered::Host(step) = step { Some(step.entry) } else { None }).collect();
+    let levels = craft_plugin::flow_levels([64, 48], 6).len();
+    assert_eq!(levels, 3);
+    let one = 2 + 2 * (levels - 1) + 2 * levels;
+    assert_eq!(entries.len(), 2 * one + 1);
+    assert_eq!(&entries[..4], ["craft_flow_pack", "craft_flow_gradient", "craft_resample", "craft_flow_gradient"]);
+    assert_eq!(temps.len(), 3 * levels, "the second flow reuses the first one's images");
+}
+
+#[test]
+fn flow_stays_finite_and_still_on_flat_and_bright_still_frames() {
+    let size = [16, 16];
+    let ramp: Vec<Pixel> = (0..256).map(|i| [0.0, 128.0 * ((i % 16 + i / 16) as f32), 0.0, 1.0]).collect();
+    let flat = vec![[0.5, 0.5, 0.5, 1.0]; 256];
+    for (name, frame) in [("bright ramp", &ramp), ("flat", &flat)] {
+        let flow = host(HostKernel::Flow { levels: 1, radius: 3, iterations: 1 }, frame, size, Some(frame), size);
+        let still = |p: &&Pixel| p[0].abs() < 1e-3 && p[1].abs() < 1e-3;
+        assert!(flow.iter().all(|p| still(&p)), "{name}: {:?}", flow.iter().find(|p| !still(p)));
+    }
+}
+
+#[test]
+fn a_flow_stops_between_its_steps_when_called_off() {
+    let size = [64, 48];
+    let frame = moved(size, |x, y| (x, y));
+    let checks = std::sync::atomic::AtomicUsize::new(0);
+    let stop = || checks.fetch_add(1, std::sync::atomic::Ordering::Relaxed) >= 2;
+    let mut out = vec![[0.0; 4]; 64 * 48];
+    let image = Image { size, pixels: &frame };
+    let finished = run(&HostKernel::Flow { levels: 4, radius: 3, iterations: 2 }, image, Some(image), size, &mut out, &stop);
+    let steps = super::flow::flow_steps(size, 4, 2).0.len();
+    assert!(!finished && checks.into_inner() < steps, "the flow ran on after being called off");
 }
