@@ -681,6 +681,25 @@ fn a_run_that_ended_without_a_clean_quit_quarantines_its_unsandboxed_plugins() {
 }
 
 #[test]
+fn a_process_opened_before_a_restart_keeps_the_quarantine_that_restart_wrote() {
+    let (source, _) = bundle(Kind::Native, &[]);
+    let root = tempfile::tempdir().unwrap();
+    let mut crashed = Registry::open(root.path());
+    let installed = crashed.install(source.path()).unwrap();
+    crashed.approve(&installed).unwrap();
+    crashed.mark_running(&BTreeSet::from(["test.probe".to_string()])).unwrap();
+    let mut desktop = Registry::open(root.path());
+    drop(crashed);
+
+    assert_eq!(Registry::open(root.path()).recover().unwrap(), ["test.probe"]);
+    desktop.disable("test.probe").unwrap();
+    let why = "the app closed unexpectedly while it ran unsandboxed".to_string();
+    assert_eq!(Registry::open(root.path()).grants(&installed), Err(Refusal::Quarantined(why.clone())));
+    assert_eq!(desktop.grants(&installed), Err(Refusal::Quarantined(why)));
+    assert!(!Registry::open(root.path()).consent("test.probe").unwrap().enabled);
+}
+
+#[test]
 fn a_native_plugin_needs_explicit_trust_beyond_its_permissions() {
     let (source, _) = bundle(Kind::Native, &[]);
     let root = tempfile::tempdir().unwrap();
