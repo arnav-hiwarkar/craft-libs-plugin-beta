@@ -5,6 +5,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use craft_plugin::{
     Call, Contributions, FrameDesc, Layout, LogLevel, Manifest, Outcome, Permission, Pixel, Plan, PlanImage, PlanPass, Rect, RenderCx, Rendered,
@@ -17,7 +18,7 @@ use crate::host::{Host, Origin};
 use crate::journal::{LogLine, LogPage};
 use crate::kernels::{self, Image, Step};
 use crate::registry::Bundle;
-use crate::runtime::Engine;
+use crate::runtime::{Engine, Staged};
 
 const MIN_BAND_ROWS: usize = 64;
 const STAGED_BYTES: usize = 1 << 30;
@@ -87,6 +88,11 @@ pub enum PluginError {
 }
 
 #[cfg_attr(target_family = "wasm", expect(dead_code, reason = "no engine reads pixels in the web build"))]
+pub(crate) struct Scope<'a> {
+    pub cancel: Option<Arc<AtomicBool>>,
+    pub memo: Option<&'a Staged>,
+}
+
 pub(crate) enum Io<'a> {
     None,
     InPlace(&'a mut [Pixel]),
@@ -164,7 +170,7 @@ impl Plugin {
             Some(contributions) => contributions,
             None => {
                 let seen = plugin.engine.journal().latest();
-                let reply = plugin.answer(&Call::Describe, Io::None, &mut NoHost);
+                let reply = plugin.answer(&Call::Describe, Io::None, &mut NoHost, None);
                 let contributions: Contributions = plugin.logged(&Call::Describe, seen, reply.as_deref().map_err(Clone::clone).and_then(parse))?;
                 contributions.check().map_err(PluginError::Load)?;
                 if let Ok(reply) = reply {
@@ -238,9 +244,12 @@ impl Plugin {
             return Err(PluginError::Failed("a render call stages its frame through Plugin::render; call render".into()));
         }
         let io = pixels.map_or(Io::None, Io::InPlace);
-        self.exchange(call, io, host)
+        self.exchange(call, io, host, None)
     }
 
+    /// When the host's call-off flag stops this call it returns `PluginError::Cancelled`. The frame in `pixels` is then
+    /// unspecified (bands may be half written, the buffer may be cropped); the caller must discard it, never show or
+    /// cache it. The plugin cache and the journal's errors are untouched by a cancelled call.
     pub fn render<H: Host>(
         &self,
         effect: &str,
@@ -275,6 +284,7 @@ impl Plugin {
         let (rows, out_width) = (area.height() as usize, area.width() as usize);
         let bands = (rows / MIN_BAND_ROWS).clamp(1, rayon::current_num_threads());
         let even_rows = rows.div_ceil(bands);
+        let memo = Staged::default();
         if pointwise && out_width == width && !ignores {
             let (top, bottom) = (area.top as usize, area.bottom as usize);
             let call = |band: usize, rows: &[Pixel]| {
@@ -292,12 +302,13 @@ impl Plugin {
                 .enumerate()
                 .map(|(band, rows)| {
                     let mut host = make_host();
-                    let reply = self.exchange(&call(band, rows), Io::InPlace(rows), &mut host)?;
+                    let reply = self.exchange(&call(band, rows), Io::InPlace(rows), &mut host, Some(&memo))?;
                     host.finish(rows);
                     let first = (top + band * even_rows) as i32;
                     Ok(drawn_in(reply, Rect { top: first, bottom: first + (rows.len() / width) as i32, ..area }))
                 })
                 .collect::<Result<Vec<Rect>, PluginError>>()?;
+            self.commit(memo, &make_host())?;
             pixels.truncate(bottom * width);
             pixels.drain(..top * width);
             return Ok(cropped(pixels, area, &drawn));
@@ -330,7 +341,9 @@ impl Plugin {
                 (top as usize, &[])
             } else {
                 let needed = match (layout.maps_input && separate, layout.reach) {
-                    (true, _) => self.exchange::<Rect>(&Call::Input { effect: effect.into(), cx: cx.clone(), out }, Io::None, &mut make_host())?,
+                    (true, _) => {
+                        self.exchange::<Rect>(&Call::Input { effect: effect.into(), cx: cx.clone(), out }, Io::None, &mut make_host(), Some(&memo))?
+                    }
                     (false, Some(reach)) => out.grown(reach),
                     (false, None) => full,
                 };
@@ -344,7 +357,7 @@ impl Plugin {
                 let frame = FrameDesc { width: cx.size[0], height: (last - first) as u32, origin: [0, first as u32], ..Default::default() };
                 let call = Call::Render { effect: effect.into(), cx: cx.clone(), frame };
                 let io = Io::Region { input: held, output: written, skip: (top as usize - first) * width };
-                self.exchange(&call, io, &mut host)?
+                self.exchange(&call, io, &mut host, Some(&memo))?
             } else {
                 let window = Window { size: cx.size, first_row: first as u32, rows: (last - first) as u32 };
                 let origin = [area.left as u32, top as u32];
@@ -353,17 +366,18 @@ impl Plugin {
                 if spread {
                     let address = |pixels: &[Pixel]| [pixels.as_ptr() as u64, pixels.len() as u64];
                     let mut table: [Pixel; 3] = bytemuck::cast([address(held), address(&[]), [written.as_mut_ptr() as u64, written.len() as u64]]);
-                    self.exchange(&call, Io::InPlace(&mut table), &mut host)?
+                    self.exchange(&call, Io::InPlace(&mut table), &mut host, Some(&memo))?
                 } else if ignores {
-                    self.exchange(&call, Io::Draw { out: written, at: out }, &mut host)?
+                    self.exchange(&call, Io::Draw { out: written, at: out }, &mut host, Some(&memo))?
                 } else {
-                    self.exchange(&call, Io::Render { input: held, out: written, at: out }, &mut host)?
+                    self.exchange(&call, Io::Render { input: held, out: written, at: out }, &mut host, Some(&memo))?
                 }
             };
             host.finish(written);
             Ok(drawn_in(reply, out))
         });
         let drawn = drawn.collect::<Result<Vec<Rect>, PluginError>>()?;
+        self.commit(memo, &make_host())?;
         if !ignores {
             *pixels = output;
             return Ok(cropped(pixels, area, &drawn));
@@ -409,6 +423,9 @@ impl Plugin {
         self.engine.pump(host)
     }
 
+    /// When the host's call-off flag stops this call it returns `PluginError::Cancelled`. The frame in `pixels` is then
+    /// unspecified (bands may be half written, the buffer may be cropped); the caller must discard it, never show or
+    /// cache it. The plugin cache and the journal's errors are untouched by a cancelled call.
     pub fn run_passes<H: Host>(
         &self,
         effect: &str,
@@ -434,6 +451,7 @@ impl Plugin {
             PlanImage::Texture(_) | PlanImage::Layer(_) => None,
         };
         let mut spare: Vec<Vec<Pixel>> = Vec::new();
+        let memo = Staged::default();
         for step in kernels::steps(plan, cx.size) {
             if called_off(&make_host()) {
                 return Err(PluginError::Cancelled);
@@ -478,7 +496,7 @@ impl Plugin {
                             kernels::run(kernel, read(pass.src), pass.aux.map(read), sizes[target], &mut out);
                             Ok(())
                         }
-                        None => self.run_pass(effect, cx, pass, read(pass.src), pass.aux.map(read), sizes[target], &mut out, &make_host),
+                        None => self.run_pass(effect, cx, pass, read(pass.src), pass.aux.map(read), sizes[target], &mut out, &make_host, &memo),
                     }
                 }
             };
@@ -490,6 +508,7 @@ impl Plugin {
                 }
             }
         }
+        self.commit(memo, &make_host())?;
         *pixels = match std::mem::take(&mut written[0]) {
             unwritten if unwritten.is_empty() => vec![[0.0; 4]; pixels.len()],
             output => output,
@@ -508,6 +527,7 @@ impl Plugin {
         size: [u32; 2],
         out: &mut [Pixel],
         make_host: &(impl Fn() -> H + Sync),
+        memo: &Staged,
     ) -> Result<(), PluginError> {
         let (width, height) = (size[0] as usize, size[1] as usize);
         let spread = !self.engine.copies_pixels();
@@ -532,9 +552,9 @@ impl Plugin {
             if spread {
                 let address = |pixels: &[Pixel]| [pixels.as_ptr() as u64, pixels.len() as u64];
                 let mut table: [Pixel; 3] = bytemuck::cast([address(src_held), address(aux_held), [rows.as_mut_ptr() as u64, rows.len() as u64]]);
-                self.exchange::<()>(&call, Io::InPlace(&mut table), &mut make_host())
+                self.exchange::<()>(&call, Io::InPlace(&mut table), &mut make_host(), Some(memo))
             } else {
-                self.exchange::<()>(&call, Io::Pass { src: src_held, aux: aux_held, out: rows }, &mut make_host())
+                self.exchange::<()>(&call, Io::Pass { src: src_held, aux: aux_held, out: rows }, &mut make_host(), Some(memo))
             }
         })
     }
@@ -566,13 +586,21 @@ impl Plugin {
         self.engine.journal().push(LogLevel::Warn, message);
     }
 
-    fn exchange<R: DeserializeOwned>(&self, call: &Call, io: Io, host: &mut dyn Host) -> Result<R, PluginError> {
+    fn commit(&self, memo: Staged, host: &dyn Host) -> Result<(), PluginError> {
+        if called_off(host) {
+            return Err(PluginError::Cancelled);
+        }
+        self.engine.commit(memo);
+        Ok(())
+    }
+
+    fn exchange<R: DeserializeOwned>(&self, call: &Call, io: Io, host: &mut dyn Host, memo: Option<&Staged>) -> Result<R, PluginError> {
         let renders = matches!(call, Call::Render { .. } | Call::Pass { .. });
         if renders && called_off(host) {
             return Err(PluginError::Cancelled);
         }
         let seen = self.engine.journal().latest();
-        let answered = self.answer(call, io, host).and_then(|reply| parse(&reply));
+        let answered = self.answer(call, io, host, memo).and_then(|reply| parse(&reply));
         let answered = answered.map_err(|error| if renders && called_off(host) { PluginError::Cancelled } else { error });
         self.logged(call, seen, answered)
     }
@@ -597,10 +625,10 @@ impl Plugin {
         answered
     }
 
-    fn answer(&self, call: &Call, io: Io, host: &mut dyn Host) -> Result<Vec<u8>, PluginError> {
+    fn answer(&self, call: &Call, io: Io, host: &mut dyn Host, memo: Option<&Staged>) -> Result<Vec<u8>, PluginError> {
         let request = serde_json::to_vec(call).map_err(|e| PluginError::Protocol(e.to_string()))?;
         let cancel = if matches!(call, Call::Render { .. } | Call::Pass { .. }) { host.cancel() } else { None };
-        self.engine.call(&request, io, host, origin(call), self.budget(call), cancel)
+        self.engine.call(&request, io, host, origin(call), self.budget(call), Scope { cancel, memo })
     }
 }
 

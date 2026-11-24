@@ -6,8 +6,11 @@ use std::time::Duration;
 use craft_plugin::{Permission, TaskState};
 
 use crate::host::{Host, Origin};
-use crate::plugin::{Io, PluginError};
+use crate::plugin::{Io, PluginError, Scope};
 use crate::registry::Bundle;
+
+#[derive(Default)]
+pub(crate) struct Staged;
 
 pub(crate) enum Engine {}
 
@@ -52,6 +55,10 @@ impl Engine {
         match *self {}
     }
 
+    pub fn commit(&self, _: Staged) {
+        match *self {}
+    }
+
     pub fn cache_generation(&self) -> u64 {
         match *self {}
     }
@@ -60,15 +67,7 @@ impl Engine {
         match *self {}
     }
 
-    pub fn call(
-        self: &Arc<Self>,
-        _: &[u8],
-        _: Io,
-        _: &mut dyn Host,
-        _: Origin,
-        _: Duration,
-        _: Option<Arc<std::sync::atomic::AtomicBool>>,
-    ) -> Result<Vec<u8>, PluginError> {
+    pub fn call(self: &Arc<Self>, _: &[u8], _: Io, _: &mut dyn Host, _: Origin, _: Duration, _: Scope) -> Result<Vec<u8>, PluginError> {
         match **self {}
     }
 
