@@ -34,6 +34,10 @@ pub struct ControlsReply {
     pub widgets: Vec<Widget>,
     #[serde(default)]
     pub value: Option<String>,
+    #[serde(default)]
+    pub topics: Vec<Topic>,
+    #[serde(default)]
+    pub timers: Vec<Timer>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

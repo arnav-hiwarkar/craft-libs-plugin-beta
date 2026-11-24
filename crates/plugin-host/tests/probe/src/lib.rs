@@ -1025,6 +1025,32 @@ impl Panel for Ticker {
     }
 }
 
+#[derive(Default)]
+struct Lookout {
+    seen: std::sync::Mutex<(String, u32)>,
+}
+
+impl Effect for Lookout {
+    fn spec(&self) -> EffectSpec {
+        EffectSpec::new("lookout", "Lookout", "Probe").param(Param::custom("selection", "Selection", "")).param(Param::custom("ticks", "Ticks", ""))
+    }
+
+    fn controls(&self, _instance: u64, param: &str, _value: &mut String, ui: &mut Ui) {
+        let mut seen = self.seen.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if param == "selection" {
+            if let Some(AppEvent::Selection { layers, .. }) = ui.on(Topic::Selection) {
+                seen.0 = format!("selected {layers:?}");
+            }
+            ui.label(&seen.0);
+        } else {
+            if ui.every("tick", 50) {
+                seen.1 += 1;
+            }
+            ui.label(&format!("ticks {}", seen.1));
+        }
+    }
+}
+
 fn make() -> Plugin {
     Plugin::new()
         .effect(Invert)
@@ -1062,6 +1088,7 @@ fn make() -> Plugin {
         .effect(GpuMatte)
         .effect(Aim)
         .effect(Tuned)
+        .effect(Lookout::default())
         .tool("stamp", "Stamp", Stamp::default())
         .panel("counter", "Counter", Counter::default())
         .panel("watch", "Watch", Watch::default())

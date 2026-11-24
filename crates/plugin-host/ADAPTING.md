@@ -49,7 +49,9 @@ SDK (EffectCraft keeps `crates/plugin/tests/it/legacy/legacy.wasm`).
    the UI thread posts requests, answers host calls that need the document, and applies replies, with a
    time budget per UI frame. Give each request the plugin's load, the project's token and the surface's
    token, and drop it when any is stale. Feed `Retained` with the app's events (`Topic`: selection, time,
-   comp, project, edit, mapped to the app's nearest equivalents). Test: zero plugin calls over idle frames;
+   comp, project, edit, mapped to the app's nearest equivalents). Give each custom parameter row its own
+   `Retained` on the same worker and pass a `ControlsReply`'s `topics` and `timers` into it, so rows
+   subscribe and tick as panels do. Test: zero plugin calls over idle frames;
    each event kind calls once; a reply after the project closed is dropped; kittests with real pointer and
    key events.
 4. **Tasks.** Run on their own thread and instance, bound to the project they started in and cancelled when
