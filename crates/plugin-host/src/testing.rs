@@ -4,8 +4,8 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use craft_plugin::{
-    AppEvent, Call, EffectSpec, FrameRequest, Layout, MaskPath, Overlay, PanelReply, ParamKind, ParamsAt, Pixel, Plan, PlanPass, RenderCx, Scene,
-    TaskStatus, ToolEvent, ToolEventKind, UiEvent, UiEventKind, UiInput, Value, Widget,
+    AppEvent, Call, EffectSpec, FrameRequest, Layout, MaskPath, Overlay, PanelReply, ParamKind, ParamsAt, Pixel, Plan, PlanPass, Rect, RenderCx,
+    Scene, TaskStatus, ToolEvent, ToolEventKind, UiEvent, UiEventKind, UiInput, Value, Widget,
 };
 pub use serde_json::json;
 
@@ -718,11 +718,14 @@ impl Render<'_> {
             let mut pixels = source.pixels.clone();
             let started = Instant::now();
             let layout = Layout { reach, ..layout.clone() };
-            match plan {
-                Some(plan) => self.plugin.plugin.run_passes(&self.effect, &cx, plan, &mut pixels, host),
-                None => self.plugin.plugin.render(&self.effect, &cx, &layout, None, &mut pixels, host).map(|_| ()),
+            let drawn = match plan {
+                Some(plan) => self.plugin.plugin.run_passes(&self.effect, &cx, plan, &mut pixels, host).map(|()| Rect::of_size(cx.size)),
+                None => self.plugin.plugin.render(&self.effect, &cx, &layout, None, &mut pixels, host),
             }
             .map_err(|e| e.to_string())?;
+            if drawn != Rect::of_size(cx.size) {
+                pixels = placed(&pixels, drawn, cx.size);
+            }
             Ok::<_, String>((Picture { width: source.width, height: source.height, pixels }, started.elapsed()))
         };
         let (mut picture, mut best) = render(layout.reach, plan)?;
@@ -755,6 +758,18 @@ impl Render<'_> {
         }
         Ok((picture, best))
     }
+}
+
+fn placed(cropped: &[Pixel], area: Rect, size: [u32; 2]) -> Vec<Pixel> {
+    let width = size[0] as usize;
+    let mut whole = vec![[0.0; 4]; width * size[1] as usize];
+    if let Some(row_width) = usize::try_from(area.width()).ok().filter(|&w| w > 0) {
+        for (y, row) in (area.top as usize..).zip(cropped.chunks_exact(row_width)) {
+            let at = y * width + area.left as usize;
+            whole[at..at + row_width].copy_from_slice(row);
+        }
+    }
+    whole
 }
 
 pub struct PanelTest<'a> {
