@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
-use craft_plugin::Value;
-use craft_plugin_host::testing::{Pattern, Picture, TestPlugin, check_frame, updating_frames};
+use craft_plugin::{Place, Value};
+use craft_plugin_host::testing::{Pattern, Picture, RENDER_LAYER, TestPlugin, check_frame, json, updating_frames};
 
 use super::{Kind, bundle};
 
@@ -173,4 +173,23 @@ fn a_generator_that_reports_a_drawn_rectangle_renders_as_a_whole_frame_with_the_
     assert_eq!(picture.at(0, 0), [0.0; 4]);
     assert_eq!(picture.at(99, 150), [0.0; 4]);
     assert_eq!(picture.at(100, 50), [0.0, 0.0, 1.0, 1.0]);
+}
+
+#[test]
+fn a_test_serves_its_own_frames_and_layer_data_and_can_cancel_a_task() {
+    let (_dir, bundle) = bundle(Kind::Wasm, &["document.read", "document.write"]);
+    let plugin = TestPlugin::load(&bundle).unwrap();
+    plugin.frames(|request| {
+        let side = (40.0 * request.scale) as u32;
+        Picture { width: side, height: side / 2, pixels: vec![[request.time as f32, 0.0, 0.0, 1.0]; (side * side / 2) as usize] }
+    });
+    let read = plugin.task("frame", json!({"time": 0.5, "scale": 0.5})).unwrap();
+    assert_eq!(read, json!({"width": 20, "height": 10, "center": [0.5, 0.0, 0.0, 1.0]}));
+    plugin.set_data(Place::OwnLayer, "tint", &[255]);
+    assert_eq!(plugin.data(Place::Layer(RENDER_LAYER), "tint"), Some(vec![255]));
+    let tinted = plugin.render("tinted").on(Pattern::Checker).size(4, 4).run().unwrap();
+    assert_eq!(tinted.at(1, 1)[0], 1.0);
+    let started = plugin.start("patient", json!({})).unwrap();
+    assert!(plugin.cancel(started));
+    assert_eq!(plugin.wait(started), Err(format!("task {started} was cancelled")));
 }

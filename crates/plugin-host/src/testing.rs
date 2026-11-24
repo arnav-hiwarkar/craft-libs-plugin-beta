@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use craft_plugin::{
-    AppEvent, Call, EffectSpec, FrameRequest, Layout, MaskPath, Overlay, PanelReply, ParamKind, ParamsAt, Pixel, Plan, PlanPass, Rect, RenderCx,
+    AppEvent, Call, EffectSpec, FrameRequest, Layout, MaskPath, Overlay, PanelReply, ParamKind, ParamsAt, Pixel, Place, Plan, PlanPass, Rect, RenderCx,
     Scene, TaskStatus, ToolEvent, ToolEventKind, UiEvent, UiEventKind, UiInput, Value, Widget,
 };
 pub use serde_json::json;
@@ -13,6 +13,7 @@ use crate::{Access, Bundle, Host, Limits, Pixels, Plugin};
 
 pub const MAX_PADDING: u32 = 4096;
 const TASK_WAIT: Duration = Duration::from_secs(60);
+pub const RENDER_LAYER: u64 = 1;
 
 #[macro_export]
 macro_rules! assert_frame {
@@ -302,12 +303,21 @@ pub fn default_value(kind: &ParamKind, layer_size: [f64; 2]) -> Option<Value> {
     })
 }
 
+type Reply = Arc<dyn Fn(&serde_json::Value) -> serde_json::Value + Send + Sync>;
+type Frames = Arc<dyn Fn(&FrameRequest) -> Picture + Send + Sync>;
+
 #[derive(Default)]
 struct Recorder {
     commands: Vec<(String, serde_json::Value)>,
-    answers: BTreeMap<String, serde_json::Value>,
+    answers: BTreeMap<String, Reply>,
     notes: Vec<String>,
     clipboard: String,
+    frames: Option<Frames>,
+    data: Vec<(Place, String, Vec<u8>)>,
+}
+
+fn own(place: Place) -> Place {
+    if place == Place::OwnLayer { Place::Layer(RENDER_LAYER) } else { place }
 }
 
 struct TestHost<'a> {
@@ -336,9 +346,12 @@ impl Host for TestHost<'_> {
     }
 
     fn command(&mut self, id: &str, params: serde_json::Value) -> Result<serde_json::Value, String> {
-        let mut recorder = self.recorder.lock().map_err(|_| "the test host panicked earlier")?;
-        recorder.commands.push((id.to_string(), params));
-        Ok(recorder.answers.get(id).cloned().unwrap_or(serde_json::Value::Null))
+        let reply = {
+            let mut recorder = self.recorder.lock().map_err(|_| "the test host panicked earlier")?;
+            recorder.commands.push((id.to_string(), params.clone()));
+            recorder.answers.get(id).cloned()
+        };
+        Ok(reply.map_or(serde_json::Value::Null, |reply| reply(&params)))
     }
 
     fn notify(&mut self, message: &str) {
@@ -360,6 +373,10 @@ impl Host for TestHost<'_> {
     }
 
     fn frame(&mut self, request: &FrameRequest) -> Result<Pixels, String> {
+        let frames = self.recorder.lock().map_err(|_| "the test host panicked earlier")?.frames.clone();
+        if let Some(frames) = frames {
+            return Ok(frames(request).pixels());
+        }
         let scale = request.scale.clamp(1.0 / 64.0, 1.0);
         let [width, height] = [320.0, 180.0].map(|side: f64| (side * scale).round().max(1.0) as u32);
         Ok(Pattern::Photo.picture(width, height).pixels())
@@ -383,6 +400,18 @@ impl Host for TestHost<'_> {
 
     fn set_clipboard(&mut self, text: &str) -> Result<(), String> {
         self.recorder.lock().map(|mut recorder| recorder.clipboard = text.to_string()).map_err(|_| "the test host panicked earlier".into())
+    }
+
+    fn data(&mut self, _plugin: &str, place: Place, key: &str) -> Result<Option<Vec<u8>>, String> {
+        let recorder = self.recorder.lock().map_err(|_| "the test host panicked earlier")?;
+        Ok(recorder.data.iter().find(|(at, name, _)| *at == own(place) && name == key).map(|(_, _, value)| value.clone()))
+    }
+
+    fn set_data(&mut self, _plugin: &str, place: Place, key: &str, value: Option<Vec<u8>>) -> Result<(), String> {
+        let mut recorder = self.recorder.lock().map_err(|_| "the test host panicked earlier")?;
+        recorder.data.retain(|(at, name, _)| !(*at == own(place) && name == key));
+        recorder.data.extend(value.map(|value| (own(place), key.to_string(), value)));
+        Ok(())
     }
 }
 
@@ -451,9 +480,27 @@ impl TestPlugin {
     }
 
     pub fn answer(&self, command: &str, reply: serde_json::Value) {
+        self.reply(command, move |_| reply.clone());
+    }
+
+    pub fn reply(&self, command: &str, reply: impl Fn(&serde_json::Value) -> serde_json::Value + Send + Sync + 'static) {
         if let Ok(mut recorder) = self.recorder.lock() {
-            recorder.answers.insert(command.to_string(), reply);
+            recorder.answers.insert(command.to_string(), Arc::new(reply));
         }
+    }
+
+    pub fn frames(&self, frames: impl Fn(&FrameRequest) -> Picture + Send + Sync + 'static) {
+        if let Ok(mut recorder) = self.recorder.lock() {
+            recorder.frames = Some(Arc::new(frames));
+        }
+    }
+
+    pub fn data(&self, place: Place, key: &str) -> Option<Vec<u8>> {
+        TestHost::bare(&self.recorder).data("", place, key).ok().flatten()
+    }
+
+    pub fn set_data(&self, place: Place, key: &str, value: &[u8]) {
+        let _ = TestHost::bare(&self.recorder).set_data("", place, key, Some(value.to_vec()));
     }
 
     pub fn commands(&self) -> Vec<(String, serde_json::Value)> {
@@ -476,16 +523,28 @@ impl TestPlugin {
     }
 
     pub fn task(&self, id: &str, args: serde_json::Value) -> Result<serde_json::Value, String> {
+        self.wait(self.start(id, args)?)
+    }
+
+    pub fn start(&self, id: &str, args: serde_json::Value) -> Result<u64, String> {
+        self.plugin.start(id, args, &TestHost::bare(&self.recorder)).map_err(|e| e.to_string())
+    }
+
+    pub fn cancel(&self, task: u64) -> bool {
+        self.plugin.cancel(task)
+    }
+
+    pub fn wait(&self, started: u64) -> Result<serde_json::Value, String> {
         let mut host = TestHost::bare(&self.recorder);
-        let started = self.plugin.start(id, args, &host).map_err(|e| e.to_string())?;
         let deadline = Instant::now() + TASK_WAIT;
         loop {
             self.plugin.pump(&mut host);
             let state = self.plugin.tasks().into_iter().find(|state| state.id == started).ok_or(format!("task {started} is gone"))?;
             match state.status {
                 TaskStatus::Done => return Ok(state.result.unwrap_or_default()),
-                TaskStatus::Failed | TaskStatus::Cancelled => return Err(state.error.unwrap_or_else(|| format!("task `{id}` stopped"))),
-                TaskStatus::Running if Instant::now() > deadline => return Err(format!("task `{id}` ran longer than {} s", TASK_WAIT.as_secs())),
+                TaskStatus::Cancelled => return Err(format!("task {started} was cancelled")),
+                TaskStatus::Failed => return Err(state.error.unwrap_or_else(|| format!("task {started} stopped"))),
+                TaskStatus::Running if Instant::now() > deadline => return Err(format!("task {started} ran longer than {} s", TASK_WAIT.as_secs())),
                 TaskStatus::Running => std::thread::sleep(Duration::from_millis(1)),
             }
         }
