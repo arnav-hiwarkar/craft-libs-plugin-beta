@@ -48,4 +48,9 @@ pub trait Host {
     fn drag(&self, drag: &Drag) -> Option<Self::Payload>;
     fn dropped(&self, payload: &Self::Payload) -> Option<Dropped>;
     fn accept_files(&mut self, paths: &[String]);
+
+    #[expect(clippy::disallowed_types)]
+    fn combo_box(&self, ui: &mut egui::Ui, id: egui::IdSalt, label: &str, selected: String, menu: &mut dyn FnMut(&mut egui::Ui)) -> egui::Response {
+        egui::ComboBox::new(id, label).selected_text(selected).show_ui(ui, menu).response
+    }
 }

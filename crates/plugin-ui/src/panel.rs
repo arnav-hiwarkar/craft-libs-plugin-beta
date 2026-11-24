@@ -299,16 +299,20 @@ impl<H: Host> Renderer<'_, H> {
     fn popup(&mut self, ui: &mut egui::Ui, id: u64, text: &str, options: &[String], selected: usize) {
         let mut chosen = None;
         let shown = options.get(selected).cloned().unwrap_or_default();
-        let combo = craft_ui::ComboBox::new(id, text).selected_text(shown).show_ui(ui, |ui| {
+        let mut items = Vec::new();
+        let combo = self.host.combo_box(ui, egui::IdSalt::new(id), text, shown, &mut |ui| {
             for (index, option) in options.iter().enumerate() {
                 let item = ui.selectable_label(index == selected, option);
-                self.host.register(&format!("{}.{id}.{index}", self.scope), &item, option);
                 if item.clicked() {
                     chosen = Some(index);
                 }
+                items.push((index, item));
             }
         });
-        self.register(id, &combo.response, text);
+        for (index, item) in &items {
+            self.host.register(&format!("{}.{id}.{index}", self.scope), item, &options[*index]);
+        }
+        self.register(id, &combo, text);
         if let Some(index) = chosen.filter(|index| *index != selected) {
             self.emit(id, UiEventKind::Number(index as f64));
         }
