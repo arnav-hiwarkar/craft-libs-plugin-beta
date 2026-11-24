@@ -162,6 +162,8 @@ fn needs_the_app(call: &HostCall) -> bool {
             | HostCall::Audio { .. }
             | HostCall::ClipboardRead
             | HostCall::ClipboardWrite { .. }
+            | HostCall::DataGet { .. }
+            | HostCall::DataSet { .. }
     )
 }
 
@@ -297,6 +299,14 @@ fn answer(cx: &mut HostCx, call: HostCall, bulk: &[u8]) -> Result<(Value, Bulk),
         HostCall::ParamsAt { time } => cx.host.params_at(time).map(|answer| (json!(answer), Bulk::None)).ok_or("no parameters at that time".into()),
         HostCall::ClipboardRead => cx.host.clipboard().map(|text| (json!(text), Bulk::None)),
         HostCall::ClipboardWrite { text } => cx.host.set_clipboard(&text).map(|()| (Value::Null, Bulk::None)),
+        HostCall::DataGet { place, key } => Ok(match cx.host.data(&cx.plugin.id, place, &key)? {
+            Some(bytes) => (Value::Bool(true), Bulk::Bytes(bytes)),
+            None => (Value::Bool(false), Bulk::None),
+        }),
+        HostCall::DataSet { place, key, remove } => {
+            cx.host.set_data(&cx.plugin.id, place, &key, (!remove).then(|| bulk.to_vec()))?;
+            plain(Value::Null)
+        }
     }
 }
 

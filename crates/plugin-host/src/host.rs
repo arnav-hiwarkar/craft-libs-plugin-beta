@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use craft_plugin::{AudioRequest, EffectSpec, FrameRequest, LayerPlacement, MaskPath, ParamsAt, Permission, PickFile, Pixel, Scene};
+use craft_plugin::{AudioRequest, EffectSpec, FrameRequest, LayerPlacement, MaskPath, ParamsAt, Permission, PickFile, Pixel, Place, Scene};
 use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,5 +98,13 @@ pub trait Host {
 
     fn set_clipboard(&mut self, _text: &str) -> Result<(), String> {
         Err("the clipboard is not available here".into())
+    }
+
+    fn data(&mut self, _plugin: &str, _place: Place, _key: &str) -> Result<Option<Vec<u8>>, String> {
+        Err("this app keeps no plugin data here".into())
+    }
+
+    fn set_data(&mut self, _plugin: &str, _place: Place, _key: &str, _value: Option<Vec<u8>>) -> Result<(), String> {
+        Err("this app keeps no plugin data here".into())
     }
 }

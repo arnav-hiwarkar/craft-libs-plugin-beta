@@ -1,6 +1,7 @@
 mod app;
 #[cfg(not(target_family = "wasm"))]
 mod cache;
+pub mod data;
 mod host;
 mod images;
 mod journal;
@@ -21,8 +22,8 @@ pub use app::{EffectRegistry, ParamValues};
 pub use craft_plugin::{
     AudioRequest, Blend, Call, Camera, CommandSpec, Contributions, ControlsReply, Cull, Draw, EffectSpec, Entry, Focus, FrameDesc, FrameRequest,
     Gradient, LayerPlacement, Layout, Light, LightKind, Manifest, MaskPath, PanelReply, PanelSpec, Param, ParamKind, ParamsAt, Permission, PickFile,
-    Pixel, Plan, PlanData, PlanImage, PlanPass, Rect, RenderCx, RunMode, Scene, TaskSpec, TaskState, TaskStatus, UiEvent, UiEventKind, UiInput,
-    Value, Widget, applied_padding, default_curves_text,
+    Pixel, Place, Plan, PlanData, PlanImage, PlanPass, Rect, RenderCx, RunMode, Scene, TaskSpec, TaskState, TaskStatus, UiEvent, UiEventKind,
+    UiInput, Value, Widget, applied_padding, default_curves_text,
 };
 pub use host::{Access, Host, Origin, Pixels, Samples};
 pub use images::{MAX_IMAGE_SIDE, PluginImage};

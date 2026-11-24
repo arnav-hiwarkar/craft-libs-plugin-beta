@@ -5,7 +5,7 @@ use serde::de::DeserializeOwned;
 
 use crate::abi::{Buffer, call_host};
 use crate::effect::{Image, image_of};
-use crate::wire::{AudioDesc, AudioRequest, FileError, FrameRequest, HostCall, LogLevel, Outcome, PickFile, ReadFailed, Root, TaskState};
+use crate::wire::{AudioDesc, AudioRequest, FileError, FrameRequest, HostCall, LogLevel, Outcome, PickFile, Place, ReadFailed, Root, TaskState};
 use crate::{Error, Result};
 
 pub fn call<T: DeserializeOwned>(call: &HostCall, bulk: &[u8]) -> Result<(T, Buffer)> {
@@ -125,4 +125,17 @@ pub fn clipboard() -> Result<String> {
 
 pub fn set_clipboard(text: &str) -> Result<()> {
     call::<serde_json::Value>(&HostCall::ClipboardWrite { text: text.into() }, &[]).map(|_| ())
+}
+
+pub fn data(place: Place, key: &str) -> Result<Option<Vec<u8>>> {
+    let (found, bulk) = call::<bool>(&HostCall::DataGet { place, key: key.into() }, &[])?;
+    Ok(found.then(|| bulk.bytes().to_vec()))
+}
+
+pub fn set_data(place: Place, key: &str, value: &[u8]) -> Result<()> {
+    call::<serde_json::Value>(&HostCall::DataSet { place, key: key.into(), remove: false }, value).map(|_| ())
+}
+
+pub fn remove_data(place: Place, key: &str) -> Result<()> {
+    call::<serde_json::Value>(&HostCall::DataSet { place, key: key.into(), remove: true }, &[]).map(|_| ())
 }

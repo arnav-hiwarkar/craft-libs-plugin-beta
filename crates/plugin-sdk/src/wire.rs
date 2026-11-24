@@ -1078,6 +1078,19 @@ pub struct PickFile {
     pub extensions: Vec<String>,
 }
 
+pub const MAX_DATA_KEYS: usize = 64;
+pub const MAX_DATA_KEY: usize = 256;
+pub const MAX_DATA_VALUE: usize = 256 << 10;
+pub const MAX_DATA_PER_PLUGIN: usize = 4 << 20;
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Place {
+    Project,
+    Layer(u64),
+    OwnLayer,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(tag = "call", rename_all = "snake_case")]
 pub enum HostCall {
@@ -1109,6 +1122,8 @@ pub enum HostCall {
     ClipboardWrite { text: String },
     Placement { param: String, time: Option<f64> },
     SceneAt { time: f64 },
+    DataGet { place: Place, key: String },
+    DataSet { place: Place, key: String, remove: bool },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]

@@ -223,6 +223,10 @@ impl Cx {
         host::call(&HostCall::SceneAt { time: comp_time }, &[]).map(|(scene, _)| scene)
     }
 
+    pub fn layer_data(&self, key: &str) -> crate::Result<Option<Vec<u8>>> {
+        host::data(crate::Place::OwnLayer, key)
+    }
+
     pub fn placement(&self, param: &str) -> crate::Result<LayerPlacement> {
         placement(param, None)
     }
