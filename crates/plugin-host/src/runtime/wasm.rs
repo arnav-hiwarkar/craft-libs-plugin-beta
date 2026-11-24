@@ -63,21 +63,15 @@ fn engine() -> Result<&'static Engine, PluginError> {
 pub(crate) struct WasmModule {
     module: Module,
     linker: Linker<State>,
-    digest: String,
 }
 
 impl WasmModule {
-    pub fn compile(bytes: &[u8], cache: &Path) -> Result<WasmModule, PluginError> {
+    pub fn load(name: &str, cache: &Path, read: impl FnOnce() -> Result<Vec<u8>, PluginError>) -> Result<WasmModule, PluginError> {
         let engine = engine()?;
-        let digest = cache_name(engine, bytes);
-        let module = cached(engine, bytes, &digest, cache)?;
+        let module = cached(engine, name, cache, read)?;
         let mut linker = Linker::new(engine);
         linker.func_wrap("craft", "host_call", host_call).map_err(load_error)?;
-        Ok(WasmModule { module, linker, digest })
-    }
-
-    pub fn digest(&self) -> &str {
-        &self.digest
+        Ok(WasmModule { module, linker })
     }
 
     pub fn instantiate(&self) -> Result<WasmGuest, PluginError> {
@@ -277,71 +271,104 @@ fn host_call(mut caller: Caller<'_, State>, _ctx: u32, request: u32, request_len
 
 const KEY_FILE: &str = "key";
 const MAC_LEN: usize = 32;
-const MAC_EXTENSION: &str = "mac";
+const COMPILED_EXTENSION: &str = "cwasm";
+const DESCRIBED_EXTENSION: &str = "described";
+const COMPILED_LIMIT: u64 = 1 << 30;
+const DESCRIBED_LIMIT: u64 = REPLY_LIMIT as u64 + 256;
 
-fn cached(engine: &Engine, bytes: &[u8], name: &str, cache: &Path) -> Result<Module, PluginError> {
-    let path = cache.join(format!("{name}.cwasm"));
+fn compile(engine: &Engine, wasm: &[u8]) -> Result<Vec<u8>, PluginError> {
+    static POOL: OnceLock<Result<rayon::ThreadPool, String>> = OnceLock::new();
+    let pool = POOL
+        .get_or_init(|| rayon::ThreadPoolBuilder::new().thread_name(|n| format!("craft-plugin-compile-{n}")).build().map_err(|e| e.to_string()))
+        .as_ref()
+        .map_err(|e| PluginError::Load(format!("the plugin compiler did not start: {e}")))?;
+    std::thread::scope(|scope| {
+        let compiling = std::thread::Builder::new()
+            .name("craft-plugin-compile".into())
+            .spawn_scoped(scope, || pool.install(|| engine.precompile_module(wasm)))
+            .map_err(|e| PluginError::Load(format!("the plugin compiler did not start: {e}")))?;
+        compiling.join().map_err(|_| PluginError::Load("the plugin compiler stopped".into()))?.map_err(load_error)
+    })
+}
+
+fn cached(engine: &Engine, name: &str, cache: &Path, read: impl FnOnce() -> Result<Vec<u8>, PluginError>) -> Result<Module, PluginError> {
+    let path = cache.join(format!("{name}.{COMPILED_EXTENSION}"));
     let key = match install_key(cache) {
         Ok(key) => key,
         Err(error) => {
             log::warn!("{}: the compiled plugin cache is off: {error}", cache.display());
-            return engine.precompile_module(bytes).and_then(|compiled| native::fresh_module(engine, &compiled)).map_err(load_error);
+            return native::fresh_module(engine, &compile(engine, &read()?)?).map_err(load_error);
         }
     };
-    if let Some(module) = signed_entry(&key, name, &path).and_then(|body| native::compiled_module(engine, &body)) {
+    if let Some(module) = signed_entry(&key, &path, COMPILED_LIMIT).and_then(|body| native::compiled_module(engine, &body)) {
         return Ok(module);
     }
-    let compiled = engine.precompile_module(bytes).map_err(load_error)?;
+    let compiled = compile(engine, &read()?)?;
     let module = native::fresh_module(engine, &compiled).map_err(load_error)?;
-    if let Err(error) = store(&key, name, &path, &compiled) {
+    if let Err(error) = store(&key, &path, &compiled) {
         log::warn!("{}: the compiled plugin was not cached: {error}", path.display());
     }
     Ok(module)
 }
 
-fn signed_entry(key: &[u8; 32], name: &str, path: &Path) -> Option<Vec<u8>> {
-    let mac = std::fs::read(path.with_extension(MAC_EXTENSION)).ok()?;
-    let mut file = std::fs::File::open(path).ok()?;
-    let mut body = Vec::new();
-    std::io::Read::read_to_end(&mut file, &mut body).ok()?;
-    let meta = file.metadata().ok()?;
-    let expected = hmac(key, &[name.as_bytes(), &identity(&meta)]);
-    let equal = mac.len() == MAC_LEN && mac.iter().zip(expected).fold(0, |differ, (a, b)| differ | (a ^ b)) == 0;
-    (equal && body.len() as u64 == meta.len()).then_some(body)
+pub(crate) fn described(cache: &Path, record: &str) -> Option<(String, Vec<u8>)> {
+    let body = signed_entry(&install_key(cache).ok()?, &cache.join(format!("{record}.{DESCRIBED_EXTENSION}")), DESCRIBED_LIMIT)?;
+    let split = body.iter().position(|&byte| byte == b'\n')?;
+    Some((String::from_utf8(body[..split].to_vec()).ok()?, body[split + 1..].to_vec()))
 }
 
-fn store(key: &[u8; 32], name: &str, path: &Path, compiled: &[u8]) -> std::io::Result<()> {
-    let part = |extension: &str| path.with_extension(format!("{extension}.{}.part", std::process::id()));
-    let (staged, staged_mac) = (part("cwasm"), part(MAC_EXTENSION));
-    let stored = std::fs::File::create(&staged).and_then(|mut file| {
-        std::io::Write::write_all(&mut file, compiled)?;
-        std::fs::rename(&staged, path)?;
-        let mac = hmac(key, &[name.as_bytes(), &identity(&file.metadata()?)]);
-        std::fs::write(&staged_mac, mac)?;
-        std::fs::rename(&staged_mac, path.with_extension(MAC_EXTENSION))
-    });
+pub(crate) fn keep_described(cache: &Path, record: &str, module: &str, reply: &[u8]) {
+    let path = cache.join(format!("{record}.{DESCRIBED_EXTENSION}"));
+    let body = [module.as_bytes(), b"\n", reply].concat();
+    if let Err(error) = install_key(cache).and_then(|key| store(&key, &path, &body)) {
+        log::warn!("{}: the plugin's description was not kept: {error}", path.display());
+    }
+}
+
+fn mac_path(path: &Path) -> std::path::PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(".mac");
+    name.into()
+}
+
+fn signed(key: &[u8; 32], path: &Path, body: &[u8]) -> [u8; 32] {
+    hmac(key, &[path.file_name().unwrap_or_default().as_encoded_bytes(), &[0], body])
+}
+
+fn read_at_most(path: &Path, limit: u64) -> Option<Vec<u8>> {
+    let file = std::fs::File::open(path).ok()?;
+    if file.metadata().ok()?.len() > limit {
+        return None;
+    }
+    let mut body = Vec::new();
+    std::io::Read::read_to_end(&mut std::io::Read::take(file, limit + 1), &mut body).ok()?;
+    (body.len() as u64 <= limit).then_some(body)
+}
+
+fn signed_entry(key: &[u8; 32], path: &Path, limit: u64) -> Option<Vec<u8>> {
+    let mac = read_at_most(&mac_path(path), MAC_LEN as u64)?;
+    let body = read_at_most(path, limit)?;
+    let expected = signed(key, path, &body);
+    let equal = mac.len() == MAC_LEN && mac.iter().zip(expected).fold(0, |differ, (a, b)| differ | (a ^ b)) == 0;
+    equal.then_some(body)
+}
+
+fn store(key: &[u8; 32], path: &Path, body: &[u8]) -> std::io::Result<()> {
+    let part = |path: &Path| {
+        let mut name = path.as_os_str().to_owned();
+        name.push(format!(".{}.part", std::process::id()));
+        std::path::PathBuf::from(name)
+    };
+    let (mac, staged, staged_mac) = (mac_path(path), part(path), part(&mac_path(path)));
+    let stored = std::fs::write(&staged, body)
+        .and_then(|()| std::fs::write(&staged_mac, signed(key, path, body)))
+        .and_then(|()| std::fs::rename(&staged, path))
+        .and_then(|()| std::fs::rename(&staged_mac, &mac));
     if stored.is_err() {
         let _ = std::fs::remove_file(&staged);
         let _ = std::fs::remove_file(&staged_mac);
     }
     stored
-}
-
-#[cfg(unix)]
-fn identity(meta: &std::fs::Metadata) -> Vec<u8> {
-    use std::os::unix::fs::MetadataExt;
-    [meta.dev(), meta.ino(), meta.size(), meta.mtime() as u64, meta.mtime_nsec() as u64, meta.ctime() as u64, meta.ctime_nsec() as u64]
-        .iter()
-        .flat_map(|field| field.to_le_bytes())
-        .collect()
-}
-
-#[cfg(not(unix))]
-fn identity(meta: &std::fs::Metadata) -> Vec<u8> {
-    let nanos = |time: std::io::Result<std::time::SystemTime>| {
-        time.ok().and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |since| since.as_nanos() as u64)
-    };
-    [meta.len(), nanos(meta.modified()), nanos(meta.created())].iter().flat_map(|field| field.to_le_bytes()).collect()
 }
 
 fn hmac(key: &[u8], message: &[&[u8]]) -> [u8; 32] {
@@ -424,11 +451,17 @@ impl Hasher for DigestHasher {
     }
 }
 
+pub(crate) fn name_of(bytes: &[u8]) -> Result<String, PluginError> {
+    Ok(cache_name(engine()?, bytes))
+}
+
 fn cache_name(engine: &Engine, bytes: &[u8]) -> String {
     let mut hasher = DigestHasher(Sha256::new());
     hasher.write(bytes);
     hasher.write(std::env::consts::ARCH.as_bytes());
     hasher.write(std::env::consts::OS.as_bytes());
+    hasher.write(&ABI.to_le_bytes());
+    hasher.write(env!("CARGO_PKG_VERSION").as_bytes());
     engine.precompile_compatibility_hash().hash(&mut hasher);
     hasher.0.finalize().iter().map(|byte| format!("{byte:02x}")).collect()
 }
@@ -492,7 +525,7 @@ mod tests {
     use crate::plugin::PluginError;
 
     fn cached(engine: &wasmtime::Engine, bytes: &[u8], cache: &std::path::Path) -> Result<wasmtime::Module, PluginError> {
-        super::cached(engine, bytes, &cache_name(engine, bytes), cache)
+        super::cached(engine, &cache_name(engine, bytes), cache, || Ok(bytes.to_vec()))
     }
 
     const EMPTY: &[u8] = &[0, 0x61, 0x73, 0x6d, 1, 0, 0, 0];
@@ -520,7 +553,7 @@ mod tests {
 
     fn instantiate_error(module: &[u8]) -> String {
         let dir = tempfile::tempdir().unwrap();
-        match WasmModule::compile(module, dir.path()).unwrap().instantiate() {
+        match WasmModule::load("tables", dir.path(), || Ok(module.to_vec())).unwrap().instantiate() {
             Ok(_) => panic!("the module has no exports and cannot instantiate"),
             Err(error) => error.to_string(),
         }
@@ -569,25 +602,25 @@ mod tests {
     }
 
     #[test]
-    fn an_untouched_entry_is_read_without_a_rewrite_and_one_changed_in_place_with_its_time_restored_is_refused() {
+    fn an_untouched_entry_is_reused_without_a_rewrite_and_one_with_a_flipped_byte_is_recompiled() {
         let engine = engine().unwrap();
         let dir = tempfile::tempdir().unwrap();
-        let name = cache_name(engine, EMPTY);
-        let entry = dir.path().join(format!("{name}.cwasm"));
-        cached(engine, EMPTY, dir.path()).unwrap();
-        let written = std::fs::metadata(&entry).unwrap().modified().unwrap();
-        cached(engine, EMPTY, dir.path()).unwrap();
+        let entry = dir.path().join(format!("{}.cwasm", cache_name(engine, ONE_IMPORT)));
+        cached(engine, ONE_IMPORT, dir.path()).unwrap();
+        let (written, body) = (std::fs::metadata(&entry).unwrap().modified().unwrap(), std::fs::read(&entry).unwrap());
+        let unread = || Err(PluginError::Load("the wasm was read again".into()));
+        assert_eq!(super::cached(engine, &cache_name(engine, ONE_IMPORT), dir.path(), unread).unwrap().imports().len(), 1);
         assert_eq!(std::fs::metadata(&entry).unwrap().modified().unwrap(), written);
         let key = install_key(dir.path()).unwrap();
-        let mut body = signed_entry(&key, &name, &entry).unwrap();
-        assert_eq!(body, std::fs::read(&entry).unwrap());
-        body[0] ^= 1;
+        let mut corrupted = body.clone();
+        corrupted[body.len() / 2] ^= 1;
         let mut file = std::fs::OpenOptions::new().write(true).open(&entry).unwrap();
-        std::io::Write::write_all(&mut file, &body).unwrap();
+        std::io::Write::write_all(&mut file, &corrupted).unwrap();
         file.set_modified(written).unwrap();
         drop(file);
-        assert_eq!(std::fs::metadata(&entry).unwrap().modified().unwrap(), written);
-        assert!(signed_entry(&key, &name, &entry).is_none(), "an entry changed in place was accepted");
+        assert!(signed_entry(&key, &entry, super::COMPILED_LIMIT).is_none(), "a corrupted entry was accepted");
+        assert_eq!(cached(engine, ONE_IMPORT, dir.path()).unwrap().imports().len(), 1);
+        assert!(std::fs::read(&entry).unwrap() == body, "the corrupted entry was not replaced by a fresh compile");
     }
 
     #[test]

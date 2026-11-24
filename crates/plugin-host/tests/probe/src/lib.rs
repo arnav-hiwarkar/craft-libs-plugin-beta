@@ -87,7 +87,9 @@ impl Effect for HostCalls {
     }
 
     fn render(&self, cx: &Cx, _frame: &mut Frame) -> Result<()> {
-        (0..cx.f("calls") as u64).for_each(|_| drop(host::cache_has("k")));
+        (0..cx.f("calls") as u64).for_each(|_| {
+            let _ = host::cache_has("k");
+        });
         Ok(())
     }
 }
@@ -528,14 +530,22 @@ impl Effect for HostKernels {
             28 => plan.pass(PlanPass::directional_blur(source, output, 30.0, 9.0)),
             29 => plan.pass(PlanPass::bilateral(source, output, 3, 0.15)),
             30 => plan.pass(PlanPass::noise(soft, 4.0, 3, 7, [-3, 9])).pass(PlanPass::blend_images(source, soft, output, BlendMode::Multiply, 0.6)),
-            31 => plan
-                .pass(PlanPass::hsl_range(source, soft, [300.0, 60.0], [0.1, 1.0], [0.05, 0.9], 0.15))
-                .pass(PlanPass::blend_images(source, soft, output, BlendMode::Multiply, 1.0)),
+            31 => plan.pass(PlanPass::hsl_range(source, soft, [300.0, 60.0], [0.1, 1.0], [0.05, 0.9], 0.15)).pass(PlanPass::blend_images(
+                source,
+                soft,
+                output,
+                BlendMode::Multiply,
+                1.0,
+            )),
             32 => {
                 let dab = |i: u32| Dab {
                     opacity: 0.8,
                     hardness: (i % 4) as f32 * 0.25,
-                    ..Dab::new([(i * 37 % (frame[0] + 20)) as f32 - 10.0, (i * 53 % (frame[1] + 20)) as f32 - 10.0], 1.0 + (i % 13) as f32, [0.9, 0.5, 0.2])
+                    ..Dab::new(
+                        [(i * 37 % (frame[0] + 20)) as f32 - 10.0, (i * 53 % (frame[1] + 20)) as f32 - 10.0],
+                        1.0 + (i % 13) as f32,
+                        [0.9, 0.5, 0.2],
+                    )
                 };
                 plan.pass(PlanPass::splat(source, output, (0..400).map(dab).collect()))
             }
@@ -627,6 +637,25 @@ impl Effect for Swap {
     }
 }
 
+struct SmallSwap;
+
+impl Effect for SmallSwap {
+    fn spec(&self) -> EffectSpec {
+        EffectSpec::new("small-swap", "Small Swap", "Probe")
+    }
+
+    fn layout(&self, cx: &Cx) -> Layout {
+        match cx.size[0] <= 512 {
+            true => Layout::pointwise().passes(Plan::new().pass(PlanPass::matrix(PlanImage::Source, PlanImage::Output, SWAP))),
+            false => Layout::pointwise(),
+        }
+    }
+
+    fn render(&self, cx: &Cx, frame: &mut Frame) -> Result<()> {
+        Swap.render(cx, frame)
+    }
+}
+
 struct Streak;
 
 impl Effect for Streak {
@@ -650,12 +679,10 @@ const SPRITE: usize = 200;
 
 impl Effect for Sprite {
     fn spec(&self) -> EffectSpec {
-        EffectSpec::new("sprite", "Sprite", "Probe").param(Param::checkbox("whole", "Whole Frame", false)).param(Param::checkbox(
-            "drawn",
-            "Ignores Input, Reports Drawn",
-            false,
-        ))
-        .param(Param::checkbox("fails", "Last Band Fails", false))
+        EffectSpec::new("sprite", "Sprite", "Probe")
+            .param(Param::checkbox("whole", "Whole Frame", false))
+            .param(Param::checkbox("drawn", "Ignores Input, Reports Drawn", false))
+            .param(Param::checkbox("fails", "Last Band Fails", false))
     }
 
     fn layout(&self, cx: &Cx) -> Layout {
@@ -1250,6 +1277,7 @@ fn make() -> Plugin {
         .effect(GpuSoften)
         .effect(HostKernels)
         .effect(Swap)
+        .effect(SmallSwap)
         .effect(HostCalls)
         .effect(Passes)
         .effect(GpuFill)

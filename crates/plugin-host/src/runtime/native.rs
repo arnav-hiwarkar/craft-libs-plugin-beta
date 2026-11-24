@@ -42,11 +42,11 @@ pub(crate) fn serve_erased(ctx: usize, request: &[u8], bulk: &[u8]) -> (Vec<u8>,
 }
 
 pub(crate) fn compiled_module(engine: &wasmtime::Engine, verified: &[u8]) -> Option<wasmtime::Module> {
-    // SAFETY: `verified` is a compile-cache entry read before its file identity (device, inode, size, modification and
-    // change times) matched an HMAC-SHA-256 under this install's owner-only key, so it is the unchanged file that
-    // `wasm::store` wrote from `Engine::precompile_module`; the entry is named by the SHA-256 of the module
-    // bytes and this engine's version, target and settings, in a directory that `serve::resolve` refuses to every plugin
-    // file access, and wasmtime rejects bytes whose header does not match this engine's version and settings.
+    // SAFETY: `verified` is a compile-cache entry whose whole body and file name matched an HMAC-SHA-256 under this
+    // install's owner-only key, so it is byte for byte what `wasm::store` wrote from `Engine::precompile_module`; the
+    // entry is named by the SHA-256 of the approved bundle's digest and this engine's version, target, ABI and
+    // settings, in a directory that `serve::resolve` refuses to every plugin file access, and wasmtime rejects bytes
+    // whose header does not match this engine's version and settings.
     unsafe { wasmtime::Module::deserialize(engine, verified) }.ok()
 }
 

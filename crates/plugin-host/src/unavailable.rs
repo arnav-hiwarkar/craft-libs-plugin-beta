@@ -12,7 +12,7 @@ use crate::registry::Bundle;
 pub(crate) enum Engine {}
 
 impl Engine {
-    pub fn open(_: &Bundle, _: BTreeSet<Permission>, _: PathBuf) -> Result<Arc<Engine>, PluginError> {
+    pub fn open(_: &Bundle, _: &str, _: BTreeSet<Permission>, _: PathBuf) -> Result<Arc<Engine>, PluginError> {
         Err(PluginError::Load("plugins run in the desktop app only".into()))
     }
 
@@ -21,6 +21,22 @@ impl Engine {
     }
 
     pub fn module_digest(&self) -> Option<&str> {
+        match *self {}
+    }
+
+    pub fn started(&self) -> bool {
+        match *self {}
+    }
+
+    pub fn failure(&self) -> Option<String> {
+        match *self {}
+    }
+
+    pub fn described(&self) -> Option<Vec<u8>> {
+        match *self {}
+    }
+
+    pub fn keep_described(&self, _: &[u8]) {
         match *self {}
     }
 
