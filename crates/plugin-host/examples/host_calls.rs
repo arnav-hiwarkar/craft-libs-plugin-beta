@@ -47,7 +47,9 @@ fn main() {
     if let [_, mode, calls] = &args[..] {
         let plugin = plugin(mode == "wasm");
         let calls: u64 = calls.parse().unwrap();
-        (0..reps).for_each(|_| drop(render_ms(&plugin, calls)));
+        (0..reps).for_each(|_| {
+            render_ms(&plugin, calls);
+        });
         return;
     }
     println!("one render of the probe's host-calls effect (8x8); `calls` cache_has host calls inside it; minimum of {reps}");
