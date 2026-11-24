@@ -1,7 +1,7 @@
 use crate::curve::{CURVE_CHANNELS, Curve, check_points};
 use crate::effect::{Cx, Image};
 use crate::gradient::Gradient;
-use crate::wire::{EffectSpec, Param, ParamKind, Value};
+use crate::wire::{EffectSpec, Is, Param, ParamKind, Value};
 
 pub trait FromParam: Sized {
     fn from_param(cx: &Cx, id: &'static str) -> Self;
@@ -116,6 +116,7 @@ impl Param {
             ParamKind::Mask => Value::Number(0.0),
             ParamKind::Gradient { default } => Value::Gradient(default.clone()),
             ParamKind::Curve { default, channels } => Value::Text(crate::curve::default_curves_text(default, *channels)),
+            ParamKind::Button => Value::Bool(false),
         }
     }
 
@@ -149,6 +150,7 @@ impl Param {
                 ParamKind::Text { .. } | ParamKind::Custom { .. } => "text",
                 ParamKind::Gradient { .. } => "a gradient",
                 ParamKind::Curve { .. } => "curve points as text, such as \"0,0 0.5,0.7 1,1\"",
+                ParamKind::Button => "no value, as it is a button",
             };
             let given = match value {
                 Value::Number(n) => format!("the number {n}"),
@@ -224,6 +226,20 @@ impl EffectSpec {
             }
             if let ParamKind::Curve { default, .. } = &param.kind {
                 check_points(default).map_err(|error| format!("effect `{}`: parameter `{}`: the default {error}", self.id, param.id))?;
+            }
+            for when in param.visible_when.iter().chain(&param.enabled_when) {
+                let fits = |kind: &ParamKind| match when.is {
+                    Is::On => matches!(kind, ParamKind::Checkbox { .. }),
+                    Is::Equals(_) | Is::NotEquals(_) => {
+                        matches!(kind, ParamKind::Slider { .. } | ParamKind::Percent { .. } | ParamKind::Angle { .. } | ParamKind::Popup { .. })
+                    }
+                };
+                if !self.params.iter().any(|other| other.id == when.param && other.id != param.id && fits(&other.kind)) {
+                    return Err(format!(
+                        "effect `{}`: parameter `{}` depends on `{}`, which is not another of its parameters of a kind that fits {:?}; name a checkbox for `Is::On` or a number or popup for `Is::Equals`",
+                        self.id, param.id, when.param, when.is
+                    ));
+                }
             }
         }
         for preset in &self.presets {
@@ -518,5 +534,29 @@ mod tests {
             EffectSpec::new("glow", "Glow", "Stylize").param(Param::checkbox("a//b", "On", true)).check_bounded(false),
             Err("effect `glow`: parameter id `a//b` has an empty part; each part between `/` needs a name".into())
         );
+    }
+
+    #[test]
+    fn a_condition_must_name_another_parameter_whose_kind_it_can_test_and_is_read_from_the_current_values() {
+        let spec = |is: crate::Is| {
+            EffectSpec::new("fx", "Fx", "Probe")
+                .param(Param::popup("mode", "Mode", &MODES, 0))
+                .param(Param::checkbox("on", "On", true))
+                .param(Param::slider("soft", "Soft", 1.0, 0.0..=2.0).visible_when("mode", is))
+                .check_bounded(false)
+        };
+        assert_eq!(spec(crate::Is::Equals(1.0)), Ok(()));
+        assert!(spec(crate::Is::On).unwrap_err().contains("parameter `soft` depends on `mode`, which is not another of its parameters"));
+        let lone = EffectSpec::new("fx", "Fx", "Probe").param(Param::slider("soft", "Soft", 1.0, 0.0..=2.0).enabled_when("on", crate::Is::On));
+        assert!(lone.check_bounded(false).is_err());
+
+        let soft = Param::slider("soft", "Soft", 1.0, 0.0..=2.0).visible_when("mode", crate::Is::NotEquals(0.0)).enabled_when("on", crate::Is::On);
+        let values = |mode: f64, on: bool| move |id: &str| Some(if id == "mode" { Value::Number(mode) } else { Value::Bool(on) });
+        assert_eq!([soft.visible(values(0.0, true)), soft.visible(values(1.0, true)), soft.enabled(values(1.0, false))], [false, true, false]);
+        let wire = serde_json::to_value(&soft).unwrap();
+        assert_eq!(wire["visible_when"], serde_json::json!({"param": "mode", "is": {"not_equals": 0.0}}));
+        assert_eq!(serde_json::from_value::<Param>(wire).unwrap(), soft);
+        let old: Param = serde_json::from_str(r#"{"id": "soft", "name": "Soft", "kind": "checkbox", "default": true}"#).unwrap();
+        assert_eq!((old.visible_when, old.enabled_when), (None, None));
     }
 }

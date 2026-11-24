@@ -84,6 +84,12 @@ SDK (EffectCraft keeps `crates/plugin/tests/it/legacy/legacy.wasm`).
 6. **Viewer overlays and tools.** Map viewer coordinates to the plugin's spaces, turn a handle drag into
    one undoable parameter change, give tools pointer and key events. Overlays are capped by the SDK. Test
    with kittests that drag a handle and undo it.
+7. **Conditional rows and buttons.** Before drawing a parameter row, call `Param::visible` and
+   `Param::enabled` with a lookup of the instance's current values (no plugin call); keep hidden values.
+   Store a `ParamKind::Button` as a placeholder with no value the effect receives, draw it with
+   `craft_plugin_ui::param_button`, and send one `Call::Button` per press on the plugin's interactive queue,
+   folding what it does into one undo step. Test: a kittest that changes a popup, sees a row appear, and
+   presses the button by pointer and keyboard.
 
 ## Where EffectCraft's adapter does each thing
 

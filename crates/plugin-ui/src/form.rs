@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use craft_plugin::{Form, ParamKind, Value};
+use craft_plugin::{Form, Param, ParamKind, Value};
 
 use crate::Host;
 use crate::panel::finite_or;
@@ -14,9 +14,15 @@ pub enum Answer {
 pub fn draw_form<H: Host>(ui: &mut egui::Ui, form: &Form, values: &mut BTreeMap<String, Value>, scope: &str, host: &mut H) -> Option<Answer> {
     egui::Grid::new((scope, "fields")).num_columns(2).show(ui, |ui| {
         for param in &form.fields {
+            let current = |id: &str| values.get(id).cloned();
+            if !param.visible(current) {
+                continue;
+            }
+            let enabled = param.enabled(current);
             let label = ui.label(param.name.as_str());
             let value = values.entry(param.id.clone()).or_insert_with(|| param.default_value([1.0, 1.0]));
-            let response = field(ui, &param.kind, value, host, egui::IdSalt::new((scope, &param.id))).labelled_by(label.id);
+            let id = egui::IdSalt::new((scope, &param.id));
+            let response = ui.add_enabled_ui(enabled, |ui| field(ui, &param.kind, value, host, id)).inner.labelled_by(label.id);
             host.register(&format!("{scope}.{}", param.id), &response, &param.name);
             ui.end_row();
         }
@@ -74,4 +80,10 @@ fn field<H: Host>(ui: &mut egui::Ui, kind: &ParamKind, value: &mut Value, host: 
         (ParamKind::Text { .. } | ParamKind::Custom { .. }, Value::Text(text)) => ui.text_edit_singleline(text),
         _ => ui.label("—"),
     }
+}
+
+pub fn param_button<H: Host>(ui: &mut egui::Ui, param: &Param, enabled: bool, scope: &str, host: &mut H) -> bool {
+    let response = ui.add_enabled(enabled, egui::Button::new(param.name.as_str()));
+    host.register(scope, &response, &param.name);
+    response.clicked()
 }

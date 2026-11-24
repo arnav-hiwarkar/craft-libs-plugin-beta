@@ -7,7 +7,7 @@ mod panel;
 #[cfg(test)]
 mod tests;
 
-pub use form::{Answer, draw_form};
+pub use form::{Answer, draw_form, param_button};
 pub use marks::{draw_marks, filled_polygon};
 pub use panel::draw;
 

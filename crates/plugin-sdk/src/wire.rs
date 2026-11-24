@@ -27,6 +27,7 @@ pub enum Call {
     Overlay { effect: String, cx: RenderCx },
     Drag { effect: String, cx: RenderCx, key: String, to: [f64; 2], value: String },
     Tool { tool: String, event: ToolEvent },
+    Button { effect: String, param: String, instance: u64, layer: u64 },
     Migrate { effect: String, from: u32, values: BTreeMap<String, Value> },
 }
 
@@ -257,6 +258,35 @@ pub struct Param {
     pub name: String,
     #[serde(flatten)]
     pub kind: ParamKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visible_when: Option<When>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled_when: Option<When>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct When {
+    pub param: String,
+    pub is: Is,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum Is {
+    Equals(f64),
+    NotEquals(f64),
+    On,
+}
+
+impl When {
+    pub fn holds(&self, value: Option<&Value>) -> bool {
+        match (self.is, value) {
+            (Is::Equals(wanted), Some(Value::Number(n))) => *n == wanted,
+            (Is::NotEquals(wanted), Some(Value::Number(n))) => *n != wanted,
+            (Is::On, Some(Value::Bool(on))) => *on,
+            _ => false,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -315,11 +345,34 @@ pub enum ParamKind {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         channels: bool,
     },
+    Button,
 }
 
 impl Param {
     fn new(id: &str, name: &str, kind: ParamKind) -> Self {
-        Param { id: id.into(), name: name.into(), kind }
+        Param { id: id.into(), name: name.into(), kind, visible_when: None, enabled_when: None }
+    }
+
+    pub fn button(id: &str, name: &str) -> Self {
+        Param::new(id, name, ParamKind::Button)
+    }
+
+    pub fn visible_when(mut self, param: &str, is: Is) -> Self {
+        self.visible_when = Some(When { param: param.into(), is });
+        self
+    }
+
+    pub fn enabled_when(mut self, param: &str, is: Is) -> Self {
+        self.enabled_when = Some(When { param: param.into(), is });
+        self
+    }
+
+    pub fn visible(&self, value: impl Fn(&str) -> Option<Value>) -> bool {
+        self.visible_when.as_ref().is_none_or(|when| when.holds(value(&when.param).as_ref()))
+    }
+
+    pub fn enabled(&self, value: impl Fn(&str) -> Option<Value>) -> bool {
+        self.enabled_when.as_ref().is_none_or(|when| when.holds(value(&when.param).as_ref()))
     }
 
     pub fn slider(id: &str, name: &str, default: f64, range: RangeInclusive<f64>) -> Self {
@@ -1203,13 +1256,11 @@ impl Form {
         if self.fields.len() > MAX_FORM_FIELDS {
             return Err(format!("a form has at most {MAX_FORM_FIELDS} fields, not {}", self.fields.len()));
         }
-        if let Some(field) = self
-            .fields
-            .iter()
-            .find(|field| matches!(field.kind, ParamKind::Layer | ParamKind::Mask | ParamKind::Gradient { .. } | ParamKind::Curve { .. }))
-        {
+        if let Some(field) = self.fields.iter().find(|field| {
+            matches!(field.kind, ParamKind::Layer | ParamKind::Mask | ParamKind::Gradient { .. } | ParamKind::Curve { .. } | ParamKind::Button)
+        }) {
             return Err(format!(
-                "form field `{}` is a layer, mask, gradient or curve; a form takes numbers, checkboxes, popups, points, colours and text",
+                "form field `{}` is a layer, mask, gradient, curve or button; a form takes numbers, checkboxes, popups, points, colours and text",
                 field.id
             ));
         }
@@ -1232,6 +1283,19 @@ impl Form {
                 None => Ok((field.id.clone(), defaults[&field.id].clone())),
             })
             .collect()
+    }
+
+    pub fn answer_over(&self, prior: &BTreeMap<String, Value>, proposed: BTreeMap<String, Value>) -> Result<BTreeMap<String, Value>, String> {
+        let mut merged = prior.clone();
+        merged.extend(proposed);
+        let mut answered = self.answer(merged)?;
+        let turned_off: Vec<&Param> = self.fields.iter().filter(|field| !field.enabled(|id| answered.get(id).cloned())).collect();
+        for field in turned_off {
+            if let Some(kept) = prior.get(&field.id) {
+                answered.insert(field.id.clone(), kept.clone());
+            }
+        }
+        Ok(answered)
     }
 }
 
@@ -1819,6 +1883,19 @@ pub enum Paint {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_answer_keeps_the_prior_value_of_a_field_its_own_answer_turns_off() {
+        let form = Form::new("Settings")
+            .field(Param::checkbox("manual", "Manual", false))
+            .field(Param::slider("amount", "Amount", 1.0, 0.0..=10.0).enabled_when("manual", Is::On));
+        let prior = form.defaults();
+        let number = |n| BTreeMap::from([("amount".to_string(), Value::Number(n))]);
+        assert_eq!(form.answer_over(&prior, number(7.0)).unwrap()["amount"], Value::Number(1.0));
+        let mut switched = number(7.0);
+        switched.insert("manual".into(), Value::Bool(true));
+        assert_eq!(form.answer_over(&prior, switched).unwrap()["amount"], Value::Number(7.0));
+    }
 
     #[test]
     fn an_aux_read_counts_each_channel_once_and_refuses_more_than_its_budget() {

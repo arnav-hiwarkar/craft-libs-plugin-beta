@@ -539,6 +539,11 @@ impl TestPlugin {
             .map_err(|e| e.to_string())
     }
 
+    pub fn press(&self, effect: &str, param: &str) -> Result<(), String> {
+        let call = Call::Button { effect: effect.into(), param: param.into(), instance: 1, layer: 1 };
+        self.plugin.call::<serde_json::Value>(&call, None, &mut TestHost::bare(&self.recorder)).map(|_| ()).map_err(|e| e.to_string())
+    }
+
     pub fn task(&self, id: &str, args: serde_json::Value) -> Result<serde_json::Value, String> {
         self.wait(self.start(id, args)?)
     }
@@ -708,7 +713,12 @@ impl Render<'_> {
 
     fn cx(&self, spec: &EffectSpec, source: &Picture, size: [u32; 2], offset: [f64; 2]) -> Result<RenderCx, String> {
         let layer_size = [f64::from(source.width), f64::from(source.height)].map(|side| side / self.scale);
-        let mut params: BTreeMap<String, Value> = spec.params.iter().map(|param| (param.id.clone(), param.default_value(layer_size))).collect();
+        let mut params: BTreeMap<String, Value> = spec
+            .params
+            .iter()
+            .filter(|param| param.kind != craft_plugin::ParamKind::Button)
+            .map(|param| (param.id.clone(), param.default_value(layer_size)))
+            .collect();
         for (id, value) in &self.set {
             let Some(param) = spec.params.iter().find(|param| param.id == *id) else {
                 let known: Vec<&str> = spec.params.iter().map(|param| param.id.as_str()).collect();

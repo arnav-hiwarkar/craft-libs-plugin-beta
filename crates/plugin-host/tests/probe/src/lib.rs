@@ -762,6 +762,37 @@ impl Effect for Plain {
     }
 }
 
+struct Switches;
+
+impl Effect for Switches {
+    fn spec(&self) -> EffectSpec {
+        EffectSpec::new("switches", "Switches", "Probe").params([
+            Param::popup("mode", "Mode", &["Plain", "Soft"], 0),
+            Param::slider("softness", "Softness", 4.0, 0.0..=10.0).visible_when("mode", Is::Equals(1.0)),
+            Param::checkbox("manual", "Manual", false),
+            Param::slider("amount", "Amount", 1.0, 0.0..=10.0).enabled_when("manual", Is::On),
+            Param::button("reset", "Reset"),
+            Param::button("ask", "Ask Then Reset").visible_when("mode", Is::Equals(0.0)),
+        ])
+        .preset("Calm", [("softness", craft_plugin::Value::Number(2.0)), ("amount", craft_plugin::Value::Number(5.0))])
+    }
+
+    fn render(&self, cx: &Cx, frame: &mut Frame) -> Result<()> {
+        let softness = cx.f("softness") as f32;
+        frame.map(|pixel| [pixel[0] * softness, pixel[1], pixel[2], pixel[3]]);
+        Ok(())
+    }
+
+    fn button(&self, press: &Press) -> Result<()> {
+        let zero = |param: &str| host::command("prop.set", json!({"layer": press.layer, "path": format!("effects/@{}/{param}", press.instance), "value": 0.0}));
+        zero("softness")?;
+        if press.param == "ask" {
+            host::form(Form::new("Go on?"))?;
+        }
+        zero("amount").map(drop)
+    }
+}
+
 struct Tuned;
 
 impl Effect for Tuned {
@@ -1340,6 +1371,7 @@ fn make() -> Plugin {
         .effect(GpuMatte)
         .effect(Aim)
         .effect(Tuned)
+        .effect(Switches)
         .effect(Lookout::default())
         .effect(AuxDepth)
         .effect(AuxUndeclared)

@@ -261,3 +261,15 @@ fn a_plan_reads_source_frames_at_other_times_from_the_host_and_must_declare_it()
     let error = plugin.render("silent-rewind").input(now).time(1.0).run().unwrap_err();
     assert!(error.contains("declare `.reads_other_frames()`"), "{error}");
 }
+
+#[test]
+fn a_button_press_runs_the_effects_host_commands_and_the_button_sends_no_value_to_a_render() {
+    let (_bundle, plugin) = probe();
+    plugin.press("switches", "reset").unwrap();
+    let paths: Vec<serde_json::Value> = plugin.commands().into_iter().map(|(_, params)| params["path"].clone()).collect();
+    assert_eq!(paths, ["effects/@1/softness", "effects/@1/amount"]);
+    let error = plugin.render("switches").set("reset", true).run().unwrap_err();
+    assert_eq!(error, "parameter `reset` takes no value, as it is a button, not true");
+    let error = plugin.press("plain", "go").unwrap_err();
+    assert!(error.contains("no `Effect::button`"), "{error}");
+}

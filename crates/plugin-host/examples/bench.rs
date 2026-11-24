@@ -54,7 +54,7 @@ fn defaults(plugin: &Plugin, effect: &str, size: [u32; 2]) -> BTreeMap<String, V
                 ParamKind::Text { default } | ParamKind::Custom { default } => Value::Text(default.clone()),
                 ParamKind::Gradient { default } => Value::Gradient(default.clone()),
                 ParamKind::Curve { default, channels } => Value::Text(craft_plugin_host::default_curves_text(default, *channels)),
-                ParamKind::Layer | ParamKind::Mask => return None,
+                ParamKind::Layer | ParamKind::Mask | ParamKind::Button => return None,
             };
             Some((p.id.clone(), value))
         })

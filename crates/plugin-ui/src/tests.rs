@@ -1,7 +1,7 @@
 use craft_plugin::{Drag, Dropped, Key, Modifiers, Paint, Pointer, PointerPhase, Shape, TextStyle, UiEvent, UiEventKind, Widget};
 use egui::{Color32, FontFamily, vec2};
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT, Queryable};
 
 use crate::{Answer, Host, Theme, Triangulate, draw, draw_form};
 
@@ -304,4 +304,48 @@ fn a_form_returns_the_entered_values_on_ok_and_nothing_but_cancel_on_cancel() {
     harness.key_press(egui::Key::Escape);
     harness.run();
     assert_eq!(harness.state().1, Some(Answer::Cancel));
+}
+
+#[test]
+fn a_form_field_shows_and_enables_by_another_fields_value_and_keeps_its_value_while_hidden() {
+    let form = craft_plugin::Form::new("Settings")
+        .field(craft_plugin::Param::checkbox("soft", "Soft", false))
+        .field(craft_plugin::Param::slider("amount", "Amount", 3.0, 0.0..=10.0).visible_when("soft", craft_plugin::Is::On))
+        .field(craft_plugin::Param::text("label", "Label", "none").enabled_when("soft", craft_plugin::Is::On));
+    let mut harness = Harness::new_ui_state(
+        move |ui, (values, answer): &mut Asked| {
+            *answer = answer.or(draw_form(ui, &form, values, "plugin.test.form", &mut Bare));
+        },
+        Asked::default(),
+    );
+    harness.run();
+    assert!(harness.query_all_by_label("Amount").next().is_none());
+    assert!(harness.get_by_role(egui::Role::TextInput).accesskit_node().is_disabled());
+    harness.get_by_role(egui::Role::CheckBox).click();
+    harness.run();
+    assert!(harness.query_all_by_label("Amount").next().is_some());
+    assert!(!harness.get_by_role(egui::Role::TextInput).accesskit_node().is_disabled());
+    harness.get_by_role(egui::Role::CheckBox).click();
+    harness.run();
+    assert!(harness.query_all_by_label("Amount").next().is_none());
+    assert_eq!(harness.state().0["amount"], craft_plugin::Value::Number(3.0));
+}
+
+#[test]
+fn a_parameter_button_reports_a_press_by_pointer_and_keyboard_only_while_enabled() {
+    let press = |enabled: bool| {
+        let param = craft_plugin::Param::button("analyze", "Analyze");
+        let mut harness = Harness::new_ui_state(
+            move |ui, pressed: &mut u32| *pressed += u32::from(crate::param_button(ui, &param, enabled, "fx.analyze", &mut Bare)),
+            0,
+        );
+        harness.get_by_label("Analyze").click();
+        harness.run();
+        harness.get_by_label("Analyze").focus();
+        harness.run();
+        harness.key_press(egui::Key::Enter);
+        harness.run();
+        *harness.state()
+    };
+    assert_eq!((press(true), press(false)), (2, 0));
 }
