@@ -3,6 +3,8 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+use crate::wire::Value;
+
 pub const MANIFEST_FILE: &str = "plugin.json";
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -14,9 +16,36 @@ pub struct Manifest {
     pub author: String,
     #[serde(default)]
     pub description: String,
+    #[serde(default)]
     pub entry: Entry,
+    #[serde(default, skip_serializing_if = "Contributes::is_empty")]
+    pub contributes: Contributes,
     #[serde(default)]
     pub permissions: BTreeSet<Permission>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Contributes {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub presets: Vec<ContributedPreset>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub luts: Vec<String>,
+}
+
+impl Contributes {
+    pub fn is_empty(&self) -> bool {
+        self.presets.is_empty() && self.luts.is_empty()
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ContributedPreset {
+    pub effect: String,
+    pub name: String,
+    #[serde(default)]
+    pub values: BTreeMap<String, Value>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -85,6 +114,9 @@ pub enum ManifestError {
     Id(String),
     Field(&'static str),
     EntryPath(String),
+    DataOnlyPermissions,
+    Preset(String),
+    Lut(String),
 }
 
 impl fmt::Display for ManifestError {
@@ -98,6 +130,14 @@ impl fmt::Display for ManifestError {
             ManifestError::EntryPath(path) => {
                 write!(f, "entry `{path}` must be a file name inside the plugin folder")
             }
+            ManifestError::DataOnlyPermissions => {
+                write!(
+                    f,
+                    "a plugin with no `entry` only ships presets and LUTs, so it cannot ask for permissions; remove `permissions` or add an `entry`"
+                )
+            }
+            ManifestError::Preset(problem) => write!(f, "plugin.json preset {problem}"),
+            ManifestError::Lut(path) => write!(f, "plugin.json lut `{path}` must be a .cube file name inside the plugin folder, listed once"),
         }
     }
 }
@@ -122,13 +162,23 @@ impl Manifest {
             return Err(ManifestError::Field("version"));
         }
         let paths: Vec<&String> = self.entry.wasm.iter().chain(self.entry.native.values()).collect();
+        self.contributes.validate()?;
         if paths.is_empty() {
-            return Err(ManifestError::Field("entry"));
+            if self.contributes.is_empty() {
+                return Err(ManifestError::Field("entry"));
+            }
+            if !self.permissions.is_empty() {
+                return Err(ManifestError::DataOnlyPermissions);
+            }
         }
         match paths.into_iter().find(|path| !valid_entry_path(path)) {
             Some(path) => Err(ManifestError::EntryPath(path.clone())),
             None => Ok(()),
         }
+    }
+
+    pub fn is_data_only(&self) -> bool {
+        self.entry.wasm.is_none() && self.entry.native.is_empty()
     }
 
     pub fn has_wasm(&self) -> bool {
@@ -144,7 +194,11 @@ impl Manifest {
     }
 
     pub fn mode(&self, unsandboxed_chosen: bool) -> RunMode {
-        if !self.has_wasm() || (unsandboxed_chosen && self.native_file().is_some()) { RunMode::Unsandboxed } else { RunMode::Sandboxed }
+        if !self.is_data_only() && (!self.has_wasm() || (unsandboxed_chosen && self.native_file().is_some())) {
+            RunMode::Unsandboxed
+        } else {
+            RunMode::Sandboxed
+        }
     }
 
     pub fn entry_file(&self, mode: RunMode) -> Option<&str> {
@@ -162,6 +216,25 @@ pub fn native_target() -> String {
 fn valid_id(id: &str) -> bool {
     let segment_ok = |s: &str| !s.is_empty() && !s.starts_with('-') && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
     id.len() <= 128 && id.split('.').count() >= 2 && id.split('.').all(segment_ok)
+}
+
+impl Contributes {
+    fn validate(&self) -> Result<(), ManifestError> {
+        let mut named = BTreeSet::new();
+        for preset in &self.presets {
+            if preset.effect.trim().is_empty() || preset.name.trim().is_empty() {
+                return Err(ManifestError::Preset("needs a non-empty `effect` and `name`".into()));
+            }
+            if !named.insert((&preset.effect, &preset.name)) {
+                return Err(ManifestError::Preset(format!("`{}` is listed twice for effect `{}`", preset.name, preset.effect)));
+            }
+        }
+        let mut files = BTreeSet::new();
+        match self.luts.iter().find(|lut| !valid_entry_path(lut) || !lut.to_ascii_lowercase().ends_with(".cube") || !files.insert(*lut)) {
+            Some(lut) => Err(ManifestError::Lut(lut.clone())),
+            None => Ok(()),
+        }
+    }
 }
 
 fn valid_entry_path(path: &str) -> bool {
@@ -242,5 +315,37 @@ mod tests {
     fn an_unknown_permission_is_an_error_not_a_silent_grant() {
         let r = manifest(r#"{"id":"com.example.glow","name":"N","version":"1","entry":{"wasm":"p.wasm"},"permissions":["network"]}"#);
         assert!(matches!(r, Err(ManifestError::Json(_))));
+    }
+
+    #[test]
+    fn a_manifest_with_presets_or_luts_and_no_entry_is_data_only() {
+        let m = manifest(
+            r#"{"id":"com.example.looks","name":"Looks","version":"1","contributes":{"luts":["warm.cube"],
+                "presets":[{"effect":"ec.color.tint","name":"Warm","values":{"amount":40}}]}}"#,
+        )
+        .unwrap();
+        assert!(m.is_data_only());
+        assert_eq!(m.mode(true), RunMode::Sandboxed);
+        assert_eq!(m.contributes.presets[0].values["amount"], Value::Number(40.0));
+        assert!(
+            !manifest(r#"{"id":"com.example.p","name":"P","version":"1","entry":{"wasm":"p.wasm"},"contributes":{"luts":["a.cube"]}}"#)
+                .unwrap()
+                .is_data_only()
+        );
+    }
+
+    #[test]
+    fn malformed_contributions_are_refused_with_the_reason() {
+        let with = |contributes: &str| manifest(&format!(r#"{{"id":"com.example.l","name":"L","version":"1","contributes":{contributes}}}"#));
+        assert_eq!(with("{}"), Err(ManifestError::Field("entry")));
+        assert!(matches!(with(r#"{"luts":["../a.cube"]}"#), Err(ManifestError::Lut(_))));
+        assert!(matches!(with(r#"{"luts":["a.png"]}"#), Err(ManifestError::Lut(_))));
+        assert!(matches!(with(r#"{"luts":["a.cube","a.cube"]}"#), Err(ManifestError::Lut(_))));
+        assert!(matches!(with(r#"{"presets":[{"effect":"ec.color.tint","name":" "}]}"#), Err(ManifestError::Preset(_))));
+        let twice = with(r#"{"presets":[{"effect":"ec.color.tint","name":"A"},{"effect":"ec.color.tint","name":"A"}]}"#).unwrap_err();
+        assert_eq!(twice.to_string(), "plugin.json preset `A` is listed twice for effect `ec.color.tint`");
+        assert!(matches!(with(r#"{"luts":["a.cube"],"extra":1}"#), Err(ManifestError::Json(_))));
+        let asks = manifest(r#"{"id":"com.example.l","name":"L","version":"1","contributes":{"luts":["a.cube"]},"permissions":["files.read"]}"#);
+        assert_eq!(asks, Err(ManifestError::DataOnlyPermissions));
     }
 }

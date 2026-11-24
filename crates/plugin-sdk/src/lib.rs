@@ -16,7 +16,7 @@ pub use curve::{Curve, MAX_CURVE_POINTS, default_curves_text};
 pub use effect::{Cx, Effect, Frame, Image, Pass, Rows};
 pub use gradient::{Gradient, MAX_GRADIENT_STOPS};
 pub use kernels::*;
-pub use manifest::{Entry, MANIFEST_FILE, Manifest, ManifestError, Permission, RunMode, native_target};
+pub use manifest::{ContributedPreset, Contributes, Entry, MANIFEST_FILE, Manifest, ManifestError, Permission, RunMode, native_target};
 pub use plugin::{Error, Plugin, Result, Task};
 pub use typed::{FromParam, LayerParam};
 pub use ui::{Canvas, Panel, Ui};

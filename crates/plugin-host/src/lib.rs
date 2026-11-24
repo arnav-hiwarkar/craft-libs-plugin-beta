@@ -20,10 +20,10 @@ pub mod testing;
 
 pub use app::{EffectRegistry, ParamValues};
 pub use craft_plugin::{
-    AudioRequest, Blend, Call, Camera, CommandSpec, Contributions, ControlsReply, Cull, Draw, EffectSpec, Entry, Focus, FrameDesc, FrameRequest,
-    Gradient, LayerPlacement, Layout, Light, LightKind, Manifest, MaskPath, PanelReply, PanelSpec, Param, ParamKind, ParamsAt, Permission, PickFile,
-    Pixel, Place, Plan, PlanData, PlanImage, PlanPass, Rect, RenderCx, RunMode, Scene, TaskSpec, TaskState, TaskStatus, UiEvent, UiEventKind,
-    UiInput, Value, Widget, applied_padding, default_curves_text,
+    AudioRequest, Blend, Call, Camera, CommandSpec, ContributedPreset, Contributions, ControlsReply, Cull, Draw, EffectSpec, Entry, Focus, FrameDesc,
+    FrameRequest, Gradient, LayerPlacement, Layout, Light, LightKind, Manifest, MaskPath, PanelReply, PanelSpec, Param, ParamKind, ParamsAt,
+    Permission, PickFile, Pixel, Place, Plan, PlanData, PlanImage, PlanPass, Rect, RenderCx, RunMode, Scene, TaskSpec, TaskState, TaskStatus,
+    UiEvent, UiEventKind, UiInput, Value, Widget, applied_padding, default_curves_text,
 };
 pub use host::{Access, Host, Origin, Pixels, Samples};
 pub use images::{MAX_IMAGE_SIDE, PluginImage};
