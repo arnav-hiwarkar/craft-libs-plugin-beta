@@ -13,7 +13,7 @@ const NOISE_SCALE: f32 = 1.0 / 65536.0 / DITHER_LEVELS;
 pub(crate) fn row(kernel: &HostKernel, src: &[Pixel], top: &[Pixel], y: usize, out: &mut [Pixel]) {
     let pairs = out.iter_mut().zip(src);
     match kernel {
-        HostKernel::Blend { mode, amount } => pairs.zip(top).for_each(|((o, b), t)| *o = blend(*mode, *amount, *b, *t)),
+        HostKernel::Blend { mode, amount } => blend_row(*mode, *amount, src, top, out),
         HostKernel::Curves { table } => pairs.for_each(|(o, p)| *o = curves(table, *p)),
         HostKernel::Matrix { rows } => pairs.for_each(|(o, p)| *o = rows.map(|row| row[0] * p[0] + row[1] * p[1] + row[2] * p[2] + row[3] * p[3])),
         HostKernel::ToLinear => transfers().decode.row(src, out, Negatives::Mirror),
@@ -48,14 +48,29 @@ pub(crate) fn blend_channel(mode: BlendMode, b: f32, t: f32) -> f32 {
     }
 }
 
-fn blend(mode: BlendMode, amount: f32, base: Pixel, top: Pixel) -> Pixel {
-    if amount == 0.0 {
-        return base;
+fn blend_row(mode: BlendMode, amount: f32, src: &[Pixel], top: &[Pixel], out: &mut [Pixel]) {
+    let pixels = out.iter_mut().zip(src).zip(top);
+    macro_rules! each {
+        ($($mode:ident),*) => {
+            match mode {
+                $(BlendMode::$mode if amount == 0.0 => pixels.for_each(|((o, b), _)| *o = *b),
+                BlendMode::$mode if amount == 1.0 => pixels.for_each(|((o, b), t)| *o = blended(BlendMode::$mode, *b, *t)),
+                BlendMode::$mode => pixels.for_each(|((o, b), t)| {
+                    let blended = blended(BlendMode::$mode, *b, *t);
+                    let mix = |c: usize| b[c] + amount * (blended[c] - b[c]);
+                    *o = [mix(0), mix(1), mix(2), mix(3)];
+                }),)*
+            }
+        };
     }
-    let keep = if mode == BlendMode::Over { 1.0 - top[3] } else { 1.0 };
-    let blended: Pixel =
-        std::array::from_fn(|c| if mode == BlendMode::Over { top[c] + base[c] * keep } else { blend_channel(mode, base[c], top[c]) });
-    if amount == 1.0 { blended } else { std::array::from_fn(|c| base[c] + amount * (blended[c] - base[c])) }
+    each!(Over, Add, Subtract, Multiply, Screen, Overlay, Darken, Lighten, Difference, ScreenHdr);
+}
+
+#[inline(always)]
+fn blended(mode: BlendMode, base: Pixel, top: Pixel) -> Pixel {
+    let keep = 1.0 - top[3];
+    let channel = |c: usize| if mode == BlendMode::Over { top[c] + base[c] * keep } else { blend_channel(mode, base[c], top[c]) };
+    [channel(0), channel(1), channel(2), channel(3)]
 }
 
 fn curve(table: &[Pixel], channel: usize, x: f32) -> f32 {
