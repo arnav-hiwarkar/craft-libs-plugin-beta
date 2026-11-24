@@ -251,6 +251,7 @@ fn host_call(mut caller: Caller<'_, State>, _ctx: u32, request: u32, request_len
 
 const KEY_FILE: &str = "key";
 const MAC_LEN: usize = 32;
+const MAC_EXTENSION: &str = "mac";
 
 fn cached(engine: &Engine, bytes: &[u8], cache: &Path) -> Result<Module, PluginError> {
     let name = cache_name(engine, bytes);
@@ -262,28 +263,60 @@ fn cached(engine: &Engine, bytes: &[u8], cache: &Path) -> Result<Module, PluginE
             return engine.precompile_module(bytes).and_then(|compiled| native::fresh_module(engine, &compiled)).map_err(load_error);
         }
     };
-    if let Some(module) =
-        std::fs::read(&path).ok().as_deref().and_then(|entry| signed_body(&key, &name, entry)).and_then(|body| native::compiled_module(engine, body))
-    {
+    if let Some(module) = signed_entry(&key, &name, &path).and_then(|body| native::compiled_module(engine, &body)) {
         return Ok(module);
     }
-    let mut compiled = engine.precompile_module(bytes).map_err(load_error)?;
+    let compiled = engine.precompile_module(bytes).map_err(load_error)?;
     let module = native::fresh_module(engine, &compiled).map_err(load_error)?;
-    let mac = hmac(&key, &[name.as_bytes(), &compiled]);
-    compiled.extend_from_slice(&mac);
-    let staged = path.with_extension(format!("{}.part", std::process::id()));
-    let stored = std::fs::write(&staged, &compiled).and_then(|()| std::fs::rename(&staged, &path));
-    if let Err(error) = stored {
+    if let Err(error) = store(&key, &name, &path, &compiled) {
         log::warn!("{}: the compiled plugin was not cached: {error}", path.display());
-        let _ = std::fs::remove_file(&staged);
     }
     Ok(module)
 }
 
-fn signed_body<'a>(key: &[u8; 32], name: &str, entry: &'a [u8]) -> Option<&'a [u8]> {
-    let (body, mac) = entry.split_at_checked(entry.len().checked_sub(MAC_LEN)?)?;
-    let expected = hmac(key, &[name.as_bytes(), body]);
-    (mac.iter().zip(expected).fold(0, |differ, (a, b)| differ | (a ^ b)) == 0).then_some(body)
+fn signed_entry(key: &[u8; 32], name: &str, path: &Path) -> Option<Vec<u8>> {
+    let mac = std::fs::read(path.with_extension(MAC_EXTENSION)).ok()?;
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut body = Vec::new();
+    std::io::Read::read_to_end(&mut file, &mut body).ok()?;
+    let meta = file.metadata().ok()?;
+    let expected = hmac(key, &[name.as_bytes(), &identity(&meta)]);
+    let equal = mac.len() == MAC_LEN && mac.iter().zip(expected).fold(0, |differ, (a, b)| differ | (a ^ b)) == 0;
+    (equal && body.len() as u64 == meta.len()).then_some(body)
+}
+
+fn store(key: &[u8; 32], name: &str, path: &Path, compiled: &[u8]) -> std::io::Result<()> {
+    let part = |extension: &str| path.with_extension(format!("{extension}.{}.part", std::process::id()));
+    let (staged, staged_mac) = (part("cwasm"), part(MAC_EXTENSION));
+    let stored = std::fs::File::create(&staged).and_then(|mut file| {
+        std::io::Write::write_all(&mut file, compiled)?;
+        std::fs::rename(&staged, path)?;
+        let mac = hmac(key, &[name.as_bytes(), &identity(&file.metadata()?)]);
+        std::fs::write(&staged_mac, mac)?;
+        std::fs::rename(&staged_mac, path.with_extension(MAC_EXTENSION))
+    });
+    if stored.is_err() {
+        let _ = std::fs::remove_file(&staged);
+        let _ = std::fs::remove_file(&staged_mac);
+    }
+    stored
+}
+
+#[cfg(unix)]
+fn identity(meta: &std::fs::Metadata) -> Vec<u8> {
+    use std::os::unix::fs::MetadataExt;
+    [meta.dev(), meta.ino(), meta.size(), meta.mtime() as u64, meta.mtime_nsec() as u64, meta.ctime() as u64, meta.ctime_nsec() as u64]
+        .iter()
+        .flat_map(|field| field.to_le_bytes())
+        .collect()
+}
+
+#[cfg(not(unix))]
+fn identity(meta: &std::fs::Metadata) -> Vec<u8> {
+    let nanos = |time: std::io::Result<std::time::SystemTime>| {
+        time.ok().and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |since| since.as_nanos() as u64)
+    };
+    [meta.len(), nanos(meta.modified()), nanos(meta.created())].iter().flat_map(|field| field.to_le_bytes()).collect()
 }
 
 fn hmac(key: &[u8], message: &[&[u8]]) -> [u8; 32] {
@@ -420,7 +453,7 @@ fn missing(export: &str) -> PluginError {
 
 #[cfg(test)]
 mod tests {
-    use super::{KEY_FILE, WasmModule, cache_name, cached, engine, hmac, install_key, reply_bytes};
+    use super::{KEY_FILE, WasmModule, cache_name, cached, engine, hmac, install_key, reply_bytes, signed_entry};
 
     const EMPTY: &[u8] = &[0, 0x61, 0x73, 0x6d, 1, 0, 0, 0];
     const ONE_IMPORT: &[u8] = &[0, 0x61, 0x73, 0x6d, 1, 0, 0, 0, 1, 4, 1, 0x60, 0, 0, 2, 7, 1, 1, b'a', 1, b'b', 0, 0];
@@ -493,6 +526,28 @@ mod tests {
         assert_eq!(cached(engine, EMPTY, dir.path()).unwrap().imports().len(), 0);
         std::fs::copy(entry(ONE_IMPORT), entry(EMPTY)).unwrap();
         assert_eq!(cached(engine, EMPTY, dir.path()).unwrap().imports().len(), 0);
+    }
+
+    #[test]
+    fn an_untouched_entry_is_read_without_a_rewrite_and_one_changed_in_place_with_its_time_restored_is_refused() {
+        let engine = engine().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let name = cache_name(engine, EMPTY);
+        let entry = dir.path().join(format!("{name}.cwasm"));
+        cached(engine, EMPTY, dir.path()).unwrap();
+        let written = std::fs::metadata(&entry).unwrap().modified().unwrap();
+        cached(engine, EMPTY, dir.path()).unwrap();
+        assert_eq!(std::fs::metadata(&entry).unwrap().modified().unwrap(), written);
+        let key = install_key(dir.path()).unwrap();
+        let mut body = signed_entry(&key, &name, &entry).unwrap();
+        assert_eq!(body, std::fs::read(&entry).unwrap());
+        body[0] ^= 1;
+        let mut file = std::fs::OpenOptions::new().write(true).open(&entry).unwrap();
+        std::io::Write::write_all(&mut file, &body).unwrap();
+        file.set_modified(written).unwrap();
+        drop(file);
+        assert_eq!(std::fs::metadata(&entry).unwrap().modified().unwrap(), written);
+        assert!(signed_entry(&key, &name, &entry).is_none(), "an entry changed in place was accepted");
     }
 
     #[test]

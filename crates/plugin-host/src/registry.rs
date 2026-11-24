@@ -96,12 +96,11 @@ impl Bundle {
         let mut hasher = Sha256::new();
         for relative in files {
             let path = self.dir.join(&relative);
-            let mut file = File::open(&path).map_err(|e| BundleError::Io(path.clone(), e))?;
-            let length = file.metadata().map_err(|e| BundleError::Io(path.clone(), e))?.len();
+            let bytes = std::fs::read(&path).map_err(|e| BundleError::Io(path, e))?;
             hasher.update(relative.as_bytes());
             hasher.update([0]);
-            hasher.update(length.to_le_bytes());
-            std::io::copy(&mut file, &mut hasher).map_err(|e| BundleError::Io(path, e))?;
+            hasher.update((bytes.len() as u64).to_le_bytes());
+            hasher.update(&bytes);
         }
         Ok(hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect())
     }
