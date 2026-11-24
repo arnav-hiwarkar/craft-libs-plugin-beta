@@ -142,8 +142,11 @@ impl Plugin {
                         let (effect, input) =
                             (self.find_effect(&effect)?, Rows { width, height: cx.size[1] as usize, first_row: origin[1], pixels: &[] });
                         let cx = Cx::new(cx);
-                        crate::abi::in_place(pixels, |pixels| effect.render(&cx, &mut Frame { width, height, origin, pixels, input }))?;
-                        return Ok(serde_json::Value::Null);
+                        return crate::abi::in_place(pixels, |pixels| {
+                            let mut frame = Frame::new(width, height, origin, pixels, input);
+                            effect.render(&cx, &mut frame)?;
+                            json(&frame.reply())
+                        });
                     }
                     Some(window) if frame.spread => {
                         let (read, _, out) = pixels.spread()?;
@@ -160,9 +163,9 @@ impl Plugin {
                     return Err(format!("frame is {width}x{height} at {origin:?} but {} pixels were passed", out.len()).into());
                 }
                 let input = rows(window, read);
-                let mut frame = Frame { width, height, origin, pixels: out, input };
+                let mut frame = Frame::new(width, height, origin, out, input);
                 self.find_effect(&effect)?.render(&Cx::new(cx), &mut frame)?;
-                Ok(serde_json::Value::Null)
+                json(&frame.reply())
             }
             Call::Input { effect, cx, out } => json(&self.find_effect(&effect)?.input(&Cx::new(cx), out)),
             Call::Pass { effect, cx, kernel, f, u, src, aux, out, spread } => {
@@ -188,8 +191,7 @@ impl Plugin {
                     out_size: out.size.map(|side| side as usize),
                 };
                 let input = rows(Window { size: out.size, first_row: 0, rows: 0 }, &[]);
-                let mut frame =
-                    Frame { width: out.size[0] as usize, height: out.rows as usize, origin: [0, out.first_row as usize], pixels: band, input };
+                let mut frame = Frame::new(out.size[0] as usize, out.rows as usize, [0, out.first_row as usize], band, input);
                 self.find_effect(&effect)?.pass(&Cx::new(cx), &pass, &mut frame)?;
                 Ok(serde_json::Value::Null)
             }

@@ -3,7 +3,7 @@ use std::path::Path;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use craft_plugin::{ABI, Outcome, Pixel};
+use craft_plugin::{ABI, Outcome, Pixel, Rect, Rendered};
 use std::sync::Arc;
 
 use wasmtime::{
@@ -15,7 +15,7 @@ use sha2::{Digest, Sha256};
 use super::native;
 use super::serve::HostCx;
 use super::tasks::Slot;
-use crate::plugin::{Io, PluginError};
+use crate::plugin::{Io, PluginError, drawn_in};
 
 const TICK: Duration = Duration::from_millis(50);
 const MEMORY_LIMIT: usize = 3 << 30;
@@ -142,7 +142,8 @@ impl WasmGuest {
             Io::None => ([&[], &[]], 0),
             Io::InPlace(pixels) => ([pixels, &[]], 0),
             Io::Region { input, .. } => ([input, &[]], 0),
-            Io::Render { input, out } => ([input, out], 0),
+            Io::Render { input, out, .. } => ([input, out], 0),
+            Io::Draw { out, .. } => ([&[], &[]], size_of_val::<[Pixel]>(&**out)),
             Io::Pass { src, aux, out } => ([src, aux], size_of_val::<[Pixel]>(&**out)),
         };
         let [first, second] = inputs.map(bytemuck::cast_slice::<Pixel, u8>);
@@ -154,7 +155,9 @@ impl WasmGuest {
         first_place.copy_from_slice(first);
         let (second_place, out_place) = rest.split_at_mut(second.len());
         second_place.copy_from_slice(second);
-        out_place.fill(0);
+        if matches!(io, Io::Pass { .. }) {
+            out_place.fill(0);
+        }
 
         let request_at = self.alloc.call(&mut self.store, len(request)?)?;
         if request_at == 0 {
@@ -179,15 +182,17 @@ impl WasmGuest {
             return Ok(reply);
         }
 
-        let (output, skip): (&mut [Pixel], usize) = match io {
+        let (output, skip, at): (&mut [Pixel], usize, Option<Rect>) = match io {
             Io::None => return Ok(reply),
-            Io::InPlace(output) => (output, 0),
-            Io::Region { output, skip, .. } => (output, skip),
-            Io::Render { input, out } => (out, input.len()),
-            Io::Pass { src, aux, out } => (out, src.len() + aux.len()),
+            Io::InPlace(output) => (output, 0, None),
+            Io::Region { output, skip, .. } => (output, skip, None),
+            Io::Render { input, out, at } => (out, input.len(), Some(at)),
+            Io::Draw { out, at } => (out, 0, Some(at)),
+            Io::Pass { src, aux, out } => (out, src.len() + aux.len(), None),
         };
-        let output: &mut [u8] = bytemuck::cast_slice_mut(output);
-        let from = pixels as usize + skip * size_of::<Pixel>();
+        let rows = at.map_or(0..output.len(), |at| drawn_rows(&reply, at));
+        let output: &mut [u8] = bytemuck::cast_slice_mut(&mut output[rows.clone()]);
+        let from = pixels as usize + (skip + rows.start) * size_of::<Pixel>();
         let rendered = self.memory.data(&self.store).get(from..).and_then(|tail| tail.get(..output.len()));
         output.copy_from_slice(rendered.ok_or_else(|| wasmtime::format_err!("the frame does not fit in plugin memory"))?);
         Ok(reply)
@@ -370,6 +375,19 @@ fn cache_name(engine: &Engine, bytes: &[u8]) -> String {
     hasher.write(std::env::consts::OS.as_bytes());
     engine.precompile_compatibility_hash().hash(&mut hasher);
     hasher.0.finalize().iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn drawn_rows(reply: &[u8], at: Rect) -> std::ops::Range<usize> {
+    let rendered = match serde_json::from_slice::<Outcome<Option<Rendered>>>(reply) {
+        Ok(Outcome::Ok(rendered)) => rendered,
+        _ => None,
+    };
+    let drawn = drawn_in(rendered, at);
+    let (width, top) = (at.width() as usize, (drawn.top - at.top) as usize);
+    match drawn.is_empty() {
+        true => 0..0,
+        false => top * width..(top + drawn.height() as usize) * width,
+    }
 }
 
 fn succeeded(reply: &[u8]) -> bool {

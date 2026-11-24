@@ -7,8 +7,8 @@ use std::time::Duration;
 use std::sync::Arc;
 
 use craft_plugin::{
-    Call, Contributions, FrameDesc, Layout, LogLevel, Manifest, Outcome, Permission, Pixel, Plan, PlanImage, PlanPass, Rect, RenderCx, TaskState,
-    Window,
+    Call, Contributions, FrameDesc, Layout, LogLevel, Manifest, Outcome, Permission, Pixel, Plan, PlanImage, PlanPass, Rect, RenderCx, Rendered,
+    TaskState, Window,
 };
 use rayon::prelude::*;
 use serde::de::DeserializeOwned;
@@ -53,7 +53,8 @@ pub(crate) enum Io<'a> {
     None,
     InPlace(&'a mut [Pixel]),
     Region { input: &'a [Pixel], output: &'a mut [Pixel], skip: usize },
-    Render { input: &'a [Pixel], out: &'a mut [Pixel] },
+    Render { input: &'a [Pixel], out: &'a mut [Pixel], at: Rect },
+    Draw { out: &'a mut [Pixel], at: Rect },
     Pass { src: &'a [Pixel], aux: &'a [Pixel], out: &'a mut [Pixel] },
 }
 
@@ -198,6 +199,7 @@ impl Plugin {
         let separate = self.contributions.separate_input;
         let mut area = area.map_or(full, |area| area.clipped(cx.size));
         let pointwise = layout.reach == Some(0) && !(separate && layout.maps_input);
+        let ignores = layout.ignores_input && separate;
         if !separate {
             (area.left, area.right) = (full.left, full.right);
         }
@@ -208,7 +210,7 @@ impl Plugin {
         let (rows, out_width) = (area.height() as usize, area.width() as usize);
         let bands = (rows / MIN_BAND_ROWS).clamp(1, rayon::current_num_threads());
         let even_rows = rows.div_ceil(bands);
-        if pointwise && out_width == width {
+        if pointwise && out_width == width && !ignores {
             let (top, bottom) = (area.top as usize, area.bottom as usize);
             let call = |band: usize, rows: &[Pixel]| {
                 let frame = FrameDesc {
@@ -220,53 +222,69 @@ impl Plugin {
                 Call::Render { effect: effect.into(), cx: cx.clone(), frame }
             };
             let shown = &mut pixels[top * width..bottom * width];
-            shown.par_chunks_mut(even_rows * width).enumerate().try_for_each(|(band, rows)| {
-                let mut host = make_host();
-                self.exchange::<()>(&call(band, rows), Io::InPlace(rows), &mut host)?;
-                host.finish(rows);
-                Ok(())
-            })?;
+            let drawn = shown
+                .par_chunks_mut(even_rows * width)
+                .enumerate()
+                .map(|(band, rows)| {
+                    let mut host = make_host();
+                    let reply = self.exchange(&call(band, rows), Io::InPlace(rows), &mut host)?;
+                    host.finish(rows);
+                    let first = (top + band * even_rows) as i32;
+                    Ok(drawn_in(reply, Rect { top: first, bottom: first + (rows.len() / width) as i32, ..area }))
+                })
+                .collect::<Result<Vec<Rect>, PluginError>>()?;
             pixels.truncate(bottom * width);
             pixels.drain(..top * width);
-            return Ok(area);
+            return Ok(cropped(pixels, area, &drawn));
         }
         let reach = layout.reach.map(|reach| reach as usize);
         let band_rows = match reach {
             _ if separate && layout.maps_input => even_rows,
+            Some(_) if ignores => even_rows,
             Some(reach) if separate && self.engine.copies_pixels() => copied_band_rows(area, height, width, reach, bands, STAGED_BYTES),
             Some(_) if separate => even_rows,
             Some(reach) if even_rows.max(reach + 1) + 2 * reach < rows => even_rows.max(reach + 1),
             _ => rows,
         };
+        let mut reused = Vec::new();
+        if ignores {
+            reused = std::mem::take(pixels);
+            reused.truncate(out_width * rows);
+        }
         let input: &[Pixel] = pixels;
-        let mut output = match pointwise {
-            true => {
-                let mut shown = Vec::with_capacity(out_width * rows);
-                for row in input.chunks_exact(width).skip(area.top as usize).take(rows) {
-                    shown.extend_from_slice(&row[area.left as usize..area.right as usize]);
-                }
-                shown
+        let mut output = if ignores {
+            reused
+        } else if pointwise {
+            let mut shown = Vec::with_capacity(out_width * rows);
+            for row in input.chunks_exact(width).skip(area.top as usize).take(rows) {
+                shown.extend_from_slice(&row[area.left as usize..area.right as usize]);
             }
-            false => vec![[0.0; 4]; out_width * rows],
+            shown
+        } else {
+            vec![[0.0; 4]; out_width * rows]
         };
-        output.par_chunks_mut(band_rows * out_width).enumerate().try_for_each(|(band, written)| {
+        let drawn = output.par_chunks_mut(band_rows * out_width).enumerate().map(|(band, written)| {
             let top = area.top + (band * band_rows) as i32;
             let out = Rect { top, bottom: top + (written.len() / out_width) as i32, ..area };
-            let needed = match (layout.maps_input && separate, layout.reach) {
-                (true, _) => self.exchange::<Rect>(&Call::Input { effect: effect.into(), cx: cx.clone(), out }, Io::None, &mut make_host())?,
-                (false, Some(reach)) => out.grown(reach),
-                (false, None) => full,
+            let (first, held): (usize, &[Pixel]) = if ignores {
+                (top as usize, &[])
+            } else {
+                let needed = match (layout.maps_input && separate, layout.reach) {
+                    (true, _) => self.exchange::<Rect>(&Call::Input { effect: effect.into(), cx: cx.clone(), out }, Io::None, &mut make_host())?,
+                    (false, Some(reach)) => out.grown(reach),
+                    (false, None) => full,
+                };
+                let needed = needed.union(out).clipped(cx.size);
+                (needed.top as usize, &input[needed.top as usize * width..needed.bottom as usize * width])
             };
-            let needed = needed.union(out).clipped(cx.size);
-            let (first, last) = (needed.top as usize, needed.bottom as usize);
-            let held = &input[first * width..last * width];
+            let last = first + held.len() / width;
             let mut host = make_host();
             let spread = !self.engine.copies_pixels();
-            if !separate {
+            let reply = if !separate {
                 let frame = FrameDesc { width: cx.size[0], height: (last - first) as u32, origin: [0, first as u32], ..Default::default() };
                 let call = Call::Render { effect: effect.into(), cx: cx.clone(), frame };
                 let io = Io::Region { input: held, output: written, skip: (top as usize - first) * width };
-                self.exchange::<()>(&call, io, &mut host)?;
+                self.exchange(&call, io, &mut host)?
             } else {
                 let window = Window { size: cx.size, first_row: first as u32, rows: (last - first) as u32 };
                 let origin = [area.left as u32, top as u32];
@@ -275,16 +293,19 @@ impl Plugin {
                 if spread {
                     let address = |pixels: &[Pixel]| [pixels.as_ptr() as u64, pixels.len() as u64];
                     let mut table: [Pixel; 3] = bytemuck::cast([address(held), address(&[]), [written.as_mut_ptr() as u64, written.len() as u64]]);
-                    self.exchange::<()>(&call, Io::InPlace(&mut table), &mut host)?;
+                    self.exchange(&call, Io::InPlace(&mut table), &mut host)?
+                } else if ignores {
+                    self.exchange(&call, Io::Draw { out: written, at: out }, &mut host)?
                 } else {
-                    self.exchange::<()>(&call, Io::Render { input: held, out: written }, &mut host)?;
+                    self.exchange(&call, Io::Render { input: held, out: written, at: out }, &mut host)?
                 }
-            }
+            };
             host.finish(written);
-            Ok(())
-        })?;
+            Ok(drawn_in(reply, out))
+        });
+        let drawn = drawn.collect::<Result<Vec<Rect>, PluginError>>()?;
         *pixels = output;
-        Ok(area)
+        Ok(cropped(pixels, area, &drawn))
     }
 
     pub fn accept_drop(&self, path: &std::path::Path) -> Result<(), String> {
@@ -497,6 +518,31 @@ impl Drop for Plugin {
     }
 }
 
+pub(crate) fn drawn_in(reply: Option<Rendered>, band: Rect) -> Rect {
+    reply.and_then(|reply| reply.drawn).map_or(band, |drawn| drawn.intersection(band))
+}
+
+fn cropped(pixels: &mut Vec<Pixel>, area: Rect, bands: &[Rect]) -> Rect {
+    let size = |rect: &Rect| rect.width() as usize * rect.height() as usize;
+    if bands.iter().map(size).sum::<usize>() == size(&area) {
+        return area;
+    }
+    let drawn: Vec<Rect> = bands.iter().copied().filter(|band| !band.is_empty()).collect();
+    let Some(union) = drawn.iter().copied().reduce(Rect::union) else {
+        *pixels = Vec::new();
+        return Rect { right: area.left, bottom: area.top, ..area };
+    };
+    let mut kept = Vec::with_capacity(size(&union));
+    for (y, row) in (area.top..).zip(pixels.chunks_exact(area.width() as usize)).filter(|(y, _)| (union.top..union.bottom).contains(y)) {
+        let band = drawn.iter().find(|band| (band.top..band.bottom).contains(&y)).map_or(union.left..union.left, |band| band.left..band.right);
+        kept.resize(kept.len() + (band.start - union.left) as usize, [0.0; 4]);
+        kept.extend_from_slice(&row[(band.start - area.left) as usize..(band.end - area.left) as usize]);
+        kept.resize(kept.len() + (union.right - band.end) as usize, [0.0; 4]);
+    }
+    *pixels = kept;
+    union
+}
+
 fn copied_band_rows(area: Rect, height: usize, width: usize, reach: usize, bands: usize, budget: usize) -> usize {
     let (rows, top, bottom) = (area.height() as usize, area.top as usize, area.bottom as usize);
     let staged = |band_rows: usize| {
@@ -547,6 +593,20 @@ fn origin(call: &Call) -> Origin {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bands_that_drew_different_rectangles_are_cropped_to_their_union_and_transparent_where_none_drew() {
+        let area = Rect { left: 10, top: 20, right: 14, bottom: 23 };
+        let mut pixels: Vec<Pixel> = (0..12).map(|i| [i as f32; 4]).collect();
+        let bands = [Rect { left: 11, top: 20, right: 12, bottom: 21 }, Rect { left: 12, top: 22, right: 14, bottom: 23 }];
+        assert_eq!(cropped(&mut pixels, area, &bands), Rect { left: 11, top: 20, right: 14, bottom: 23 });
+        assert_eq!(pixels.iter().map(|pixel| pixel[0]).collect::<Vec<_>>(), [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 10.0, 11.0]);
+        let mut whole: Vec<Pixel> = vec![[1.0; 4]; 12];
+        assert_eq!(cropped(&mut whole, area, &[Rect { bottom: 21, ..area }, Rect { top: 21, ..area }]), area);
+        assert_eq!(whole.len(), 12);
+        assert_eq!(cropped(&mut whole, area, &[Rect { right: 10, ..area }]), Rect { right: 10, bottom: 20, ..area });
+        assert!(whole.is_empty());
+    }
 
     #[test]
     fn a_sandboxed_render_uses_one_band_when_its_reach_covers_the_frame_and_bounds_what_its_bands_stage() {

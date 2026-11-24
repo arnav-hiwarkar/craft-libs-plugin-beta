@@ -7,7 +7,7 @@ use crate::host;
 use crate::ui::Ui;
 use crate::viewer::Overlay;
 use crate::wire::{
-    EffectSpec, HostCall, ImageDesc, LayerPlacement, Layout, MaskPath, ParamsAt, Pixel, Rect, RenderCx, Scene, Value, applied_padding,
+    EffectSpec, HostCall, ImageDesc, LayerPlacement, Layout, MaskPath, ParamsAt, Pixel, Rect, RenderCx, Rendered, Scene, Value, applied_padding,
 };
 
 pub trait Effect: Send + Sync + 'static {
@@ -256,11 +256,24 @@ pub struct Frame<'a> {
     pub origin: [usize; 2],
     pub pixels: &'a mut [Pixel],
     pub input: Rows<'a>,
+    drawn: Option<Rect>,
 }
 
 impl<'a> Frame<'a> {
     pub fn whole(width: usize, height: usize, input: &'a [Pixel], pixels: &'a mut [Pixel]) -> Frame<'a> {
-        Frame { width, height, origin: [0, 0], pixels, input: Rows { width, height, first_row: 0, pixels: input } }
+        Frame::new(width, height, [0, 0], pixels, Rows { width, height, first_row: 0, pixels: input })
+    }
+
+    pub(crate) fn new(width: usize, height: usize, origin: [usize; 2], pixels: &'a mut [Pixel], input: Rows<'a>) -> Frame<'a> {
+        Frame { width, height, origin, pixels, input, drawn: None }
+    }
+
+    pub fn drawn(&mut self, rect: Rect) {
+        self.drawn = Some(rect);
+    }
+
+    pub(crate) fn reply(&self) -> Option<Rendered> {
+        self.drawn.map(|drawn| Rendered { drawn: Some(drawn) })
     }
 
     pub fn rows_mut(&mut self) -> impl Iterator<Item = (usize, &mut [Pixel])> {
@@ -360,9 +373,9 @@ mod tests {
         let first = |frame: &mut Frame| frame.rows_in_place().map(|(y, row)| (y, row.iter().map(|p| p[0]).collect::<Vec<_>>())).collect::<Vec<_>>();
         let mut written = vec![[9.0; 4]; 2];
         let separate = Rows { width: 3, height: 2, first_row: 0, pixels: &input };
-        assert_eq!(first(&mut Frame { width: 2, height: 1, origin: [1, 1], pixels: &mut written, input: separate }), [(1, vec![4.0, 5.0])]);
+        assert_eq!(first(&mut Frame::new(2, 1, [1, 1], &mut written, separate)), [(1, vec![4.0, 5.0])]);
         let mut own = vec![[7.0; 4]; 2];
         let in_place = Rows { width: 2, height: 4, first_row: 3, pixels: &[] };
-        assert_eq!(first(&mut Frame { width: 2, height: 1, origin: [0, 3], pixels: &mut own, input: in_place }), [(3, vec![7.0, 7.0])]);
+        assert_eq!(first(&mut Frame::new(2, 1, [0, 3], &mut own, in_place)), [(3, vec![7.0, 7.0])]);
     }
 }
