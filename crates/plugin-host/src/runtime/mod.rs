@@ -76,6 +76,13 @@ impl Engine {
         &self.identity.journal
     }
 
+    pub fn module_digest(&self) -> Option<&str> {
+        match &self.kind {
+            Kind::Wasm { module, .. } => Some(module.digest()),
+            Kind::Native(_) => None,
+        }
+    }
+
     pub fn cached(&self, key: &str) -> Option<Arc<[u8]>> {
         self.identity.cache.get(key)
     }
