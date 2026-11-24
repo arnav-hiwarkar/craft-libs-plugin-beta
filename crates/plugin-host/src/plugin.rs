@@ -93,6 +93,7 @@ pub struct Plugin {
     limits: Limits,
     contributions: Contributions,
     warned_gradients: Mutex<HashMap<String, u64>>,
+    zeroed_output: Mutex<Vec<Pixel>>,
 }
 
 struct NoHost;
@@ -117,7 +118,14 @@ impl Plugin {
     }
 
     fn described(manifest: Manifest, engine: Arc<Engine>, limits: Limits) -> Result<Plugin, PluginError> {
-        let mut plugin = Plugin { manifest, engine, limits, contributions: Contributions::default(), warned_gradients: Mutex::default() };
+        let mut plugin = Plugin {
+            manifest,
+            engine,
+            limits,
+            contributions: Contributions::default(),
+            warned_gradients: Mutex::default(),
+            zeroed_output: Mutex::default(),
+        };
         plugin.contributions = plugin.call(&Call::Describe, None, &mut NoHost)?;
         plugin.contributions.check().map_err(PluginError::Load)?;
         plugin.engine.know_tasks(plugin.contributions.tasks.iter().map(|task| task.id.clone()).collect());
@@ -257,6 +265,10 @@ impl Plugin {
                 shown.extend_from_slice(&row[area.left as usize..area.right as usize]);
             }
             shown
+        } else if ignores {
+            let mut zeroed = self.zeroed_output.lock().map(|mut kept| std::mem::take(&mut *kept)).unwrap_or_default();
+            zeroed.resize(out_width * rows, [0.0; 4]);
+            zeroed
         } else {
             vec![[0.0; 4]; out_width * rows]
         };
@@ -301,8 +313,23 @@ impl Plugin {
             Ok(drawn_in(reply, out))
         });
         let drawn = drawn.collect::<Result<Vec<Rect>, PluginError>>()?;
-        *pixels = output;
-        Ok(cropped(pixels, area, &drawn))
+        if !ignores {
+            *pixels = output;
+            return Ok(cropped(pixels, area, &drawn));
+        }
+        let (rect, kept) = cropped_from(&output, area, &drawn);
+        let Some(kept) = kept else {
+            *pixels = output;
+            return Ok(rect);
+        };
+        for row in output.chunks_exact_mut(out_width).skip((rect.top - area.top) as usize).take(rect.height() as usize) {
+            row[(rect.left - area.left) as usize..(rect.right - area.left) as usize].fill([0.0; 4]);
+        }
+        if let Ok(mut zeroed) = self.zeroed_output.lock() {
+            *zeroed = output;
+        }
+        *pixels = kept;
+        Ok(rect)
     }
 
     pub fn accept_drop(&self, path: &std::path::Path) -> Result<(), String> {
@@ -539,14 +566,21 @@ pub(crate) fn drawn_in(reply: Option<Rendered>, band: Rect) -> Rect {
 }
 
 fn cropped(pixels: &mut Vec<Pixel>, area: Rect, bands: &[Rect]) -> Rect {
+    let (rect, kept) = cropped_from(pixels, area, bands);
+    if let Some(kept) = kept {
+        *pixels = kept;
+    }
+    rect
+}
+
+fn cropped_from(pixels: &[Pixel], area: Rect, bands: &[Rect]) -> (Rect, Option<Vec<Pixel>>) {
     let size = |rect: &Rect| rect.width() as usize * rect.height() as usize;
     if bands.iter().map(size).sum::<usize>() == size(&area) {
-        return area;
+        return (area, None);
     }
     let drawn: Vec<Rect> = bands.iter().copied().filter(|band| !band.is_empty()).collect();
     let Some(union) = drawn.iter().copied().reduce(Rect::union) else {
-        *pixels = Vec::new();
-        return Rect { right: area.left, bottom: area.top, ..area };
+        return (Rect { right: area.left, bottom: area.top, ..area }, Some(Vec::new()));
     };
     let mut kept = Vec::with_capacity(size(&union));
     for (y, row) in (area.top..).zip(pixels.chunks_exact(area.width() as usize)).filter(|(y, _)| (union.top..union.bottom).contains(y)) {
@@ -555,8 +589,7 @@ fn cropped(pixels: &mut Vec<Pixel>, area: Rect, bands: &[Rect]) -> Rect {
         kept.extend_from_slice(&row[(band.start - area.left) as usize..(band.end - area.left) as usize]);
         kept.resize(kept.len() + (union.right - band.end) as usize, [0.0; 4]);
     }
-    *pixels = kept;
-    union
+    (union, Some(kept))
 }
 
 fn copied_band_rows(area: Rect, height: usize, width: usize, reach: usize, bands: usize, budget: usize) -> usize {
