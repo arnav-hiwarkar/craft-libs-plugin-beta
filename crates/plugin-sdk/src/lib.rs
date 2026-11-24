@@ -13,7 +13,7 @@ mod viewer;
 mod wire;
 
 pub use curve::{Curve, MAX_CURVE_POINTS, default_curves_text};
-pub use effect::{Cx, Effect, Frame, Image, Pass, Rows};
+pub use effect::{Aux, Cx, Effect, Frame, Image, Pass, Rows};
 pub use gradient::{Gradient, MAX_GRADIENT_STOPS};
 pub use kernels::*;
 pub use manifest::{ContributedPreset, Contributes, Entry, MANIFEST_FILE, Manifest, ManifestError, Permission, RunMode, native_target};
@@ -26,11 +26,11 @@ pub use wire::*;
 pub mod prelude {
     pub use crate::host;
     pub use crate::{
-        AppEvent, AudioRequest, Bind, Blend, BlendMode, BlurShape, Camera, Canvas, Cull, Cursor, Curve, Cx, Dab, Drag, Dropped, Effect, EffectSpec,
-        Encoding, Error, FileErrorKind, Filter, Frame, FrameRequest, Gradient, Handle, HostKernel, Image, Key, LayerParam, LayerPlacement, Layout,
-        Light, LightKind, LogLevel, Mark, MaskPath, Measure, Modifiers, Negatives, Overlay, Paint, Panel, Param, Pass, PickFile, Pixel, Place, Plan,
-        PlanData, PlanImage, PlanPass, Plugin, Pointer, PointerPhase, Rect, Result, Root, Rows, Scene, Space, Taps, Task, TaskState, TaskStatus,
-        Tool, ToolEvent, ToolEventKind, Topic, Ui, Value,
+        AppEvent, AudioRequest, Aux, Bind, Blend, BlendMode, BlurShape, Camera, Canvas, Channel, Cull, Cursor, Curve, Cx, Dab, Drag, Dropped, Effect,
+        EffectSpec, Encoding, Error, FileErrorKind, Filter, Frame, FrameRequest, Gradient, Handle, HostKernel, Image, Key, LayerParam,
+        LayerPlacement, Layout, Light, LightKind, LogLevel, Mark, MaskPath, Measure, Modifiers, Negatives, Overlay, Paint, Panel, Param, Pass,
+        PickFile, Pixel, Place, Plan, PlanData, PlanImage, PlanPass, Plugin, Pointer, PointerPhase, Rect, Result, Root, Rows, Scene, Space, Taps,
+        Task, TaskState, TaskStatus, Tool, ToolEvent, ToolEventKind, Topic, Ui, Value,
     };
     pub use crate::{log, params};
     pub use serde_json::{self, json};

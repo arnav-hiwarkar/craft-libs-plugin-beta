@@ -35,6 +35,7 @@ fn access(call: &HostCall, host: &dyn Host, plugin: &Identity, origin: Origin) -
         | HostCall::Layer { .. }
         | HostCall::Source { .. }
         | HostCall::Masks
+        | HostCall::Aux { .. }
         | HostCall::Scene
         | HostCall::SceneAt { .. }
         | HostCall::Placement { .. } => Access::Free,
@@ -53,15 +54,20 @@ fn access(call: &HostCall, host: &dyn Host, plugin: &Identity, origin: Origin) -
     }
 }
 
-fn undeclared(call: &HostCall, spec: &EffectSpec) -> Option<&'static str> {
+fn undeclared(call: &HostCall, spec: &EffectSpec) -> Option<String> {
     let other_time = match call {
+        HostCall::Aux { channels, .. } => {
+            let missing: Vec<String> =
+                channels.iter().filter(|channel| !spec.reads_aux.contains(channel)).map(|channel| format!("Channel::{channel:?}")).collect();
+            return (!missing.is_empty()).then(|| format!(".reads_aux([{}])", missing.join(", ")));
+        }
         HostCall::SceneAt { .. } => true,
         HostCall::Placement { time, .. } => time.is_some(),
         _ => return None,
     };
     match (spec.reads_scene, spec.reads_other_frames || !other_time) {
-        (false, _) => Some(if other_time { ".reads_scene().reads_other_frames()" } else { ".reads_scene()" }),
-        (true, false) => Some(".reads_other_frames()"),
+        (false, _) => Some(if other_time { ".reads_scene().reads_other_frames()" } else { ".reads_scene()" }.into()),
+        (true, false) => Some(".reads_other_frames()".into()),
         (true, true) => None,
     }
 }

@@ -113,6 +113,40 @@ pub struct EffectSpec {
     pub presets: Vec<Preset>,
     #[serde(default)]
     pub version: u32,
+    #[serde(default)]
+    pub reads_aux: Vec<Channel>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum Channel {
+    Depth,
+    Normal,
+    Uv,
+    ObjectId,
+    MaterialId,
+    Coverage,
+    Background,
+    Named(String),
+}
+
+impl Channel {
+    pub fn components(&self) -> usize {
+        match self {
+            Channel::Normal | Channel::Background => 3,
+            Channel::Uv => 2,
+            _ => 1,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct AuxDesc {
+    pub width: u32,
+    pub height: u32,
+    #[serde(default)]
+    pub first_row: u32,
+    pub channels: Vec<Channel>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -161,6 +195,11 @@ impl EffectSpec {
 
     pub fn reads_scene(mut self) -> Self {
         self.reads_scene = true;
+        self
+    }
+
+    pub fn reads_aux(mut self, channels: impl IntoIterator<Item = Channel>) -> Self {
+        self.reads_aux.extend(channels);
         self
     }
 
@@ -1136,6 +1175,7 @@ pub enum HostCall {
     SceneAt { time: f64 },
     DataGet { place: Place, key: String },
     DataSet { place: Place, key: String, remove: bool },
+    Aux { channels: Vec<Channel>, rows: Option<[u32; 2]> },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
