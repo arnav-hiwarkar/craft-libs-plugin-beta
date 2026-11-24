@@ -23,6 +23,23 @@ impl Effect for Invert {
     }
 }
 
+struct HostCalls;
+
+impl Effect for HostCalls {
+    fn spec(&self) -> EffectSpec {
+        EffectSpec::new("host-calls", "Host Calls", "Probe").param(Param::slider("calls", "Calls", 0.0, 0.0..=1_000_000.0))
+    }
+
+    fn layout(&self, _cx: &Cx) -> Layout {
+        Layout::pointwise()
+    }
+
+    fn render(&self, cx: &Cx, _frame: &mut Frame) -> Result<()> {
+        (0..cx.f("calls") as u64).for_each(|_| drop(host::cache_has("k")));
+        Ok(())
+    }
+}
+
 struct Drift {
     declared: bool,
 }
@@ -1083,6 +1100,7 @@ fn make() -> Plugin {
         .effect(GpuSoften)
         .effect(HostKernels)
         .effect(Swap)
+        .effect(HostCalls)
         .effect(Passes)
         .effect(GpuFill)
         .effect(GpuMatte)
