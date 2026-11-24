@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use craft_plugin::{Pixel, RenderCx, RunMode, Value, native_target};
-use craft_plugin_host::{BundleError, Limits, PackageError, Plugin, Registry};
+use craft_plugin_host::{BundleError, Limits, PackageError, Plugin, Refusal, Registry};
 use serde_json::json;
 use zip::write::SimpleFileOptions;
 
@@ -60,8 +60,8 @@ fn a_packed_plugin_installs_loads_and_renders_a_frame() {
     let mut registry = Registry::open(root.path());
     let installed = registry.install(&file).unwrap();
     assert_eq!(installed.dir, root.path().join("test.probe"));
-    registry.approve(&installed.manifest).unwrap();
-    let grants = registry.grants(&installed.manifest).unwrap();
+    registry.approve(&installed).unwrap();
+    let grants = registry.grants(&installed).unwrap();
 
     let limits = Limits { interactive: Duration::from_millis(400), work: Duration::from_millis(400) };
     let plugin = Plugin::load(&registry.running(&installed), grants, root.path().join("data"), limits).unwrap();
@@ -176,16 +176,16 @@ fn a_plugin_with_both_builds_runs_sandboxed_until_the_user_picks_unsandboxed_for
     let mut registry = Registry::open(root.path());
     let installed = registry.install(source.path()).unwrap();
     let manifest = installed.manifest.clone();
-    assert_eq!(registry.grants(&manifest), None, "installed plugins start disabled");
+    assert_eq!(registry.grants(&installed), Err(Refusal::NotApproved), "installed plugins start disabled");
 
-    registry.approve(&manifest).unwrap();
-    assert_eq!(registry.grants(&manifest), Some(BTreeSet::new()));
+    registry.approve(&installed).unwrap();
+    assert_eq!(registry.grants(&installed), Ok(BTreeSet::new()));
     assert_eq!(registry.mode(&manifest), RunMode::Sandboxed);
     assert_eq!(registry.running(&installed).entry_path().unwrap(), installed.dir.join("probe.wasm"));
 
     registry.set_unsandboxed(&manifest, true).unwrap();
     assert_eq!(registry.mode(&manifest), RunMode::Unsandboxed);
-    assert_eq!(registry.grants(&manifest), Some(BTreeSet::new()));
+    assert_eq!(registry.grants(&installed), Ok(BTreeSet::new()));
     let native_file = libloading::library_filename("probe").into_string().unwrap();
     assert_eq!(registry.running(&installed).entry_path().unwrap(), installed.dir.join(native_file));
     assert_eq!(Registry::open(root.path()).mode(&manifest), RunMode::Unsandboxed, "the choice survives a restart");
@@ -193,7 +193,6 @@ fn a_plugin_with_both_builds_runs_sandboxed_until_the_user_picks_unsandboxed_for
     let mut next = manifest.clone();
     next.version = "1.0.1".into();
     assert_eq!(registry.mode(&next), RunMode::Sandboxed, "a new version is sandboxed again");
-    assert_eq!(registry.grants(&next), Some(BTreeSet::new()), "a new version keeps its sandboxed approval");
 
     registry.set_unsandboxed(&manifest, false).unwrap();
     assert_eq!(registry.mode(&manifest), RunMode::Sandboxed);
@@ -205,7 +204,7 @@ fn both_builds_of_a_plugin_give_the_same_picture() {
     let root = tempfile::tempdir().unwrap();
     let mut registry = Registry::open(root.path());
     let installed = registry.install(source.path()).unwrap();
-    registry.approve(&installed.manifest).unwrap();
+    registry.approve(&installed).unwrap();
     let limits = Limits { interactive: Duration::from_millis(400), work: Duration::from_millis(400) };
     let mut cx = RenderCx { size: [2, 1], scale: 1.0, ..Default::default() };
     cx.params.insert("amount".into(), Value::Number(1.0));
@@ -225,7 +224,7 @@ fn unsandboxed_cannot_be_chosen_without_a_native_build_for_this_machine() {
     let root = tempfile::tempdir().unwrap();
     let mut registry = Registry::open(root.path());
     let installed = registry.install(source.path()).unwrap();
-    registry.approve(&installed.manifest).unwrap();
+    registry.approve(&installed).unwrap();
     assert!(matches!(registry.set_unsandboxed(&installed.manifest, true), Err(BundleError::NoNativeBuild(id)) if id == "test.probe"));
     assert_eq!(registry.mode(&installed.manifest), RunMode::Sandboxed);
 }

@@ -9,7 +9,7 @@ use craft_plugin::{
     UiEvent, UiEventKind, UiInput, Widget, native_target,
 };
 use craft_plugin_host::testing::probe_dir;
-use craft_plugin_host::{Access, Bundle, Host, Limits, Pixels, Plugin, PluginError, Rect, Registry, Retained};
+use craft_plugin_host::{Access, Bundle, Host, Limits, Pixels, Plugin, PluginError, Rect, Refusal, Registry, Retained};
 use serde_json::{Value, json};
 
 mod package;
@@ -609,24 +609,75 @@ fn a_sandboxed_plugin_that_never_returns_is_stopped_and_the_next_call_still_work
 
 #[test]
 fn an_installed_plugin_runs_only_after_the_user_approves_exactly_what_it_asks_for() {
-    let (source, bundle) = bundle(Kind::Wasm, &["document.read"]);
+    let (source, _) = bundle(Kind::Wasm, &["document.read"]);
     let root = tempfile::tempdir().unwrap();
     let mut registry = Registry::open(root.path());
     let installed = registry.install(source.path()).unwrap();
-    assert_eq!(registry.grants(&installed.manifest), None, "installed plugins start disabled");
+    assert_eq!(registry.grants(&installed), Err(Refusal::NotApproved), "installed plugins start disabled");
 
-    registry.approve(&installed.manifest).unwrap();
+    registry.approve(&installed).unwrap();
     let reopened = Registry::open(root.path());
-    assert_eq!(reopened.grants(&installed.manifest), Some(BTreeSet::from([Permission::DocumentRead])));
+    assert_eq!(reopened.grants(&installed), Ok(BTreeSet::from([Permission::DocumentRead])));
 
-    let mut greedier = bundle.manifest.clone();
-    greedier.permissions.insert(Permission::FilesWrite);
-    assert_eq!(reopened.grants(&greedier), None, "an update asking for more waits for a new approval");
+    let mut greedier = installed.clone();
+    greedier.manifest.permissions.insert(Permission::FilesWrite);
+    assert_eq!(reopened.grants(&greedier), Err(Refusal::Wider), "an update asking for more waits for a new approval");
 
     registry.disable("test.probe").unwrap();
-    assert_eq!(registry.grants(&installed.manifest), None);
+    assert_eq!(registry.grants(&installed), Err(Refusal::Disabled));
     registry.uninstall("test.probe").unwrap();
     assert!(registry.bundles().is_empty());
+}
+
+#[test]
+fn approval_covers_the_exact_files_and_a_reused_version_with_other_files_is_refused() {
+    let (source, _) = bundle(Kind::Wasm, &[]);
+    let root = tempfile::tempdir().unwrap();
+    let mut registry = Registry::open(root.path());
+    let installed = registry.install(source.path()).unwrap();
+    registry.approve(&installed).unwrap();
+    assert_eq!(registry.grants(&installed), Ok(BTreeSet::new()));
+
+    std::fs::write(installed.dir.join("probe.wasm"), b"\0asm\x01\0\0\0").unwrap();
+    let refused = registry.grants(&installed).unwrap_err();
+    assert!(matches!(&refused, Refusal::Changed(why) if why.starts_with("approved 1.0.0 ") && why.contains(", found 1.0.0 ")), "{refused}");
+    assert!(refused.to_string().starts_with("its files changed since you approved them"), "{refused}");
+
+    std::fs::write(source.path().join("extra.txt"), b"more").unwrap();
+    let reused = registry.install(source.path()).unwrap_err();
+    assert_eq!(
+        reused.to_string(),
+        "plugin `test.probe` version 1.0.0 is already approved with different files; give this build a new version number or remove the installed one first"
+    );
+    std::fs::remove_file(source.path().join("extra.txt")).unwrap();
+    let reinstalled = registry.install(source.path()).unwrap();
+    assert_eq!(registry.grants(&reinstalled), Ok(BTreeSet::new()), "the approved files are accepted again");
+}
+
+#[test]
+fn a_run_that_ended_without_a_clean_quit_quarantines_its_unsandboxed_plugins() {
+    let (source, _) = bundle(Kind::Native, &[]);
+    let root = tempfile::tempdir().unwrap();
+    let mut crashed = Registry::open(root.path());
+    let installed = crashed.install(source.path()).unwrap();
+    crashed.approve(&installed).unwrap();
+    crashed.mark_running(&BTreeSet::from(["test.probe".to_string()])).unwrap();
+
+    let mut alongside = Registry::open(root.path());
+    assert_eq!(alongside.recover().unwrap(), Vec::<String>::new(), "a run that is still going is left alone");
+    drop(crashed);
+
+    let mut next = Registry::open(root.path());
+    assert_eq!(next.recover().unwrap(), ["test.probe"]);
+    let why = "it was turned off because the app closed unexpectedly while it ran unsandboxed";
+    assert_eq!(next.grants(&installed).map_err(|e| e.to_string()), Err(why.to_string()));
+    assert_eq!(Registry::open(root.path()).recover().unwrap(), Vec::<String>::new(), "the marker is gone");
+    next.approve(&installed).unwrap();
+    assert_eq!(Registry::open(root.path()).grants(&installed), Ok(BTreeSet::new()), "approving turns it back on");
+
+    next.mark_running(&BTreeSet::from(["test.probe".to_string()])).unwrap();
+    next.end_run().unwrap();
+    assert_eq!(Registry::open(root.path()).recover().unwrap(), Vec::<String>::new(), "a clean quit quarantines nothing");
 }
 
 #[test]
@@ -636,13 +687,13 @@ fn a_native_plugin_needs_explicit_trust_beyond_its_permissions() {
     let mut registry = Registry::open(root.path());
     let installed = registry.install(source.path()).unwrap();
     assert_eq!(registry.mode(&installed.manifest), craft_plugin::RunMode::Unsandboxed);
-    assert_eq!(registry.grants(&installed.manifest), None);
-    registry.approve(&installed.manifest).unwrap();
-    assert_eq!(registry.grants(&installed.manifest), Some(BTreeSet::new()));
+    assert_eq!(registry.grants(&installed), Err(Refusal::NotApproved));
+    registry.approve(&installed).unwrap();
+    assert_eq!(registry.grants(&installed), Ok(BTreeSet::new()));
 
-    let mut next_version = installed.manifest.clone();
-    next_version.version = "1.0.1".into();
-    assert_eq!(registry.grants(&next_version), None, "a new native version waits for a new approval");
+    let mut next_version = installed.clone();
+    next_version.manifest.version = "1.0.1".into();
+    assert_eq!(registry.grants(&next_version), Err(Refusal::NotApproved), "a new native version waits for a new approval");
 }
 
 #[test]
@@ -757,7 +808,7 @@ fn a_half_finished_install_is_not_treated_as_an_installed_plugin() {
     let root = tempfile::tempdir().unwrap();
     let mut registry = Registry::open(root.path());
     let installed = registry.install(source.path()).unwrap();
-    registry.approve(&installed.manifest).unwrap();
+    registry.approve(&installed).unwrap();
 
     let staged = root.path().join(".installing-test.probe");
     std::fs::create_dir_all(&staged).unwrap();
@@ -799,9 +850,9 @@ fn a_plugin_with_file_access_cannot_touch_the_apps_plugin_folders() {
         let root = tempfile::tempdir().unwrap();
         let mut registry = Registry::open(root.path());
         let installed = registry.install(source.path()).unwrap();
-        registry.approve(&installed.manifest).unwrap();
+        registry.approve(&installed).unwrap();
         let running = registry.running(&installed);
-        let grants = registry.grants(&running.manifest).unwrap();
+        let grants = registry.grants(&running).unwrap();
         let limits = Limits { interactive: Duration::from_millis(400), work: Duration::from_millis(400) };
         let plugin = Plugin::load(&running, grants, registry.data_dir("test.probe"), limits).unwrap();
         let compiled = root.path().join(".data/.compiled");
