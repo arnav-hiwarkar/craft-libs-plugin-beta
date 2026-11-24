@@ -19,6 +19,7 @@ use crate::plugin::{Io, PluginError};
 
 const TICK: Duration = Duration::from_millis(50);
 const MEMORY_LIMIT: usize = 3 << 30;
+const REPLY_LIMIT: usize = 64 << 20;
 const TABLE_LIMIT: usize = 4;
 const TABLE_ELEMENT_LIMIT: usize = 65_536;
 
@@ -168,12 +169,7 @@ impl WasmGuest {
 
         let mut out = [0u32; 2];
         self.memory.read(&self.store, self.out as usize, bytemuck::cast_slice_mut(&mut out))?;
-        let reply = (out[0] as usize)
-            .checked_add(out[1] as usize)
-            .and_then(|end| self.memory.data(&self.store).get(out[0] as usize..end))
-            .filter(|_| out[0] != 0)
-            .map(<[u8]>::to_vec)
-            .ok_or_else(|| wasmtime::format_err!("the plugin returned no reply"))?;
+        let reply = reply_bytes(self.memory.data(&self.store), out)?.to_vec();
         self.free.call(&mut self.store, (out[0], out[1]))?;
         if !succeeded(&reply) {
             return Ok(reply);
@@ -372,6 +368,16 @@ fn cache_name(engine: &Engine, bytes: &[u8]) -> String {
     hasher.0.finalize().iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+fn reply_bytes(memory: &[u8], [at, len]: [u32; 2]) -> wasmtime::Result<&[u8]> {
+    if len as usize > REPLY_LIMIT {
+        wasmtime::bail!(
+            "the plugin's reply is {len} bytes; replies over {REPLY_LIMIT} bytes are refused, so return less (a smaller overlay or fewer items)"
+        );
+    }
+    let end = (at as usize).checked_add(len as usize);
+    end.and_then(|end| memory.get(at as usize..end)).filter(|_| at != 0).ok_or_else(|| wasmtime::format_err!("the plugin returned no reply"))
+}
+
 fn succeeded(reply: &[u8]) -> bool {
     matches!(serde_json::from_slice::<Outcome<serde::de::IgnoredAny>>(reply), Ok(Outcome::Ok(_)))
 }
@@ -394,7 +400,7 @@ fn missing(export: &str) -> PluginError {
 
 #[cfg(test)]
 mod tests {
-    use super::{KEY_FILE, WasmModule, cache_name, cached, engine, hmac, install_key};
+    use super::{KEY_FILE, WasmModule, cache_name, cached, engine, hmac, install_key, reply_bytes};
 
     const EMPTY: &[u8] = &[0, 0x61, 0x73, 0x6d, 1, 0, 0, 0];
     const ONE_IMPORT: &[u8] = &[0, 0x61, 0x73, 0x6d, 1, 0, 0, 0, 1, 4, 1, 0x60, 0, 0, 2, 7, 1, 1, b'a', 1, b'b', 0, 0];
@@ -504,5 +510,17 @@ mod tests {
         assert_ne!(install_key(dir.path()).unwrap(), [9u8; 32]);
         let key = install_key(dir.path()).unwrap();
         assert_eq!(install_key(dir.path()).unwrap(), key);
+    }
+
+    #[test]
+    fn a_reply_over_the_byte_cap_is_refused_before_it_is_copied() {
+        let memory = [7u8; 16];
+        assert_eq!(reply_bytes(&memory, [4, 3]).unwrap(), &[7, 7, 7]);
+        let refused = reply_bytes(&memory, [4, u32::MAX]).unwrap_err().to_string();
+        assert_eq!(
+            refused,
+            "the plugin's reply is 4294967295 bytes; replies over 67108864 bytes are refused, so return less (a smaller overlay or fewer items)"
+        );
+        assert_eq!(reply_bytes(&memory, [0, 3]).unwrap_err().to_string(), "the plugin returned no reply");
     }
 }

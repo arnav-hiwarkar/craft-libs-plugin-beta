@@ -149,8 +149,8 @@ const MAX_PARAMS: usize = 512;
 const MAX_ID_BYTES: usize = 256;
 const MAX_ID_DEPTH: usize = 8;
 
-fn check_id(id: &str) -> Result<(), String> {
-    if id.len() > MAX_ID_BYTES {
+fn check_id(id: &str, bounded: bool) -> Result<(), String> {
+    if bounded && id.len() > MAX_ID_BYTES {
         return Err(format!("is {} bytes long; at most {MAX_ID_BYTES} are allowed", id.len()));
     }
     if id.split('/').count() > MAX_ID_DEPTH {
@@ -166,7 +166,7 @@ fn check_id(id: &str) -> Result<(), String> {
                 &part[..1]
             ));
         }
-        if part.contains(char::is_control) {
+        if bounded && part.contains(char::is_control) {
             return Err("contains a control character; use printable characters".into());
         }
     }
@@ -182,12 +182,16 @@ fn shown(id: &str) -> String {
 
 impl EffectSpec {
     pub fn check(&self) -> Result<(), String> {
-        if self.params.len() > MAX_PARAMS {
+        self.check_bounded(true)
+    }
+
+    pub fn check_bounded(&self, bounded: bool) -> Result<(), String> {
+        if bounded && self.params.len() > MAX_PARAMS {
             return Err(format!("effect `{}` declares {} parameters; at most {MAX_PARAMS} are allowed", self.id, self.params.len()));
         }
         let mut seen = std::collections::BTreeSet::new();
         for param in &self.params {
-            check_id(&param.id).map_err(|problem| format!("effect `{}`: parameter id `{}` {problem}", self.id, shown(&param.id)))?;
+            check_id(&param.id, bounded).map_err(|problem| format!("effect `{}`: parameter id `{}` {problem}", self.id, shown(&param.id)))?;
             if !seen.insert(param.id.as_str()) {
                 return Err(format!("effect `{}` declares the parameter id `{}` twice; give each parameter its own id", self.id, param.id));
             }
@@ -492,5 +496,10 @@ mod tests {
         assert_eq!(twice.check(), Err("effect `glow` declares the parameter id `on` twice; give each parameter its own id".into()));
         let many = EffectSpec::new("glow", "Glow", "Stylize").params((0..513).map(|i| Param::checkbox(&format!("p{i}"), "On", true)));
         assert_eq!(many.check(), Err("effect `glow` declares 513 parameters; at most 512 are allowed".into()));
+        assert_eq!(many.check_bounded(false), Ok(()));
+        assert_eq!(
+            EffectSpec::new("glow", "Glow", "Stylize").param(Param::checkbox("a//b", "On", true)).check_bounded(false),
+            Err("effect `glow`: parameter id `a//b` has an empty part; each part between `/` needs a name".into())
+        );
     }
 }

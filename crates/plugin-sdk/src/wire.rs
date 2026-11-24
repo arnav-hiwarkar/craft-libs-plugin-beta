@@ -79,6 +79,14 @@ pub struct Contributions {
     pub tools: Vec<ToolSpec>,
     #[serde(default)]
     pub separate_input: bool,
+    #[serde(default)]
+    pub bounded: bool,
+}
+
+impl Contributions {
+    pub fn check(&self) -> Result<(), String> {
+        self.effects.iter().try_for_each(|effect| effect.check_bounded(self.bounded))
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]

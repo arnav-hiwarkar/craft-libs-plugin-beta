@@ -116,9 +116,7 @@ impl Plugin {
     fn described(manifest: Manifest, engine: Arc<Engine>, limits: Limits) -> Result<Plugin, PluginError> {
         let mut plugin = Plugin { manifest, engine, limits, contributions: Contributions::default(), warned_gradients: Mutex::default() };
         plugin.contributions = plugin.call(&Call::Describe, None, &mut NoHost)?;
-        if let Some(error) = plugin.contributions.effects.iter().find_map(|effect| effect.check().err()) {
-            return Err(PluginError::Load(error));
-        }
+        plugin.contributions.check().map_err(PluginError::Load)?;
         plugin.engine.know_tasks(plugin.contributions.tasks.iter().map(|task| task.id.clone()).collect());
         Ok(plugin)
     }
@@ -556,5 +554,21 @@ mod tests {
         assert_eq!(copied_band_rows(frame, 256, 64, 100, 4, 1_064_960), 64, "four bands stage 1,064,960 bytes");
         assert_eq!(copied_band_rows(frame, 256, 64, 100, 4, 800_000), 128, "two bands stage 729,088 bytes");
         assert_eq!(copied_band_rows(frame, 256, 64, 100, 4, 1000), 256, "nothing fits: one band");
+    }
+
+    #[test]
+    fn a_descriptor_from_an_sdk_without_limits_still_loads_but_keeps_the_structural_checks() {
+        let effect = |ids: Vec<String>| {
+            craft_plugin::EffectSpec::new("glow", "Glow", "Stylize").params(ids.iter().map(|id| craft_plugin::Param::checkbox(id, "On", true)))
+        };
+        let many = (0..513).map(|i| format!("p{i}")).collect::<Vec<_>>();
+        let older = Contributions { effects: vec![effect(many)], bounded: false, ..Contributions::default() };
+        assert_eq!(older.check(), Ok(()));
+        assert_eq!(
+            Contributions { bounded: true, ..older }.check(),
+            Err("effect `glow` declares 513 parameters; at most 512 are allowed".to_string())
+        );
+        let hollow = Contributions { effects: vec![effect(vec!["a//b".into()])], bounded: false, ..Contributions::default() };
+        assert_eq!(hollow.check(), Err("effect `glow`: parameter id `a//b` has an empty part; each part between `/` needs a name".to_string()));
     }
 }
