@@ -294,13 +294,16 @@ fn cached(engine: &Engine, name: &str, cache: &Path, read: impl FnOnce() -> Resu
     Ok(module)
 }
 
-pub(crate) fn described(cache: &Path, name: &str) -> Option<Vec<u8>> {
-    signed_entry(&install_key(cache).ok()?, &cache.join(format!("{name}.{DESCRIBED_EXTENSION}")))
+pub(crate) fn described(cache: &Path, record: &str) -> Option<(String, Vec<u8>)> {
+    let body = signed_entry(&install_key(cache).ok()?, &cache.join(format!("{record}.{DESCRIBED_EXTENSION}")))?;
+    let split = body.iter().position(|&byte| byte == b'\n')?;
+    Some((String::from_utf8(body[..split].to_vec()).ok()?, body[split + 1..].to_vec()))
 }
 
-pub(crate) fn keep_described(cache: &Path, name: &str, reply: &[u8]) {
-    let path = cache.join(format!("{name}.{DESCRIBED_EXTENSION}"));
-    if let Err(error) = install_key(cache).and_then(|key| store(&key, &path, reply)) {
+pub(crate) fn keep_described(cache: &Path, record: &str, module: &str, reply: &[u8]) {
+    let path = cache.join(format!("{record}.{DESCRIBED_EXTENSION}"));
+    let body = [module.as_bytes(), b"\n", reply].concat();
+    if let Err(error) = install_key(cache).and_then(|key| store(&key, &path, &body)) {
         log::warn!("{}: the plugin's description was not kept: {error}", path.display());
     }
 }
@@ -421,8 +424,8 @@ impl Hasher for DigestHasher {
     }
 }
 
-pub(crate) fn module_name(bundle_digest: &str) -> Result<String, PluginError> {
-    Ok(cache_name(engine()?, bundle_digest.as_bytes()))
+pub(crate) fn name_of(bytes: &[u8]) -> Result<String, PluginError> {
+    Ok(cache_name(engine()?, bytes))
 }
 
 fn cache_name(engine: &Engine, bytes: &[u8]) -> String {

@@ -33,22 +33,42 @@ fn app_folders(data_dir: &Path) -> Vec<PathBuf> {
 struct LazyModule {
     bundle: Bundle,
     digest: String,
-    name: String,
+    record: String,
     cache: PathBuf,
-    module: OnceLock<Result<WasmModule, PluginError>>,
+    kept: Option<(String, Vec<u8>)>,
+    module: OnceLock<Result<(String, WasmModule), PluginError>>,
 }
 
 impl LazyModule {
+    fn bytes(&self) -> Result<Vec<u8>, PluginError> {
+        let entry = self.bundle.entry_path().map_err(|e| PluginError::Load(e.to_string()))?;
+        match self.bundle.digest_keeping(Some(&entry)).map_err(|e| PluginError::Load(e.to_string()))? {
+            (digest, Some(bytes)) if digest == self.digest => Ok(bytes),
+            (_, Some(_)) => Err(PluginError::Load("the plugin's files changed since it was started; turn it off and on again".into())),
+            (_, None) => Err(PluginError::Load(format!("{}: the entry file is missing", entry.display()))),
+        }
+    }
+
     fn get(&self) -> Result<&WasmModule, PluginError> {
-        let read = || {
-            let entry = self.bundle.entry_path().map_err(|e| PluginError::Load(e.to_string()))?;
-            match self.bundle.digest_keeping(Some(&entry)).map_err(|e| PluginError::Load(e.to_string()))? {
-                (digest, Some(bytes)) if digest == self.digest => Ok(bytes),
-                (_, Some(_)) => Err(PluginError::Load("the plugin's files changed since it was started; turn it off and on again".into())),
-                (_, None) => Err(PluginError::Load(format!("{}: the entry file is missing", entry.display()))),
-            }
-        };
-        self.module.get_or_init(|| WasmModule::load(&self.name, &self.cache, read)).as_ref().map_err(Clone::clone)
+        let loaded = self.module.get_or_init(|| {
+            let (name, bytes) = match &self.kept {
+                Some((name, _)) => (name.clone(), None),
+                None => {
+                    let bytes = self.bytes()?;
+                    (wasm::name_of(&bytes)?, Some(bytes))
+                }
+            };
+            let module = WasmModule::load(&name, &self.cache, || bytes.map_or_else(|| self.bytes(), Ok))?;
+            Ok((name, module))
+        });
+        loaded.as_ref().map(|(_, module)| module).map_err(Clone::clone)
+    }
+
+    fn name(&self) -> Option<&str> {
+        match &self.kept {
+            Some((name, _)) => Some(name),
+            None => self.module.get()?.as_ref().ok().map(|(name, _)| name.as_str()),
+        }
     }
 
     fn instantiate(&self) -> Result<WasmGuest, PluginError> {
@@ -70,13 +90,9 @@ impl Engine {
     pub fn open(bundle: &Bundle, digest: &str, grants: BTreeSet<Permission>, data_dir: PathBuf) -> Result<Arc<Engine>, PluginError> {
         let entry = bundle.entry_path().map_err(|e| PluginError::Load(e.to_string()))?;
         let kind = if bundle.mode == RunMode::Sandboxed {
-            let module = LazyModule {
-                bundle: bundle.clone(),
-                digest: digest.to_string(),
-                name: wasm::module_name(digest)?,
-                cache: data_dir.parent().unwrap_or(&data_dir).join(COMPILED_DIR),
-                module: OnceLock::new(),
-            };
+            let (record, cache) = (wasm::name_of(digest.as_bytes())?, data_dir.parent().unwrap_or(&data_dir).join(COMPILED_DIR));
+            let kept = wasm::described(&cache, &record);
+            let module = LazyModule { bundle: bundle.clone(), digest: digest.to_string(), record, cache, kept, module: OnceLock::new() };
             Kind::Wasm { module: Box::new(module), main: Mutex::new(None), pool: Mutex::new(Vec::new()) }
         } else {
             Kind::Native(NativeGuest::load(&entry)?)
@@ -110,7 +126,7 @@ impl Engine {
 
     pub fn module_digest(&self) -> Option<&str> {
         match &self.kind {
-            Kind::Wasm { module, .. } => Some(&module.name),
+            Kind::Wasm { module, .. } => module.name(),
             Kind::Native(_) => None,
         }
     }
@@ -124,14 +140,16 @@ impl Engine {
 
     pub fn described(&self) -> Option<Vec<u8>> {
         match &self.kind {
-            Kind::Wasm { module, .. } => wasm::described(&module.cache, &module.name),
+            Kind::Wasm { module, .. } => module.kept.as_ref().map(|(_, reply)| reply.clone()),
             Kind::Native(_) => None,
         }
     }
 
     pub fn keep_described(&self, reply: &[u8]) {
-        if let Kind::Wasm { module, .. } = &self.kind {
-            wasm::keep_described(&module.cache, &module.name, reply);
+        if let Kind::Wasm { module, .. } = &self.kind
+            && let Some(name) = module.name()
+        {
+            wasm::keep_described(&module.cache, &module.record, name, reply);
         }
     }
 
