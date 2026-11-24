@@ -23,6 +23,40 @@ impl Effect for Invert {
     }
 }
 
+struct Tinted;
+
+impl Effect for Tinted {
+    fn spec(&self) -> EffectSpec {
+        EffectSpec::new("tinted", "Tinted By Layer Data", "Probe")
+    }
+
+    fn layout(&self, _cx: &Cx) -> Layout {
+        Layout::pointwise()
+    }
+
+    fn render(&self, cx: &Cx, frame: &mut Frame) -> Result<()> {
+        let red = cx.layer_data("tint")?.and_then(|bytes| bytes.first().copied()).map_or(0.0, |byte| f32::from(byte) / 255.0);
+        frame.map(|pixel| [red, pixel[1], pixel[2], pixel[3]]);
+        Ok(())
+    }
+}
+
+fn write_data() -> Result<()> {
+    let request: serde_json::Value = serde_json::from_slice(&host::read_file(Root::Bundle, "data.json")?)?;
+    let place: Place = serde_json::from_value(request["place"].clone())?;
+    let key = request["key"].as_str().ok_or("data.json names no key")?;
+    if request["null"].as_bool() == Some(true) {
+        host::command("layer.newNull", json!({"name": "Marker"}))?;
+    }
+    match (&request["value"], request["size"].as_u64()) {
+        (serde_json::Value::String(text), _) => host::set_data(place, key, text.as_bytes())?,
+        (_, Some(size)) => host::set_data(place, key, &vec![b'x'; size as usize])?,
+        _ => host::remove_data(place, key)?,
+    }
+    let read = host::data(place, key)?.map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
+    host::write_file(Root::Data, "data-read.json", json!(read).to_string().as_bytes())
+}
+
 struct HostCalls;
 
 impl Effect for HostCalls {
@@ -1112,6 +1146,7 @@ impl Effect for Lookout {
 fn make() -> Plugin {
     Plugin::new()
         .effect(Invert)
+        .effect(Tinted)
         .effect(Drift { declared: true })
         .effect(Drift { declared: false })
         .effect(FastMaths)
@@ -1210,6 +1245,7 @@ fn make() -> Plugin {
             let command = request["command"].as_str().ok_or("relay.json names no command")?;
             host::command(command, request["params"].clone()).map(|_| ())
         })
+        .command("data", "Write Data", write_data)
         .command("run-script", "Run Script", || host::command("script.run", json!({"code": "1"})).map(|_| ()))
         .command("start-count", "Start Counting", || {
             let id = host::start("count", json!({"steps": 3}))?;

@@ -1,4 +1,4 @@
-use craft_plugin::{EffectSpec, HostCall, Permission, Root};
+use craft_plugin::{EffectSpec, HostCall, Permission, Place, Root};
 
 use super::serve::Identity;
 use crate::host::{Access, Host, Origin};
@@ -13,6 +13,17 @@ fn access(call: &HostCall, host: &dyn Host, plugin: &Identity, origin: Origin) -
             Access::Refused("an effect cannot read audio while it renders; read it in a task and pass what the effect needs as a parameter".into())
         }
         HostCall::Frame { .. } | HostCall::Audio { .. } => Access::Needs(vec![Permission::DocumentRead]),
+        HostCall::DataSet { .. } if origin == Origin::Render => {
+            Access::Refused("an effect cannot write data while it renders; write it from a command, panel or task".into())
+        }
+        HostCall::DataGet { place: Place::Project | Place::Layer(_), .. } if origin == Origin::Render => {
+            Access::Refused("an effect reads only its own layer's data (cx.layer_data), so its cached frames redraw when that data changes".into())
+        }
+        HostCall::DataGet { place: Place::OwnLayer, .. } | HostCall::DataSet { place: Place::OwnLayer, .. } if origin != Origin::Render => {
+            Access::Refused("only a rendering effect has its own layer; name the layer with Place::Layer(id)".into())
+        }
+        HostCall::DataGet { .. } => Access::Needs(vec![Permission::DocumentRead]),
+        HostCall::DataSet { .. } => Access::Needs(vec![Permission::DocumentWrite]),
         HostCall::PickFile { .. } if origin != Origin::Interactive => Access::Refused("a file can be picked only from a panel or a command".into()),
         HostCall::PickFile { .. } => Access::Free,
         HostCall::ReadFile { root: Root::User, path, .. } | HostCall::ListFiles { root: Root::User, path } if plugin.picked(path, false) => {
