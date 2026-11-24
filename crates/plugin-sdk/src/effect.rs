@@ -43,6 +43,16 @@ pub trait Effect: Send + Sync + 'static {
     fn drag(&self, _cx: &Cx, _key: &str, _to: [f64; 2], _value: &mut String) {}
 
     fn migrate(&self, _from: u32, _values: &mut BTreeMap<String, Value>) {}
+
+    fn button(&self, press: &Press) -> Result<()> {
+        Err(format!("this effect has no `Effect::button`, so its button `{}` does nothing; implement it", press.param).into())
+    }
+}
+
+pub struct Press {
+    pub param: String,
+    pub instance: u64,
+    pub layer: u64,
 }
 
 pub struct Pass<'a> {

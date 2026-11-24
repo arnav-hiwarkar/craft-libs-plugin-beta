@@ -235,6 +235,10 @@ impl Plugin {
                 self.find_effect(&effect)?.drag(&Cx::new(cx), &key, to, &mut value);
                 json(&Some(value))
             }
+            Call::Button { effect, param, instance, layer } => {
+                self.find_effect(&effect)?.button(&crate::effect::Press { param, instance, layer })?;
+                Ok(serde_json::Value::Null)
+            }
             Call::Migrate { effect, from, mut values } => {
                 self.find_effect(&effect)?.migrate(from, &mut values);
                 json(&values)
