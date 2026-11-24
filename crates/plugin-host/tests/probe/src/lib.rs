@@ -243,6 +243,32 @@ fn fs_probe_fill() -> @location(0) vec4<f32> {
 }
 "#;
 
+struct GpuCachedFill;
+
+impl Effect for GpuCachedFill {
+    fn spec(&self) -> EffectSpec {
+        EffectSpec::new("gpu-cached-fill", "GPU Cached Fill", "Probe").param(Param::slider("reach", "Reach", 3.0, 1.0..=3.0)).shader(FILL_SHADER)
+    }
+
+    fn layout(&self, cx: &Cx) -> Layout {
+        let reach = cx.f("reach") as f32;
+        let corners: Vec<u8> = [-1.0, -1.0, reach, -1.0, -1.0, reach].iter().flat_map(|v: &f32| v.to_le_bytes()).collect();
+        if host::cache_put("corners", &corners).is_err() {
+            return Layout::pointwise();
+        }
+        let mut plan = Plan::new();
+        let corners = plan.buffer(PlanData::Cache("corners".into()));
+        let triangle = plan.buffer(PlanData::Indices(vec![0, 1, 2]));
+        Layout::pointwise()
+            .gpu(plan.pass(PlanPass::draw("probe_fill", PlanImage::Output).vertices(corners, &[2]).indices(triangle).floats(&FILL).clear()))
+    }
+
+    fn render(&self, _cx: &Cx, frame: &mut Frame) -> Result<()> {
+        frame.pixels.fill([FILL[0], FILL[1], FILL[2], 1.0]);
+        Ok(())
+    }
+}
+
 struct GpuFill;
 
 impl Effect for GpuFill {
@@ -1275,6 +1301,7 @@ fn make() -> Plugin {
         .effect(Ranges)
         .effect(GpuInvert)
         .effect(GpuSoften)
+        .effect(GpuCachedFill)
         .effect(HostKernels)
         .effect(Swap)
         .effect(SmallSwap)

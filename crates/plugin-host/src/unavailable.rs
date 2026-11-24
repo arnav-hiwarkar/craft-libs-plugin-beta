@@ -55,6 +55,10 @@ impl Engine {
         match *self {}
     }
 
+    pub fn cached_in(&self, _: &Staged, _: &str) -> Option<Arc<[u8]>> {
+        match *self {}
+    }
+
     pub fn commit(&self, _: Staged) {
         match *self {}
     }
