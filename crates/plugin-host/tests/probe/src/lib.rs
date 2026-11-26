@@ -1477,6 +1477,10 @@ fn make() -> Plugin {
             let reply = host::command("layer.newNull", json!({"name": "From Plugin"}))?;
             host::write_file(Root::Data, "last-reply.json", reply.to_string().as_bytes())
         })
+        .menu("Layer/Probe Tools")
+        .context(Context::Layers)
+        .toolbar()
+        .icon("wand")
         .command("read", "Read Document", || host::command("comp.info", json!({})).map(|_| ()))
         .shortcut("Cmd+Shift+J")
         .command("ask", "Ask For Settings", || {
