@@ -102,6 +102,22 @@ SDK (EffectCraft keeps `crates/plugin/tests/it/legacy/legacy.wasm`).
    folding what it does into one undo step. Test: a kittest that changes a popup, sees a row appear, and
    presses the button by pointer and keyboard.
 
+## Plugin UI: the painter seam
+
+The widget tree (`craft_plugin::Widget`), its events (`UiEvent`) and `Retained` are app-independent. An app
+supplies only a painter: a function from a tree to `UiEvent`s. Use `craft_plugin_ui::draw` with a
+`craft_plugin_ui::Host` on plain egui, or `craft_plugin_ui_framework::draw` (craft-libs branch `pluginkit-next`)
+on the craft UI framework. Both must pass `craft_plugin_ui::conformance::run_all` (feature `conformance`), which
+drives each case with real pointer and key input and compares literal events. The app draws what only it can
+draw through `Host` hooks with defaults that say "this app cannot …": `icon`, `curve`, `gradient`, `color`,
+`frame`. Create each panel slot with `Retained::with_level(contributions.event_level())`, and send a tool a
+`ToolEventKind` only when its `ui_level()` is at most the plugin's `event_level()`. Panel places
+(`Side`, `Bottom`, `Float`, `Status`, `Bar`), `PanelSpec.keys`, the panel menu (`Retained::menu`, `PANEL_MENU`),
+`host::show_panel`, `host::command_state` and the frame widget map to the app's dock, shortcut routing, panel
+menu, frontend commands, command rows and frame cache. On the framework they map to `DockPanels` with run-time
+registration and `reconcile`, `AppCatalog` with `CommandInput::state`, key claims, `DialogHost`, `NoticeCenter` and
+`CanvasTool`; `crates/plugin-ui-framework/tests/it` on `pluginkit-next` is a PhotoCraft-shaped host to copy.
+
 ## Where EffectCraft's adapter does each thing
 
 Paths in the EffectCraft fork (`pluginkit/effectcraft`, branch `pluginkit`).
