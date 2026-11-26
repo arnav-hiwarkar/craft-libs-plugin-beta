@@ -65,6 +65,7 @@ Grouped by gallery level, then shape, then name.
 | `Link` | Leaf | `craft_ui_widgets::buttons::link` | A link: drawn in the accent colour in a type role (body by default) and underlined, so colour is not its only cue |
 | `LinkedFields` | Leaf | `craft_ui_widgets::text::linked` | `N` number fields joined by a link toggle |
 | `NumberField` | Leaf | `craft_ui_widgets::text::number` | A number field: a text part over [`NumberCodec`]; empty text is `None` |
+| `PaintArea` | Leaf | `craft_ui_widgets::controls::paint_area` | An area the caller paints that reports the pointer and the keys over it |
 | `PointPicker` | Leaf | `craft_ui_widgets::value_drag::point_picker` | A point `[x, y]` picked on a well: x grows to the right and y downwards, as image coordinates do, in either reading direction |
 | `Progress` | Leaf | `craft_ui_widgets::display::progress` | A progress bar |
 | `Radio` | Leaf | `craft_ui_widgets::choice::radio` | A member of a `RadioGroup`: selected when the group's pick is its value |
