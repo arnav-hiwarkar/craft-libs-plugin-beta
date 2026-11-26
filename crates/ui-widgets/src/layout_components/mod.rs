@@ -311,8 +311,9 @@ impl Default for Row {
 }
 
 impl Grid {
-    /// A grid over `columns` that takes the size of its cells.
-    pub fn new(columns: &'static [ColumnWidth]) -> Self {
+    /// A grid over `columns` that takes the size of its cells: a static table, or a list built at run time when the
+    /// column count comes from data (a plug-in's grid).
+    pub fn new(columns: impl Into<std::borrow::Cow<'static, [ColumnWidth]>>) -> Self {
         Grid {
             common: Common::new(),
             props: ContainerProps::new().sizing(Sizing::Content).layout(BodyLayout::grid(columns)),
