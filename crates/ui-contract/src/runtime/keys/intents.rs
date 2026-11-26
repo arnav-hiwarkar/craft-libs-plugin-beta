@@ -379,7 +379,7 @@ pub(crate) fn give_back(ctx: &Context, to: Id, lent: Lent) {
                 back.push((from, own.items.remove(at)));
             }
         }
-        let nudge = lent.nudge.and_then(|from| own.nudge.take().map(|nudge| (from, nudge)));
+        let nudge = lent.nudge.zip(own.nudge.take());
         let taken = lent_items - back.len() + usize::from(lent.nudge.is_some() && nudge.is_none());
         stage.lent_taken += taken as u64;
         for (from, item) in back {
