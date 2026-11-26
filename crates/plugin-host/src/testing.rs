@@ -202,6 +202,7 @@ pub fn pointer(kind: ToolEventKind, comp: [f64; 2]) -> ToolEvent {
         key: String::new(),
         zoom: 1.0,
         time: 0.0,
+        pen: None,
     }
 }
 

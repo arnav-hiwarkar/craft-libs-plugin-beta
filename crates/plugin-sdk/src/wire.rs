@@ -1153,18 +1153,69 @@ pub enum PlanImage {
     SourceAt(u32),
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct PanelSpec {
     pub id: String,
     pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    #[serde(default)]
+    pub place: PanelPlace,
+    #[serde(default)]
+    pub size: PanelSize,
+    #[serde(default)]
+    pub multiple: bool,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PanelPlace {
+    #[default]
+    Side,
+    Bottom,
+    Float,
+    Status,
+    Bar,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PanelSize {
+    Small,
+    #[default]
+    Medium,
+    Large,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct CommandSpec {
     pub id: String,
     pub title: String,
     pub shortcut: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub menu: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub context: Vec<Context>,
+    #[serde(default)]
+    pub toolbar: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
 }
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Context {
+    Layers,
+    Timeline,
+    Viewer,
+}
+
+pub const ICONS: &[&str] = &[
+    "brush", "pen", "eraser", "wand", "sparkles", "sliders", "palette", "droplet", "sun", "image", "film", "music", "text", "shapes", "square",
+    "circle", "star", "heart", "grid", "list", "layers", "folder", "file", "search", "settings", "info", "warning", "help", "play", "pause", "stop",
+    "plus", "minus", "trash", "copy", "eye", "lock", "link", "clock", "chart", "camera", "crop", "move", "rotate", "zoom", "magnet", "flag", "tag",
+    "bookmark", "bell", "terminal", "code", "puzzle", "refresh", "download", "upload", "check", "close",
+];
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct TaskSpec {
@@ -1347,6 +1398,8 @@ pub enum HostCall {
     DataSet { place: Place, key: String, remove: bool },
     Aux { channels: Vec<Channel>, rows: Option<[u32; 2]>, size: Option<[u32; 2]> },
     Form { form: Form },
+    ShowPanel { panel: String, instance: Option<String> },
+    ClosePanel { panel: String, instance: Option<String> },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -1572,6 +1625,19 @@ pub struct UiInput {
     pub app: Vec<AppEvent>,
     #[serde(default)]
     pub timers: Vec<String>,
+    #[serde(default)]
+    pub views: Vec<View>,
+    #[serde(default)]
+    pub instance: Option<String>,
+    #[serde(default)]
+    pub call: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct View {
+    pub id: u64,
+    pub first: u32,
+    pub count: u32,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -1667,13 +1733,36 @@ pub enum UiEventKind {
     Pointer(Pointer),
     Key(Key),
     Drop(Dropped),
+    List(ListEvent),
+    Points(Vec<[f64; 2]>),
+    Gradient(Gradient),
 }
 
 impl UiEventKind {
     pub fn known_to_every_sdk(&self) -> bool {
-        !matches!(self, UiEventKind::Key(_) | UiEventKind::Drop(_))
+        matches!(
+            self,
+            UiEventKind::Click
+                | UiEventKind::Bool(_)
+                | UiEventKind::Number(_)
+                | UiEventKind::Text(_)
+                | UiEventKind::Color(_)
+                | UiEventKind::Pointer(_)
+        )
     }
 }
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ListEvent {
+    Select(Vec<u32>),
+    Activate(u32),
+    Toggle { row: u32, open: bool },
+    Show { first: u32, count: u32 },
+}
+
+pub const MAX_LIST_ITEMS: u32 = 1024;
+pub const LIST_WINDOW: u32 = 128;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Key {
@@ -1809,6 +1898,8 @@ pub enum Widget {
     Scroll {
         id: u64,
         height: f32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rows: Option<u32>,
         children: Vec<Widget>,
     },
     Collapsing {
@@ -1843,6 +1934,73 @@ pub enum Widget {
         drag: Drag,
         children: Vec<Widget>,
     },
+    List {
+        id: u64,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        columns: Vec<Column>,
+        count: u32,
+        first: u32,
+        items: Vec<Item>,
+        selected: Vec<u32>,
+        multi: bool,
+        rows: u32,
+    },
+    IconButton {
+        id: u64,
+        icon: String,
+        text: String,
+        enabled: bool,
+    },
+    Toggle {
+        id: u64,
+        text: String,
+        value: bool,
+    },
+    Radio {
+        id: u64,
+        text: String,
+        options: Vec<String>,
+        selected: u32,
+    },
+    TextArea {
+        id: u64,
+        value: String,
+        hint: String,
+        rows: u32,
+    },
+    Text {
+        spans: Vec<Span>,
+    },
+    Menu {
+        id: u64,
+        text: Option<String>,
+        items: Vec<MenuItem>,
+    },
+    Split {
+        id: u64,
+        axis: Axis,
+        first: Vec<Widget>,
+        second: Vec<Widget>,
+    },
+    Curve {
+        id: u64,
+        text: String,
+        points: Vec<[f64; 2]>,
+    },
+    Gradient {
+        id: u64,
+        text: String,
+        value: Gradient,
+    },
+    Gap {
+        gap: Gap,
+    },
+    Name {
+        text: String,
+    },
+    Focus {
+        call: u64,
+    },
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -1853,6 +2011,107 @@ pub enum TextStyle {
     Weak,
     Mono,
     Error,
+    Caption,
+    Strong,
+    Title,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Span {
+    pub text: String,
+    pub style: TextStyle,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct Column {
+    pub title: String,
+    #[serde(default)]
+    pub width: ColumnWidth,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ColumnWidth {
+    #[default]
+    Auto,
+    Narrow,
+    Wide,
+    Fill,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct Item {
+    pub cells: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub depth: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open: Option<bool>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub weak: bool,
+}
+
+fn is_zero(depth: &u8) -> bool {
+    *depth == 0
+}
+
+impl Item {
+    pub fn new(text: &str) -> Item {
+        Item { cells: vec![text.into()], ..Default::default() }
+    }
+
+    pub fn cells(cells: &[&str]) -> Item {
+        Item { cells: cells.iter().map(|cell| cell.to_string()).collect(), ..Default::default() }
+    }
+
+    pub fn icon(mut self, icon: &str) -> Item {
+        self.icon = Some(icon.into());
+        self
+    }
+
+    pub fn depth(mut self, depth: u8) -> Item {
+        self.depth = depth;
+        self
+    }
+
+    pub fn open(mut self, open: bool) -> Item {
+        self.open = Some(open);
+        self
+    }
+
+    pub fn weak(mut self) -> Item {
+        self.weak = true;
+        self
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct MenuItem {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub disabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checked: Option<bool>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub separator: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub items: Vec<MenuItem>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Axis {
+    Horizontal,
+    Vertical,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Gap {
+    Small,
+    Medium,
+    Large,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -1878,6 +2137,11 @@ pub enum Paint {
     Border,
     Error,
     Rgba([u8; 4]),
+    Good,
+    Warn,
+    Faint,
+    Selected,
+    Series(u8),
 }
 
 #[cfg(test)]

@@ -109,6 +109,18 @@ pub fn form(form: Form) -> Result<Option<std::collections::BTreeMap<String, Valu
     call(&HostCall::Form { form }, &[]).map(|(values, _)| values)
 }
 
+pub fn show_panel(panel: &str) -> Result<()> {
+    call::<serde_json::Value>(&HostCall::ShowPanel { panel: panel.into(), instance: None }, &[]).map(drop)
+}
+
+pub fn show_panel_for(panel: &str, instance: &str) -> Result<()> {
+    call::<serde_json::Value>(&HostCall::ShowPanel { panel: panel.into(), instance: Some(instance.into()) }, &[]).map(drop)
+}
+
+pub fn close_panel(panel: &str, instance: Option<&str>) -> Result<()> {
+    call::<serde_json::Value>(&HostCall::ClosePanel { panel: panel.into(), instance: instance.map(str::to_string) }, &[]).map(drop)
+}
+
 pub const MAX_IMAGE_SIDE: u32 = 8192;
 
 pub fn upload_image(key: &str, width: u32, height: u32, rgba8: &[u8]) -> Result<()> {

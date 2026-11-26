@@ -165,6 +165,8 @@ fn needs_the_app(call: &HostCall) -> bool {
             | HostCall::ClipboardWrite { .. }
             | HostCall::DataGet { .. }
             | HostCall::DataSet { .. }
+            | HostCall::ShowPanel { .. }
+            | HostCall::ClosePanel { .. }
     )
 }
 
@@ -366,6 +368,8 @@ fn answer(cx: &mut HostCx, call: HostCall, bulk: &[u8]) -> Result<(Value, Bulk),
             cx.paused += started.elapsed();
             plain(json!(answer?.map(|values| form.answer(values)).transpose()?))
         }
+        HostCall::ShowPanel { panel, instance } => cx.host.panel(&panel, instance.as_deref(), true).map(|()| (Value::Null, Bulk::None)),
+        HostCall::ClosePanel { panel, instance } => cx.host.panel(&panel, instance.as_deref(), false).map(|()| (Value::Null, Bulk::None)),
         HostCall::UploadImage { key, width, height } => cx.plugin.images.put(key, width, height, bulk).map(|()| (Value::Null, Bulk::None)),
         HostCall::RemoveImage { key } => plain(json!(cx.plugin.images.remove(&key))),
         HostCall::ParamsAt { time } => cx.host.params_at(time).map(|answer| (json!(answer), Bulk::None)).ok_or("no parameters at that time".into()),

@@ -115,6 +115,10 @@ pub trait Host {
         Err("a form cannot open here".into())
     }
 
+    fn panel(&mut self, _panel: &str, _instance: Option<&str>, _open: bool) -> Result<(), String> {
+        Err("this app cannot open or close plugin panels".into())
+    }
+
     fn params_at(&mut self, _layer_time: f64) -> Option<ParamsAt> {
         None
     }

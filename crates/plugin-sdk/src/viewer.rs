@@ -195,6 +195,10 @@ pub struct ToolSpec {
     pub icon: Vec<Shape>,
     #[serde(default)]
     pub cursor: Cursor,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub named_icon: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -227,6 +231,17 @@ pub struct ToolEvent {
     pub zoom: f64,
     #[serde(default)]
     pub time: f64,
+    #[serde(default)]
+    pub pen: Option<Pen>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq)]
+pub struct Pen {
+    pub pressure: f32,
+    #[serde(default)]
+    pub tilt: [f32; 2],
+    #[serde(default)]
+    pub eraser: bool,
 }
 
 pub trait Tool: Send + 'static {

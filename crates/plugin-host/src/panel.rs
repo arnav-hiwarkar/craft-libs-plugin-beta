@@ -1,9 +1,10 @@
 use std::time::Duration;
 
-use craft_plugin::{AppEvent, MIN_TIMER_MS, PanelReply, Pointer, PointerPhase, Topic, UiEvent, UiEventKind, UiInput, Widget};
+use craft_plugin::{AppEvent, ListEvent, MIN_TIMER_MS, PanelReply, Pointer, PointerPhase, Topic, UiEvent, UiEventKind, UiInput, View, Widget};
 
 const LEGACY_TIMER: &str = "";
 pub const MAX_BACKLOG: usize = 64;
+pub const MAX_VIEWS: usize = 64;
 
 #[derive(Debug, Clone, PartialEq)]
 struct Armed {
@@ -22,6 +23,7 @@ pub struct Retained {
     app: Vec<AppEvent>,
     topics: Vec<Topic>,
     timers: Vec<Armed>,
+    views: Vec<View>,
     size: [f32; 2],
     drawn: bool,
     stale: bool,
@@ -104,6 +106,10 @@ impl Retained {
     pub fn push(&mut self, events: Vec<UiEvent>, keys: &str) {
         let in_flight = self.in_flight;
         for event in events {
+            if let UiEventKind::List(ListEvent::Show { first, count }) = event.kind {
+                self.show(View { id: event.id, first, count });
+                continue;
+            }
             let last = self
                 .events
                 .iter_mut()
@@ -121,6 +127,15 @@ impl Retained {
             self.events.remove(oldest);
         }
         self.keys.push_str(keys);
+    }
+
+    fn show(&mut self, view: View) {
+        self.views.retain(|shown| shown.id != view.id);
+        if self.views.len() == MAX_VIEWS {
+            self.views.remove(0);
+        }
+        self.views.push(view);
+        self.stale = true;
     }
 
     pub fn notify(&mut self, event: &AppEvent) {
@@ -181,9 +196,10 @@ impl Retained {
             events.retain(|event| event.kind.known_to_every_sdk());
         }
         let timers = fired.into_iter().filter(|name| name != LEGACY_TIMER).collect();
-        let input = UiInput { events, size, keys: std::mem::take(&mut self.keys), app: std::mem::take(&mut self.app), timers };
-        (self.size, self.stale, self.in_flight) = (size, false, true);
         self.calls += 1;
+        let (keys, app, views) = (std::mem::take(&mut self.keys), std::mem::take(&mut self.app), self.views.clone());
+        let input = UiInput { events, size, keys, app, timers, views, instance: None, call: self.calls };
+        (self.size, self.stale, self.in_flight) = (size, false, true);
         Some(input)
     }
 
@@ -435,5 +451,19 @@ mod tests {
         let kept: Vec<UiEvent> =
             (0..50).flat_map(|x| [(x >= 36).then(|| pointer(3, x as f32, PointerPhase::Drag)), Some(click(100 + x))]).flatten().collect();
         assert_eq!(events(&mut panel, 48), Some(kept));
+    }
+
+    #[test]
+    fn a_list_view_change_calls_once_and_every_later_call_carries_the_view_and_its_number() {
+        let mut panel = drawn(vec![], vec![]);
+        let show = |first| UiEvent { id: 5, kind: UiEventKind::List(ListEvent::Show { first, count: 40 }) };
+        panel.push(vec![show(100), show(300)], "");
+        let first = panel.start(SIZE, ms(1)).map(|input| (input.events, input.views, input.call));
+        assert_eq!(first, Some((vec![], vec![View { id: 5, first: 300, count: 40 }], 2)));
+        panel.finish(reply(vec![], vec![]), ms(1));
+        assert_eq!(panel.start(SIZE, ms(2)), None);
+        panel.push(vec![click(1)], "");
+        let later = panel.start(SIZE, ms(3)).map(|input| (input.views, input.call));
+        assert_eq!(later, Some((vec![View { id: 5, first: 300, count: 40 }], 3)));
     }
 }

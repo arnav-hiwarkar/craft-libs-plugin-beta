@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 use std::ops::RangeInclusive;
 
+use crate::gradient::Gradient;
 use crate::wire::{
-    AppEvent, Drag, Dropped, Key, MIN_TIMER_MS, Paint, PanelReply, Pointer, Shape, TextStyle, Timer, Topic, UiEventKind, UiInput, Widget,
+    AppEvent, Axis, Column, Drag, Dropped, Gap, Item, Key, LIST_WINDOW, ListEvent, MAX_LIST_ITEMS, MIN_TIMER_MS, MenuItem, Paint, PanelReply,
+    Pointer, Shape, Span, TextStyle, Timer, Topic, UiEventKind, UiInput, Widget,
 };
 
 pub trait Panel: Send + 'static {
@@ -82,28 +84,49 @@ impl<'a> Ui<'a> {
         self.input.events.iter().filter(move |e| e.id == id).map(|e| &e.kind)
     }
 
-    fn text(&mut self, text: &str, style: TextStyle) {
+    fn styled(&mut self, text: &str, style: TextStyle) {
         self.widgets.push(Widget::Label { text: text.into(), style });
     }
 
     pub fn label(&mut self, text: &str) {
-        self.text(text, TextStyle::Body)
+        self.styled(text, TextStyle::Body)
     }
 
     pub fn heading(&mut self, text: &str) {
-        self.text(text, TextStyle::Heading)
+        self.styled(text, TextStyle::Heading)
     }
 
     pub fn weak(&mut self, text: &str) {
-        self.text(text, TextStyle::Weak)
+        self.styled(text, TextStyle::Weak)
     }
 
     pub fn mono(&mut self, text: &str) {
-        self.text(text, TextStyle::Mono)
+        self.styled(text, TextStyle::Mono)
     }
 
     pub fn error(&mut self, text: &str) {
-        self.text(text, TextStyle::Error)
+        self.styled(text, TextStyle::Error)
+    }
+
+    pub fn caption(&mut self, text: &str) {
+        self.styled(text, TextStyle::Caption)
+    }
+
+    pub fn strong(&mut self, text: &str) {
+        self.styled(text, TextStyle::Strong)
+    }
+
+    pub fn title(&mut self, text: &str) {
+        self.styled(text, TextStyle::Title)
+    }
+
+    pub fn text(&mut self, spans: &[(&str, TextStyle)]) {
+        let spans = spans.iter().map(|(text, style)| Span { text: text.to_string(), style: *style }).collect();
+        self.widgets.push(Widget::Text { spans });
+    }
+
+    pub fn instance(&self) -> Option<&'a str> {
+        self.input.instance.as_deref()
     }
 
     pub fn button(&mut self, text: &str) -> bool {
@@ -256,7 +279,13 @@ impl<'a> Ui<'a> {
     pub fn scroll(&mut self, key: &str, height: f32, build: impl FnOnce(&mut Ui<'a>)) {
         let id = self.id(key);
         let children = self.nested_in(id, build);
-        self.widgets.push(Widget::Scroll { id, height, children });
+        self.widgets.push(Widget::Scroll { id, height, rows: None, children });
+    }
+
+    pub fn scroll_rows(&mut self, key: &str, rows: u32, build: impl FnOnce(&mut Ui<'a>)) {
+        let id = self.id(key);
+        let children = self.nested_in(id, build);
+        self.widgets.push(Widget::Scroll { id, height: 0.0, rows: Some(rows.max(1)), children });
     }
 
     pub fn collapsing(&mut self, title: &str, open_by_default: bool, build: impl FnOnce(&mut Ui<'a>)) {
@@ -306,12 +335,246 @@ impl<'a> Ui<'a> {
         self.widgets.push(Widget::DragSource { id, drag, children });
     }
 
+    pub fn list<S: Selection>(&mut self, key: &str, count: usize, selected: &mut S, item: impl FnMut(usize) -> Item) -> Picked {
+        self.rows_of(key, Vec::new(), count, selected, item)
+    }
+
+    pub fn table<S: Selection>(&mut self, key: &str, columns: &[&str], count: usize, selected: &mut S, item: impl FnMut(usize) -> Item) -> Picked {
+        let columns = columns.iter().map(|title| Column { title: title.to_string(), ..Default::default() }).collect();
+        self.rows_of(key, columns, count, selected, item)
+    }
+
+    fn rows_of<S: Selection>(
+        &mut self,
+        key: &str,
+        columns: Vec<Column>,
+        count: usize,
+        selected: &mut S,
+        mut item: impl FnMut(usize) -> Item,
+    ) -> Picked {
+        let id = self.id(key);
+        let count = u32::try_from(count).unwrap_or(u32::MAX);
+        let mut picked = Picked::default();
+        for kind in self.events_of(id) {
+            match kind {
+                UiEventKind::List(ListEvent::Select(rows)) => {
+                    let rows: Vec<u32> = rows.iter().copied().filter(|row| *row < count).collect();
+                    picked.selected |= selected.set(&rows);
+                }
+                UiEventKind::List(ListEvent::Activate(row)) if *row < count => picked.activated = Some(*row as usize),
+                UiEventKind::List(ListEvent::Toggle { row, open }) if *row < count => picked.toggled = Some((*row as usize, *open)),
+                _ => {}
+            }
+        }
+        let view = self.input.views.iter().find(|view| view.id == id);
+        let first = view.map_or(0, |view| view.first).min(count);
+        let shown = view.map_or(LIST_WINDOW, |view| view.count).min(MAX_LIST_ITEMS).min(count - first);
+        let items = (first..first + shown).map(|row| item(row as usize)).collect();
+        let selected = selected.rows().into_iter().filter(|row| *row < count).collect();
+        self.widgets.push(Widget::List { id, columns, count, first, items, selected, multi: S::MULTI, rows: 0 });
+        picked
+    }
+
+    pub fn icon_button(&mut self, icon: &str, text: &str) -> bool {
+        let id = self.id(text);
+        self.widgets.push(Widget::IconButton { id, icon: icon.into(), text: text.into(), enabled: true });
+        matches!(self.event(id), Some(UiEventKind::Click))
+    }
+
+    pub fn toggle(&mut self, text: &str, value: &mut bool) -> bool {
+        let id = self.id(text);
+        let changed = match self.event(id) {
+            Some(UiEventKind::Bool(new)) => std::mem::replace(value, *new) != *new,
+            _ => false,
+        };
+        self.widgets.push(Widget::Toggle { id, text: text.into(), value: *value });
+        changed
+    }
+
+    pub fn radio(&mut self, text: &str, selected: &mut usize, options: &[&str]) -> bool {
+        let id = self.id(text);
+        let changed = match self.event(id) {
+            Some(UiEventKind::Number(new)) if (*new as usize) < options.len() => std::mem::replace(selected, *new as usize) != *new as usize,
+            _ => false,
+        };
+        let options = options.iter().map(|o| o.to_string()).collect();
+        self.widgets.push(Widget::Radio { id, text: text.into(), options, selected: *selected as u32 });
+        changed
+    }
+
+    pub fn text_area(&mut self, key: &str, value: &mut String, hint: &str, rows: u32) -> bool {
+        let id = self.id(key);
+        let changed = match self.event(id) {
+            Some(UiEventKind::Text(new)) if new != value => {
+                value.clone_from(new);
+                true
+            }
+            _ => false,
+        };
+        self.widgets.push(Widget::TextArea { id, value: value.clone(), hint: hint.into(), rows: rows.max(1) });
+        changed
+    }
+
+    pub fn menu(&mut self, text: &str, build: impl FnOnce(&mut Menu)) {
+        let id = self.id(text);
+        let items = self.menu_items(id, build);
+        self.widgets.push(Widget::Menu { id, text: Some(text.into()), items });
+    }
+
+    pub fn context_menu(&mut self, build: impl FnOnce(&mut Menu)) {
+        let id = self.id("context menu");
+        let items = self.menu_items(id, build);
+        self.widgets.push(Widget::Menu { id, text: None, items });
+    }
+
+    fn menu_items(&self, id: u64, build: impl FnOnce(&mut Menu)) -> Vec<MenuItem> {
+        let picked = match self.event(id) {
+            Some(UiEventKind::Number(index)) => Some(*index as u32),
+            _ => None,
+        };
+        let mut menu = Menu { items: Vec::new(), picked, next: 0 };
+        build(&mut menu);
+        menu.items
+    }
+
+    pub fn split(&mut self, key: &str, axis: Axis, first: impl FnOnce(&mut Ui<'a>), second: impl FnOnce(&mut Ui<'a>)) {
+        let id = self.id(key);
+        let first = self.nested_in(hash(id, b"first"), first);
+        let second = self.nested_in(hash(id, b"second"), second);
+        self.widgets.push(Widget::Split { id, axis, first, second });
+    }
+
+    pub fn curve(&mut self, text: &str, points: &mut Vec<[f64; 2]>) -> bool {
+        let id = self.id(text);
+        let changed = match self.event(id) {
+            Some(UiEventKind::Points(new)) if crate::curve::check_points(new).is_ok() && new != points => {
+                points.clone_from(new);
+                true
+            }
+            _ => false,
+        };
+        self.widgets.push(Widget::Curve { id, text: text.into(), points: points.clone() });
+        changed
+    }
+
+    pub fn gradient(&mut self, text: &str, value: &mut Gradient) -> bool {
+        let id = self.id(text);
+        let changed = match self.event(id) {
+            Some(UiEventKind::Gradient(new)) if new.check().is_ok() && new != value => {
+                value.clone_from(new);
+                true
+            }
+            _ => false,
+        };
+        self.widgets.push(Widget::Gradient { id, text: text.into(), value: value.clone() });
+        changed
+    }
+
+    pub fn gap(&mut self, gap: Gap) {
+        self.widgets.push(Widget::Gap { gap });
+    }
+
+    pub fn name(&mut self, text: &str) {
+        self.widgets.push(Widget::Name { text: text.into() });
+    }
+
+    pub fn focus(&mut self) {
+        self.widgets.push(Widget::Focus { call: self.input.call });
+    }
+
     fn nested_in(&mut self, scope: u64, build: impl FnOnce(&mut Ui<'a>)) -> Vec<Widget> {
         let outer_scope = std::mem::replace(&mut self.scope, scope);
         let outer_widgets = std::mem::take(&mut self.widgets);
         build(self);
         self.scope = outer_scope;
         std::mem::replace(&mut self.widgets, outer_widgets)
+    }
+}
+
+pub trait Selection {
+    const MULTI: bool;
+    fn rows(&self) -> Vec<u32>;
+    fn set(&mut self, rows: &[u32]) -> bool;
+}
+
+impl Selection for Option<usize> {
+    const MULTI: bool = false;
+
+    fn rows(&self) -> Vec<u32> {
+        self.iter().map(|row| *row as u32).collect()
+    }
+
+    fn set(&mut self, rows: &[u32]) -> bool {
+        let new = rows.first().map(|row| *row as usize);
+        std::mem::replace(self, new) != new
+    }
+}
+
+impl Selection for Vec<usize> {
+    const MULTI: bool = true;
+
+    fn rows(&self) -> Vec<u32> {
+        self.iter().map(|row| *row as u32).collect()
+    }
+
+    fn set(&mut self, rows: &[u32]) -> bool {
+        let new: Vec<usize> = rows.iter().map(|row| *row as usize).collect();
+        std::mem::replace(self, new.clone()) != new
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Picked {
+    pub selected: bool,
+    pub activated: Option<usize>,
+    pub toggled: Option<(usize, bool)>,
+}
+
+pub struct Menu {
+    items: Vec<MenuItem>,
+    picked: Option<u32>,
+    next: u32,
+}
+
+impl Menu {
+    fn add(&mut self, item: MenuItem) -> bool {
+        let index = self.next;
+        self.next += 1;
+        self.items.push(item);
+        self.picked == Some(index)
+    }
+
+    pub fn item(&mut self, text: &str) -> bool {
+        self.add(MenuItem { text: text.into(), ..Default::default() })
+    }
+
+    pub fn item_enabled(&mut self, text: &str, enabled: bool) -> bool {
+        self.add(MenuItem { text: text.into(), disabled: !enabled, ..Default::default() }) && enabled
+    }
+
+    pub fn check(&mut self, text: &str, value: &mut bool) -> bool {
+        let picked = self.add(MenuItem { text: text.into(), checked: Some(*value), ..Default::default() });
+        if picked {
+            *value = !*value;
+            if let Some(item) = self.items.last_mut() {
+                item.checked = Some(*value);
+            }
+        }
+        picked
+    }
+
+    pub fn separator(&mut self) {
+        self.add(MenuItem { separator: true, ..Default::default() });
+    }
+
+    pub fn submenu(&mut self, text: &str, build: impl FnOnce(&mut Menu)) {
+        self.add(MenuItem { text: text.into(), ..Default::default() });
+        let mut inner = Menu { items: Vec::new(), picked: self.picked, next: self.next };
+        build(&mut inner);
+        self.next = inner.next;
+        if let Some(item) = self.items.last_mut() {
+            item.items = inner.items;
+        }
     }
 }
 
@@ -642,5 +905,148 @@ mod tests {
             serde_json::from_value(serde_json::to_value(PanelReply { topics: vec![Topic::Time], ..Default::default() }).unwrap_or_default())
                 .unwrap_or_else(|e| panic!("{e}"));
         assert_eq!((new.legacy, new.topics), (false, vec![Topic::Time]));
+    }
+
+    fn list_frame(events: Vec<UiEvent>, views: Vec<crate::wire::View>, selected: &mut Option<usize>, built: &mut Vec<usize>) -> (Widget, Picked) {
+        let input = UiInput { events, views, ..Default::default() };
+        let mut ui = Ui::new(&input);
+        let picked = ui.list("files", 100_000, selected, |row| {
+            built.push(row);
+            Item::new(&format!("file {row}"))
+        });
+        (ui.finish().remove(0), picked)
+    }
+
+    #[test]
+    fn a_list_builds_only_the_rows_of_its_view_and_reports_selection_activation_and_toggles() {
+        let (mut selected, mut built) = (None, Vec::new());
+        let (widget, _) = list_frame(vec![], vec![], &mut selected, &mut built);
+        let Widget::List { id, count, first, items, .. } = &widget else { panic!("list expected") };
+        assert_eq!((*count, *first, items.len(), built.len()), (100_000, 0, LIST_WINDOW as usize, LIST_WINDOW as usize));
+        let (id, view) = (*id, crate::wire::View { id: *id, first: 99_990, count: 64 });
+        built.clear();
+        let events = vec![
+            UiEvent { id, kind: UiEventKind::List(ListEvent::Select(vec![99_995, 200_000])) },
+            UiEvent { id, kind: UiEventKind::List(ListEvent::Activate(99_995)) },
+            UiEvent { id, kind: UiEventKind::List(ListEvent::Toggle { row: 3, open: true }) },
+        ];
+        let (widget, picked) = list_frame(events, vec![view], &mut selected, &mut built);
+        assert_eq!(picked, Picked { selected: true, activated: Some(99_995), toggled: Some((3, true)) });
+        assert_eq!(selected, Some(99_995));
+        assert_eq!(built, (99_990..100_000).collect::<Vec<_>>());
+        let Widget::List { first, selected, multi, items, .. } = widget else { panic!("list expected") };
+        assert_eq!((first, selected, multi, items[0].cells[0].as_str()), (99_990, vec![99_995], false, "file 99990"));
+    }
+
+    #[test]
+    fn a_table_carries_its_columns_and_a_multi_selection() {
+        let input = UiInput::default();
+        let mut ui = Ui::new(&input);
+        let mut selected = vec![1, 2];
+        ui.table("t", &["Name", "Size"], 3, &mut selected, |row| Item::cells(&["a", &row.to_string()]).depth(1).open(false));
+        let Widget::List { columns, items, selected, multi, .. } = &ui.finish()[0] else { panic!("list expected") };
+        assert_eq!(columns.iter().map(|c| c.title.as_str()).collect::<Vec<_>>(), ["Name", "Size"]);
+        assert_eq!(
+            (selected.clone(), *multi, items[2].cells.clone(), items[2].depth, items[2].open),
+            (vec![1, 2], true, vec!["a".into(), "2".into()], 1, Some(false))
+        );
+    }
+
+    fn menu_frame(events: Vec<UiEvent>, pinned: &mut bool) -> (Vec<Widget>, Vec<&'static str>) {
+        let input = UiInput { events, ..Default::default() };
+        let mut ui = Ui::new(&input);
+        let mut picked = Vec::new();
+        ui.menu("More", |m| {
+            if m.item("Rename") {
+                picked.push("rename");
+            }
+            m.check("Pinned", pinned);
+            m.separator();
+            m.submenu("Sort", |m| {
+                if m.item("By name") {
+                    picked.push("by name");
+                }
+            });
+            if m.item_enabled("Delete", false) {
+                picked.push("delete");
+            }
+        });
+        (ui.finish(), picked)
+    }
+
+    #[test]
+    fn a_menu_numbers_its_items_depth_first_and_a_pick_reaches_only_that_item() {
+        let mut pinned = false;
+        let (widgets, _) = menu_frame(vec![], &mut pinned);
+        let Widget::Menu { id, text, items } = &widgets[0] else { panic!("menu expected") };
+        assert_eq!((text.as_deref(), items.len(), items[3].items[0].text.as_str(), items[4].disabled), (Some("More"), 5, "By name", true));
+        let pick = |index: f64| vec![UiEvent { id: *id, kind: UiEventKind::Number(index) }];
+        assert_eq!(menu_frame(pick(4.0), &mut pinned).1, vec!["by name"]);
+        assert_eq!(menu_frame(pick(0.0), &mut pinned).1, vec!["rename"]);
+        assert_eq!(menu_frame(pick(5.0), &mut pinned).1, Vec::<&str>::new());
+        let (widgets, _) = menu_frame(pick(1.0), &mut pinned);
+        let Widget::Menu { items, .. } = &widgets[0] else { panic!("menu expected") };
+        assert_eq!((pinned, items[1].checked), (true, Some(true)));
+    }
+
+    #[test]
+    fn new_value_widgets_take_their_events_and_focus_names_the_call_it_was_asked_in() {
+        let ids = frame(vec![], |ui| {
+            ui.toggle("Live", &mut false);
+            ui.radio("Mode", &mut 0, &["A", "B"]);
+            ui.text_area("notes", &mut String::new(), "Notes", 4);
+            ui.curve("Shape", &mut vec![[0.0, 0.0], [1.0, 1.0]]);
+            ui.icon_button("trash", "Delete");
+        });
+        let id = |at: usize| match &ids[at] {
+            Widget::Toggle { id, .. }
+            | Widget::Radio { id, .. }
+            | Widget::TextArea { id, .. }
+            | Widget::Curve { id, .. }
+            | Widget::IconButton { id, .. } => *id,
+            other => panic!("{other:?}"),
+        };
+        let events = vec![
+            UiEvent { id: id(0), kind: UiEventKind::Bool(true) },
+            UiEvent { id: id(1), kind: UiEventKind::Number(1.0) },
+            UiEvent { id: id(2), kind: UiEventKind::Text("a\nb".into()) },
+            UiEvent { id: id(3), kind: UiEventKind::Points(vec![[0.0, 0.0], [0.5, 0.8], [1.0, 1.0]]) },
+            UiEvent { id: id(4), kind: UiEventKind::Click },
+        ];
+        let input = UiInput { events, call: 7, ..Default::default() };
+        let mut ui = Ui::new(&input);
+        let (mut live, mut mode, mut notes, mut shape) = (false, 0, String::new(), vec![[0.0, 0.0], [1.0, 1.0]]);
+        let changed = [
+            ui.toggle("Live", &mut live),
+            ui.radio("Mode", &mut mode, &["A", "B"]),
+            ui.text_area("notes", &mut notes, "Notes", 4),
+            ui.curve("Shape", &mut shape),
+            ui.icon_button("trash", "Delete"),
+        ];
+        ui.focus();
+        assert_eq!(changed, [true; 5]);
+        assert_eq!((live, mode, notes.as_str(), shape.len()), (true, 1, "a\nb", 3));
+        assert_eq!(ui.finish().last(), Some(&Widget::Focus { call: 7 }));
+    }
+
+    #[test]
+    fn a_split_keeps_ids_of_its_two_sides_apart_and_scroll_rows_is_a_token_height() {
+        let widgets = frame(vec![], |ui| {
+            ui.split(
+                "panes",
+                Axis::Horizontal,
+                |ui| {
+                    ui.button("Go");
+                },
+                |ui| {
+                    ui.button("Go");
+                },
+            );
+            ui.scroll_rows("log", 6, |ui| ui.label("x"));
+        });
+        let Widget::Split { first, second, axis, .. } = &widgets[0] else { panic!("split expected") };
+        assert_eq!(*axis, Axis::Horizontal);
+        assert_ne!(id_of(&first[0]), id_of(&second[0]));
+        assert!(matches!(&widgets[1], Widget::Scroll { rows: Some(6), .. }));
     }
 }
