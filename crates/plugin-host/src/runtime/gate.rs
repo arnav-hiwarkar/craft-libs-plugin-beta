@@ -27,10 +27,10 @@ fn access(call: &HostCall, host: &dyn Host, plugin: &Identity, origin: Origin) -
         HostCall::PickFile { .. } if origin != Origin::Interactive => Access::Refused("a file can be picked only from a panel or a command".into()),
         HostCall::Form { .. } if origin != Origin::Interactive => Access::Refused("a form can open only from a panel or a command".into()),
         HostCall::PickFile { .. } | HostCall::Form { .. } => Access::Free,
-        HostCall::ShowPanel { .. } | HostCall::ClosePanel { .. } if origin == Origin::Render => {
+        HostCall::ShowPanel { .. } | HostCall::ClosePanel { .. } | HostCall::CommandState { .. } if origin == Origin::Render => {
             Access::Refused("a panel can open or close only from a panel, a command, a tool or a task".into())
         }
-        HostCall::ShowPanel { .. } | HostCall::ClosePanel { .. } => Access::Free,
+        HostCall::ShowPanel { .. } | HostCall::ClosePanel { .. } | HostCall::CommandState { .. } => Access::Free,
         HostCall::ReadFile { root: Root::User, path, .. } | HostCall::ListFiles { root: Root::User, path } if plugin.picked(path, false) => {
             Access::Free
         }

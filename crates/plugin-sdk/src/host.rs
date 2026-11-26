@@ -121,6 +121,10 @@ pub fn close_panel(panel: &str, instance: Option<&str>) -> Result<()> {
     call::<serde_json::Value>(&HostCall::ClosePanel { panel: panel.into(), instance: instance.map(str::to_string) }, &[]).map(drop)
 }
 
+pub fn command_state(command: &str, enabled: bool, checked: Option<bool>) -> Result<()> {
+    call::<serde_json::Value>(&HostCall::CommandState { command: command.into(), enabled, checked }, &[]).map(drop)
+}
+
 pub const MAX_IMAGE_SIDE: u32 = 8192;
 
 pub fn upload_image(key: &str, width: u32, height: u32, rgba8: &[u8]) -> Result<()> {

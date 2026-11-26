@@ -83,7 +83,12 @@ pub struct Contributions {
     pub separate_input: bool,
     #[serde(default)]
     pub bounded: bool,
+    #[serde(default)]
+    pub ui_level: u32,
 }
+
+pub const UI_LEVEL: u32 = 2;
+pub const PANEL_MENU: u64 = u64::MAX;
 
 impl Contributions {
     pub fn check(&self) -> Result<(), String> {
@@ -1165,6 +1170,10 @@ pub struct PanelSpec {
     pub size: PanelSize,
     #[serde(default)]
     pub multiple: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keys: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub help: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1399,6 +1408,7 @@ pub enum HostCall {
     Aux { channels: Vec<Channel>, rows: Option<[u32; 2]>, size: Option<[u32; 2]> },
     Form { form: Form },
     ShowPanel { panel: String, instance: Option<String> },
+    CommandState { command: String, enabled: bool, checked: Option<bool> },
     ClosePanel { panel: String, instance: Option<String> },
 }
 
@@ -1631,6 +1641,8 @@ pub struct UiInput {
     pub instance: Option<String>,
     #[serde(default)]
     pub call: u64,
+    #[serde(default)]
+    pub pressed: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1690,6 +1702,8 @@ pub struct PanelReply {
     pub topics: Vec<Topic>,
     #[serde(default)]
     pub timers: Vec<Timer>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub menu: Vec<MenuItem>,
     #[serde(skip)]
     pub legacy: bool,
 }
@@ -1704,6 +1718,8 @@ enum PanelWire {
         topics: Vec<Topic>,
         #[serde(default)]
         timers: Vec<Timer>,
+        #[serde(default)]
+        menu: Vec<MenuItem>,
     },
 }
 
@@ -1711,7 +1727,7 @@ impl From<PanelWire> for PanelReply {
     fn from(wire: PanelWire) -> Self {
         match wire {
             PanelWire::Legacy(widgets) => PanelReply { widgets, legacy: true, ..Default::default() },
-            PanelWire::Reply { widgets, topics, timers } => PanelReply { widgets, topics, timers, legacy: false },
+            PanelWire::Reply { widgets, topics, timers, menu } => PanelReply { widgets, topics, timers, menu, legacy: false },
         }
     }
 }
@@ -1736,9 +1752,18 @@ pub enum UiEventKind {
     List(ListEvent),
     Points(Vec<[f64; 2]>),
     Gradient(Gradient),
+    Context(Pointer),
+    Open(Pointer),
 }
 
 impl UiEventKind {
+    pub fn ui_level(&self) -> u32 {
+        match self {
+            UiEventKind::Context(_) | UiEventKind::Open(_) => 2,
+            _ => 1,
+        }
+    }
+
     pub fn known_to_every_sdk(&self) -> bool {
         matches!(
             self,
@@ -1759,6 +1784,9 @@ pub enum ListEvent {
     Activate(u32),
     Toggle { row: u32, open: bool },
     Show { first: u32, count: u32 },
+    Rename { row: u32, text: String },
+    Move { rows: Vec<u32>, to: u32 },
+    Sort { column: u32, descending: bool },
 }
 
 pub const MAX_LIST_ITEMS: u32 = 1024;
@@ -1944,6 +1972,8 @@ pub enum Widget {
         selected: Vec<u32>,
         multi: bool,
         rows: u32,
+        #[serde(default, skip_serializing_if = "ListEdit::is_off")]
+        edit: ListEdit,
     },
     IconButton {
         id: u64,
@@ -2001,6 +2031,29 @@ pub enum Widget {
     Focus {
         call: u64,
     },
+    Frame {
+        id: u64,
+        request: FrameRequest,
+        size: [f32; 2],
+    },
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ListEdit {
+    #[serde(default)]
+    pub rename: bool,
+    #[serde(default)]
+    pub reorder: bool,
+    #[serde(default)]
+    pub sortable: bool,
+    #[serde(default)]
+    pub sorted: Option<(u32, bool)>,
+}
+
+impl ListEdit {
+    pub fn is_off(&self) -> bool {
+        *self == ListEdit::default()
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]

@@ -1,6 +1,8 @@
 use std::time::Duration;
 
-use craft_plugin::{AppEvent, ListEvent, MIN_TIMER_MS, PanelReply, Pointer, PointerPhase, Topic, UiEvent, UiEventKind, UiInput, View, Widget};
+use craft_plugin::{
+    AppEvent, ListEvent, MIN_TIMER_MS, MenuItem, PanelReply, Pointer, PointerPhase, Topic, UiEvent, UiEventKind, UiInput, View, Widget,
+};
 
 const LEGACY_TIMER: &str = "";
 pub const MAX_BACKLOG: usize = 64;
@@ -24,6 +26,9 @@ pub struct Retained {
     topics: Vec<Topic>,
     timers: Vec<Armed>,
     views: Vec<View>,
+    pressed: Vec<String>,
+    menu: Vec<MenuItem>,
+    level: u32,
     size: [f32; 2],
     drawn: bool,
     stale: bool,
@@ -76,7 +81,19 @@ fn one_call(events: &mut Vec<UiEvent>) -> Vec<UiEvent> {
 
 impl Retained {
     pub fn new() -> Self {
-        Retained::default()
+        Retained::with_level(1)
+    }
+
+    pub fn with_level(level: u32) -> Self {
+        Retained { level, ..Retained::default() }
+    }
+
+    pub fn menu(&self) -> &[MenuItem] {
+        &self.menu
+    }
+
+    pub fn press(&mut self, chord: &str) {
+        self.pressed.push(chord.to_string());
     }
 
     pub fn widgets(&self) -> &[Widget] {
@@ -104,8 +121,8 @@ impl Retained {
     }
 
     pub fn push(&mut self, events: Vec<UiEvent>, keys: &str) {
-        let in_flight = self.in_flight;
-        for event in events {
+        let (in_flight, level) = (self.in_flight, self.level);
+        for event in events.into_iter().filter(|event| event.kind.ui_level() <= level) {
             if let UiEventKind::List(ListEvent::Show { first, count }) = event.kind {
                 self.show(View { id: event.id, first, count });
                 continue;
@@ -178,7 +195,13 @@ impl Retained {
             self.timers.iter_mut().for_each(|timer| timer.due = now + timer.interval);
         }
         let fired: Vec<String> = self.timers.iter().filter(|timer| timer.due <= now).map(|timer| timer.name.clone()).collect();
-        let triggered = !self.drawn || self.stale || size != self.size || !self.events.is_empty() || !self.keys.is_empty() || !self.app.is_empty();
+        let triggered = !self.drawn
+            || self.stale
+            || size != self.size
+            || !self.events.is_empty()
+            || !self.keys.is_empty()
+            || !self.app.is_empty()
+            || !self.pressed.is_empty();
         if !triggered && fired.is_empty() {
             return None;
         }
@@ -198,7 +221,8 @@ impl Retained {
         let timers = fired.into_iter().filter(|name| name != LEGACY_TIMER).collect();
         self.calls += 1;
         let (keys, app, views) = (std::mem::take(&mut self.keys), std::mem::take(&mut self.app), self.views.clone());
-        let input = UiInput { events, size, keys, app, timers, views, instance: None, call: self.calls };
+        let pressed = std::mem::take(&mut self.pressed);
+        let input = UiInput { events, size, keys, app, timers, views, instance: None, call: self.calls, pressed };
         (self.size, self.stale, self.in_flight) = (size, false, true);
         Some(input)
     }
@@ -222,6 +246,7 @@ impl Retained {
         };
         self.error = None;
         self.widgets = reply.widgets;
+        self.menu = reply.menu;
         self.topics = reply.topics;
         self.legacy = reply.legacy;
         let mut wanted = reply.timers;
@@ -256,7 +281,7 @@ mod tests {
     }
 
     fn reply(timers: Vec<Timer>, topics: Vec<Topic>) -> Result<PanelReply, String> {
-        Ok(PanelReply { widgets: vec![label("drawn")], topics, timers, legacy: false })
+        Ok(PanelReply { widgets: vec![label("drawn")], topics, timers, ..Default::default() })
     }
 
     fn drawn(timers: Vec<Timer>, topics: Vec<Topic>) -> Retained {
@@ -465,5 +490,22 @@ mod tests {
         panel.push(vec![click(1)], "");
         let later = panel.start(SIZE, ms(3)).map(|input| (input.views, input.call));
         assert_eq!(later, Some((vec![View { id: 5, first: 300, count: 40 }], 3)));
+    }
+
+    #[test]
+    fn events_newer_than_the_plugins_ui_level_never_reach_it_and_pressed_keys_call_once() {
+        let at = Pointer::new([1.0, 1.0], PointerPhase::Down);
+        let newer = || vec![UiEvent { id: 3, kind: UiEventKind::Context(at) }, click(4)];
+        let mut old = drawn(vec![], vec![]);
+        old.push(newer(), "");
+        assert_eq!(old.start(SIZE, ms(1)).map(|input| input.events), Some(vec![click(4)]));
+        let mut new = Retained::with_level(craft_plugin::UI_LEVEL);
+        new.start(SIZE, ms(0));
+        new.finish(reply(vec![], vec![]), ms(0));
+        new.push(newer(), "");
+        assert_eq!(new.start(SIZE, ms(1)).map(|input| input.events), Some(newer()));
+        new.finish(reply(vec![], vec![]), ms(1));
+        new.press("Delete");
+        assert_eq!(new.start(SIZE, ms(2)).map(|input| input.pressed), Some(vec!["Delete".to_string()]));
     }
 }

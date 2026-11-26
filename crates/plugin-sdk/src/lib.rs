@@ -19,7 +19,7 @@ pub use kernels::*;
 pub use manifest::{ContributedPreset, Contributes, Entry, MANIFEST_FILE, Manifest, ManifestError, Permission, RunMode, native_target};
 pub use plugin::{Error, Plugin, Result, Task};
 pub use typed::{FromParam, LayerParam};
-pub use ui::{Canvas, Menu, Panel, Picked, Selection, Ui};
+pub use ui::{Canvas, ListOptions, Menu, Panel, Picked, Selection, Ui};
 pub use viewer::{Bind, Cursor, Handle, Mark, Overlay, Pen, Space, Tool, ToolEvent, ToolEventKind, ToolSpec};
 pub use wire::*;
 

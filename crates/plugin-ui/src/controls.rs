@@ -317,7 +317,7 @@ impl<H: Host> Renderer<'_, H> {
         }
     }
 
-    fn cannot_edit(&mut self, ui: &mut egui::Ui, id: u64, english: &str, text: &str) {
+    pub(crate) fn cannot_edit(&mut self, ui: &mut egui::Ui, id: u64, english: &str, text: &str) {
         let response = ui.label(self.text(&self.host.tr(english), TextStyle::Weak));
         self.register(id, &response, text);
     }

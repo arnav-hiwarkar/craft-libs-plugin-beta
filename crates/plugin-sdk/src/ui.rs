@@ -3,8 +3,8 @@ use std::ops::RangeInclusive;
 
 use crate::gradient::Gradient;
 use crate::wire::{
-    AppEvent, Axis, Column, Drag, Dropped, Gap, Item, Key, LIST_WINDOW, ListEvent, MAX_LIST_ITEMS, MIN_TIMER_MS, MenuItem, Paint, PanelReply,
-    Pointer, Shape, Span, TextStyle, Timer, Topic, UiEventKind, UiInput, Widget,
+    AppEvent, Axis, Column, Drag, Dropped, FrameRequest, Gap, Item, Key, LIST_WINDOW, ListEdit, ListEvent, MAX_LIST_ITEMS, MIN_TIMER_MS, MenuItem,
+    PANEL_MENU, Paint, PanelReply, Pointer, Shape, Span, TextStyle, Timer, Topic, UiEventKind, UiInput, Widget,
 };
 
 pub trait Panel: Send + 'static {
@@ -18,6 +18,7 @@ pub struct Ui<'a> {
     scope: u64,
     topics: Vec<Topic>,
     timers: Vec<Timer>,
+    menu: Vec<MenuItem>,
 }
 
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
@@ -29,7 +30,7 @@ fn hash(seed: u64, bytes: &[u8]) -> u64 {
 
 impl<'a> Ui<'a> {
     pub fn new(input: &'a UiInput) -> Self {
-        Ui { input, widgets: Vec::new(), seen: HashMap::new(), scope: FNV_OFFSET, topics: Vec::new(), timers: Vec::new() }
+        Ui { input, widgets: Vec::new(), seen: HashMap::new(), scope: FNV_OFFSET, topics: Vec::new(), timers: Vec::new(), menu: Vec::new() }
     }
 
     pub fn finish(self) -> Vec<Widget> {
@@ -37,7 +38,7 @@ impl<'a> Ui<'a> {
     }
 
     pub fn reply(self) -> PanelReply {
-        PanelReply { widgets: self.widgets, topics: self.topics, timers: self.timers, legacy: false }
+        PanelReply { widgets: self.widgets, topics: self.topics, timers: self.timers, menu: self.menu, legacy: false }
     }
 
     pub fn available(&self) -> [f32; 2] {
@@ -46,6 +47,20 @@ impl<'a> Ui<'a> {
 
     pub fn keys(&self) -> &'a str {
         &self.input.keys
+    }
+
+    pub fn key(&self, chord: &str) -> bool {
+        self.input.pressed.iter().any(|pressed| pressed.eq_ignore_ascii_case(chord))
+    }
+
+    pub fn panel_menu(&mut self, build: impl FnOnce(&mut Menu)) {
+        self.menu = self.menu_items(PANEL_MENU, build);
+    }
+
+    pub fn frame(&mut self, key: &str, request: FrameRequest, size: [f32; 2]) -> bool {
+        let id = self.id(key);
+        self.widgets.push(Widget::Frame { id, request, size });
+        matches!(self.event(id), Some(UiEventKind::Click))
     }
 
     pub fn on(&mut self, topic: Topic) -> Option<&'a AppEvent> {
@@ -257,11 +272,13 @@ impl<'a> Ui<'a> {
 
     pub fn canvas(&mut self, key: &str, size: [f32; 2], draw: impl FnOnce(&mut Canvas)) {
         let id = self.id(key);
-        let mut canvas = Canvas { size, pointer: None, pointers: Vec::new(), keys: Vec::new(), shapes: Vec::new() };
+        let mut canvas = Canvas { size, pointer: None, pointers: Vec::new(), keys: Vec::new(), context: None, opened: None, shapes: Vec::new() };
         for kind in self.events_of(id) {
             match kind {
                 UiEventKind::Pointer(pointer) => canvas.pointers.push(*pointer),
                 UiEventKind::Key(key) => canvas.keys.push(key.clone()),
+                UiEventKind::Context(pointer) => canvas.context = Some(*pointer),
+                UiEventKind::Open(pointer) => canvas.opened = Some(*pointer),
                 _ => {}
             }
         }
@@ -345,18 +362,33 @@ impl<'a> Ui<'a> {
     }
 
     pub fn list<S: Selection>(&mut self, key: &str, count: usize, selected: &mut S, item: impl FnMut(usize) -> Item) -> Picked {
-        self.rows_of(key, Vec::new(), count, selected, item)
+        self.rows_of(key, Vec::new(), ListEdit::default(), count, selected, item)
+    }
+
+    pub fn list_with<S: Selection>(
+        &mut self,
+        key: &str,
+        options: &ListOptions,
+        count: usize,
+        selected: &mut S,
+        item: impl FnMut(usize) -> Item,
+    ) -> Picked {
+        let columns = options.columns.iter().map(|title| Column { title: title.to_string(), ..Default::default() }).collect();
+        let sorted = options.sorted.map(|(column, descending)| (column as u32, descending));
+        let edit = ListEdit { rename: options.rename, reorder: options.reorder, sortable: options.sortable, sorted };
+        self.rows_of(key, columns, edit, count, selected, item)
     }
 
     pub fn table<S: Selection>(&mut self, key: &str, columns: &[&str], count: usize, selected: &mut S, item: impl FnMut(usize) -> Item) -> Picked {
         let columns = columns.iter().map(|title| Column { title: title.to_string(), ..Default::default() }).collect();
-        self.rows_of(key, columns, count, selected, item)
+        self.rows_of(key, columns, ListEdit::default(), count, selected, item)
     }
 
     fn rows_of<S: Selection>(
         &mut self,
         key: &str,
         columns: Vec<Column>,
+        edit: ListEdit,
         count: usize,
         selected: &mut S,
         mut item: impl FnMut(usize) -> Item,
@@ -372,6 +404,13 @@ impl<'a> Ui<'a> {
                 }
                 UiEventKind::List(ListEvent::Activate(row)) if *row < count => picked.activated = Some(*row as usize),
                 UiEventKind::List(ListEvent::Toggle { row, open }) if *row < count => picked.toggled = Some((*row as usize, *open)),
+                UiEventKind::List(ListEvent::Rename { row, text }) if edit.rename && *row < count => {
+                    picked.renamed = Some((*row as usize, text.clone()))
+                }
+                UiEventKind::List(ListEvent::Move { rows, to }) if edit.reorder && *to <= count && rows.iter().all(|row| *row < count) => {
+                    picked.moved = Some((rows.iter().map(|row| *row as usize).collect(), *to as usize));
+                }
+                UiEventKind::List(ListEvent::Sort { column, descending }) if edit.sortable => picked.sorted = Some((*column as usize, *descending)),
                 _ => {}
             }
         }
@@ -380,7 +419,7 @@ impl<'a> Ui<'a> {
         let shown = view.map_or(LIST_WINDOW, |view| view.count).min(MAX_LIST_ITEMS).min(count - first);
         let items = (first..first + shown).map(|row| item(row as usize)).collect();
         let selected = selected.rows().into_iter().filter(|row| *row < count).collect();
-        self.widgets.push(Widget::List { id, columns, count, first, items, selected, multi: S::MULTI, rows: 0 });
+        self.widgets.push(Widget::List { id, columns, count, first, items, selected, multi: S::MULTI, rows: 0, edit });
         picked
     }
 
@@ -532,11 +571,23 @@ impl Selection for Vec<usize> {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Picked {
     pub selected: bool,
     pub activated: Option<usize>,
     pub toggled: Option<(usize, bool)>,
+    pub renamed: Option<(usize, String)>,
+    pub moved: Option<(Vec<usize>, usize)>,
+    pub sorted: Option<(usize, bool)>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ListOptions<'c> {
+    pub columns: &'c [&'c str],
+    pub rename: bool,
+    pub reorder: bool,
+    pub sortable: bool,
+    pub sorted: Option<(usize, bool)>,
 }
 
 pub struct Menu {
@@ -592,6 +643,8 @@ pub struct Canvas {
     pub pointer: Option<Pointer>,
     pub pointers: Vec<Pointer>,
     pub keys: Vec<Key>,
+    pub context: Option<Pointer>,
+    pub opened: Option<Pointer>,
     shapes: Vec<Shape>,
 }
 
@@ -940,7 +993,7 @@ mod tests {
             UiEvent { id, kind: UiEventKind::List(ListEvent::Toggle { row: 3, open: true }) },
         ];
         let (widget, picked) = list_frame(events, vec![view], &mut selected, &mut built);
-        assert_eq!(picked, Picked { selected: true, activated: Some(99_995), toggled: Some((3, true)) });
+        assert_eq!(picked, Picked { selected: true, activated: Some(99_995), toggled: Some((3, true)), ..Default::default() });
         assert_eq!(selected, Some(99_995));
         assert_eq!(built, (99_990..100_000).collect::<Vec<_>>());
         let Widget::List { first, selected, multi, items, .. } = widget else { panic!("list expected") };
@@ -1076,5 +1129,59 @@ mod tests {
         assert_eq!(*axis, Axis::Horizontal);
         assert_ne!(id_of(&first[0]), id_of(&second[0]));
         assert!(matches!(&widgets[1], Widget::Scroll { rows: Some(6), .. }));
+    }
+
+    #[test]
+    fn an_editable_list_reports_rename_move_and_sort_only_when_it_allows_them() {
+        let id = id_of_list(&frame(vec![], |ui| {
+            ui.list("names", 3, &mut None, |_| Item::new("a"));
+        }));
+        let events = vec![
+            UiEvent { id, kind: UiEventKind::List(ListEvent::Rename { row: 1, text: "New".into() }) },
+            UiEvent { id, kind: UiEventKind::List(ListEvent::Move { rows: vec![2], to: 0 }) },
+            UiEvent { id, kind: UiEventKind::List(ListEvent::Sort { column: 1, descending: true }) },
+        ];
+        let mut picked = (Picked::default(), Picked::default());
+        frame(events.clone(), |ui| picked.0 = ui.list("names", 3, &mut None, |_| Item::new("a")));
+        let options = ListOptions { columns: &["Name", "Size"], rename: true, reorder: true, sortable: true, sorted: Some((0, false)) };
+        let widgets = frame(events, |ui| picked.1 = ui.list_with("names", &options, 3, &mut None, |_| Item::cells(&["a", "1"])));
+        assert_eq!((picked.0.renamed, picked.0.moved, picked.0.sorted), (None, None, None));
+        assert_eq!((picked.1.renamed, picked.1.moved, picked.1.sorted), (Some((1, "New".into())), Some((vec![2], 0)), Some((1, true))));
+        let Widget::List { edit, columns, .. } = &widgets[0] else { panic!("list expected") };
+        assert_eq!((edit.sorted, columns.len()), (Some((0, false)), 2));
+    }
+
+    fn id_of_list(widgets: &[Widget]) -> u64 {
+        match widgets {
+            [Widget::List { id, .. }, ..] => *id,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_panel_reads_its_own_keys_and_its_panel_menu_pick_and_a_canvas_its_context_and_open_clicks() {
+        let menu_id = PANEL_MENU;
+        let canvas = match &frame(vec![], |ui| ui.canvas("graph", [10.0, 10.0], |_| {}))[0] {
+            Widget::Canvas { id, .. } => *id,
+            other => panic!("{other:?}"),
+        };
+        let at = Pointer::new([3.0, 4.0], PointerPhase::Down);
+        let events = vec![
+            UiEvent { id: menu_id, kind: UiEventKind::Number(1.0) },
+            UiEvent { id: canvas, kind: UiEventKind::Context(at) },
+            UiEvent { id: canvas, kind: UiEventKind::Open(at) },
+        ];
+        let input = UiInput { events, pressed: vec!["Delete".into()], ..Default::default() };
+        let mut ui = Ui::new(&input);
+        let (mut reset, mut seen) = (false, (None, None));
+        ui.panel_menu(|m| {
+            m.item("Zoom to Fit");
+            reset = m.item("Reset View");
+        });
+        ui.canvas("graph", [10.0, 10.0], |c| seen = (c.context, c.opened));
+        let keys = (ui.key("delete"), ui.key("Cmd+D"));
+        let reply = ui.reply();
+        assert_eq!((reset, seen, keys), (true, (Some(at), Some(at)), (true, false)));
+        assert_eq!(reply.menu.iter().map(|item| item.text.as_str()).collect::<Vec<_>>(), ["Zoom to Fit", "Reset View"]);
     }
 }
