@@ -1484,6 +1484,8 @@ fn make() -> Plugin {
         .place(PanelPlace::Bottom)
         .panel("controls", "Controls", Controls::default())
         .icon("sliders")
+        .panel("preview", "Preview", Preview::default())
+        .icon("image")
         .effect(Peek)
         .tool("census", "Census", Census)
         .panel("shared", "Shared", Shared)
@@ -1794,5 +1796,22 @@ impl Panel for Notes {
     fn ui(&mut self, ui: &mut Ui) {
         ui.text_edit("note", &mut self.text, "Note");
         ui.label(&format!("note {}: {}", ui.instance().unwrap_or("-"), self.text));
+    }
+}
+
+#[derive(Default)]
+struct Preview {
+    comp: String,
+    clicks: u32,
+}
+
+impl Panel for Preview {
+    fn ui(&mut self, ui: &mut Ui) {
+        ui.text_edit("comp", &mut self.comp, "Composition");
+        let comp = Some(self.comp.clone()).filter(|comp| !comp.is_empty());
+        if ui.frame("view", craft_plugin::FrameRequest { comp, time: 0.0, scale: 0.25, ..Default::default() }, [160.0, 90.0]) {
+            self.clicks += 1;
+        }
+        ui.label(&format!("{} clicks", self.clicks));
     }
 }

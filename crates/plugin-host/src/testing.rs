@@ -973,6 +973,18 @@ impl PanelTest<'_> {
         self.send(label, UiEventKind::Click)
     }
 
+    pub fn click_frame(&mut self, frame: usize) -> Result<(), String> {
+        let mut frames = Vec::new();
+        walk(&self.reply.widgets, &mut |widget| {
+            if let Widget::Frame { id, .. } = widget {
+                frames.push(*id);
+            }
+        });
+        let shown = frames.len();
+        let id = *frames.get(frame).ok_or_else(|| format!("panel `{}` shows {shown} frames, so it has no frame {frame}", self.id))?;
+        self.call(UiInput { events: vec![UiEvent { id, kind: UiEventKind::Click }], ..Default::default() })
+    }
+
     pub fn app_event(&mut self, event: AppEvent) -> Result<(), String> {
         self.call(UiInput { app: vec![event], ..Default::default() })
     }

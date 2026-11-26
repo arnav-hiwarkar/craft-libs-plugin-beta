@@ -379,3 +379,29 @@ fn the_controls_panel_takes_toggle_radio_text_area_menu_curve_and_gradient_event
     assert!(texts.contains(&"3 points".to_string()) && texts.contains(&"3 stops".to_string()), "{texts:?}");
     assert!(texts.contains(&"Probe controls".to_string()), "{texts:?}");
 }
+
+#[test]
+fn the_preview_panel_asks_the_app_for_a_frame_widget_and_never_reads_pixels_itself() {
+    let (_bundle, plugin) = probe();
+    let read = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let counted = read.clone();
+    plugin.frames(move |_| {
+        counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Err("the preview must not read frames".into())
+    });
+    let mut panel = plugin.panel("preview").unwrap();
+    let frame = |panel: &craft_plugin_host::testing::PanelTest| {
+        panel.widgets().iter().find_map(|widget| match widget {
+            craft_plugin::Widget::Frame { request, size, .. } => Some((request.comp.clone(), request.time, request.scale, *size)),
+            _ => None,
+        })
+    };
+    assert_eq!(frame(&panel), Some((None, 0.0, 0.25, [160.0, 90.0])));
+    panel.send("Composition", UiEventKind::Text("Shot 2".into())).unwrap();
+    assert_eq!(frame(&panel), Some((Some("Shot 2".into()), 0.0, 0.25, [160.0, 90.0])));
+    panel.click_frame(0).unwrap();
+    panel.click_frame(0).unwrap();
+    assert!(panel.texts().contains(&"2 clicks".to_string()), "{:?}", panel.texts());
+    assert_eq!(panel.click_frame(1).unwrap_err(), "panel `preview` shows 1 frames, so it has no frame 1");
+    assert_eq!(read.load(std::sync::atomic::Ordering::Relaxed), 0);
+}
