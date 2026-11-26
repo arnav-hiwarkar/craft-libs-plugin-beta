@@ -224,7 +224,7 @@ impl<H: Host> Renderer<'_, H> {
             Widget::Grid { id, columns, children } => self.grid(ui, *id, (*columns).max(1) as usize, children),
             Widget::DropTarget { id, children } => self.drop_target(ui, *id, children),
             Widget::DragSource { id, drag, children } => self.drag_source(ui, *id, drag, children),
-            Widget::List { id, columns, count, first, items, selected, multi, rows } => {
+            Widget::List { id, columns, count, first, items, selected, multi, rows, .. } => {
                 self.list(ui, *id, crate::list::Rows { columns, count: *count, first: *first, items, selected, multi: *multi, rows: *rows })
             }
             Widget::IconButton { id, icon, text, enabled } => self.icon_button(ui, *id, icon, text, *enabled),
@@ -239,6 +239,15 @@ impl<H: Host> Renderer<'_, H> {
             Widget::Gap { gap } => ui.add_space(crate::controls::gap(ui.spacing(), *gap)),
             Widget::Name { text } => self.name(ui, text),
             Widget::Focus { call } => self.focus(ui, *call),
+            Widget::Frame { id, request, size } => match self.host.frame(ui, request, vec2(extent(size[0]), extent(size[1]))) {
+                Some(response) => {
+                    self.register(*id, &response, "Frame");
+                    if response.clicked() {
+                        self.emit(*id, UiEventKind::Click);
+                    }
+                }
+                None => self.cannot_edit(ui, *id, "This app cannot show frames here", "Frame"),
+            },
         }
     }
 

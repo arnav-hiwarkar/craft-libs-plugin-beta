@@ -323,7 +323,7 @@ fn every_conformance_case_passes_on_the_egui_painter() {
 #[test]
 fn tab_enters_a_list_on_its_selected_row_with_real_focus_and_the_next_tab_leaves_the_list() {
     let items = (0..4).map(|row| craft_plugin::Item::new(&format!("file {row}"))).collect();
-    let list = Widget::List { id: 4, columns: vec![], count: 4, first: 0, items, selected: vec![2], multi: false, rows: 4 };
+    let list = Widget::List { id: 4, columns: vec![], count: 4, first: 0, items, selected: vec![2], multi: false, rows: 4, edit: Default::default() };
     let after = Widget::Button { id: 5, text: "After".into(), enabled: true };
     let mut harness = harness(vec![list, after]);
     harness.run();
@@ -342,7 +342,8 @@ fn tab_enters_a_list_on_its_selected_row_with_real_focus_and_the_next_tab_leaves
 fn a_table_is_a_grid_of_rows_under_column_headings_and_tree_rows_say_whether_they_are_open() {
     let columns = ["Name", "Size"].map(|title| craft_plugin::Column { title: title.into(), ..Default::default() }).to_vec();
     let items = vec![craft_plugin::Item::cells(&["Shots", "3"]).open(true), craft_plugin::Item::cells(&["shot 1", "1"]).depth(1)];
-    let mut harness = harness(vec![Widget::List { id: 4, columns, count: 2, first: 0, items, selected: vec![0], multi: false, rows: 4 }]);
+    let mut harness =
+        harness(vec![Widget::List { id: 4, columns, count: 2, first: 0, items, selected: vec![0], multi: false, rows: 4, edit: Default::default() }]);
     harness.run();
     assert_eq!(harness.get_by_label("Table").accesskit_node().role(), egui::accesskit::Role::Grid);
     assert_eq!(harness.query_all_by_role(egui::Role::ColumnHeader).count(), 2);

@@ -79,6 +79,10 @@ pub trait Host {
         None
     }
 
+    fn frame(&mut self, _ui: &mut egui::Ui, _request: &craft_plugin::FrameRequest, _size: egui::Vec2) -> Option<egui::Response> {
+        None
+    }
+
     #[expect(clippy::disallowed_types)]
     fn combo_box(&self, ui: &mut egui::Ui, id: egui::IdSalt, label: &str, selected: String, menu: &mut dyn FnMut(&mut egui::Ui)) -> egui::Response {
         egui::ComboBox::new(id, label).selected_text(selected).show_ui(ui, menu).response

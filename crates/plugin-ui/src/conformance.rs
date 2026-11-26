@@ -137,11 +137,21 @@ fn event(id: u64, kind: UiEventKind) -> UiEvent {
 
 fn list(count: u32, first: u32, shown: u32, selected: Vec<u32>) -> Widget {
     let items = (first..first + shown).map(|row| Item::new(&format!("file {row}"))).collect();
-    Widget::List { id: 4, columns: vec![], count, first, items, selected, multi: false, rows: 6 }
+    Widget::List { id: 4, columns: vec![], count, first, items, selected, multi: false, rows: 6, edit: Default::default() }
 }
 
 fn tree(items: Vec<Item>) -> Widget {
-    Widget::List { id: 4, columns: vec![], count: items.len() as u32, first: 0, items, selected: vec![], multi: false, rows: 6 }
+    Widget::List {
+        id: 4,
+        columns: vec![],
+        count: items.len() as u32,
+        first: 0,
+        items,
+        selected: vec![],
+        multi: false,
+        rows: 6,
+        edit: Default::default(),
+    }
 }
 
 fn multi(mut widget: Widget) -> Widget {

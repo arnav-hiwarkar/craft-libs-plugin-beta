@@ -115,6 +115,10 @@ pub trait Host {
         Err("a form cannot open here".into())
     }
 
+    fn command_state(&mut self, _command: &str, _enabled: bool, _checked: Option<bool>) -> Result<(), String> {
+        Err("this app does not show plugin command state".into())
+    }
+
     fn panel(&mut self, _panel: &str, _instance: Option<&str>, _open: bool) -> Result<(), String> {
         Err("this app cannot open or close plugin panels".into())
     }
