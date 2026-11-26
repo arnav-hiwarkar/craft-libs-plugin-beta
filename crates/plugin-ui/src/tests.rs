@@ -133,18 +133,6 @@ fn a_canvas_with_extreme_or_broken_coordinates_still_draws_in_bounded_time() {
 }
 
 #[test]
-fn clicking_an_image_with_no_upload_yet_still_sends_a_click_with_its_id() {
-    let image = Widget::Image { id: 9, key: "thumb/0".into(), size: [40.0, 30.0] };
-    let tip = Widget::Tooltip { text: "Linear".into() };
-    let cell = Widget::Column { children: vec![image, tip] };
-    let grid = Widget::Grid { id: 8, columns: 3, children: vec![cell] };
-    let mut harness = harness(vec![Widget::Scroll { id: 7, height: 100.0, rows: None, children: vec![grid] }]);
-    harness.get_by_label("thumb/0").click();
-    harness.run();
-    assert_eq!(harness.state(), &vec![UiEvent { id: 9, kind: UiEventKind::Click }]);
-}
-
-#[test]
 fn clicking_a_tab_inside_a_scroll_area_and_a_grid_sends_its_index() {
     let tabs = Widget::Tabs { id: 5, options: vec!["Red".into(), "Green".into()], selected: 0 };
     let grid = Widget::Grid { id: 6, columns: 2, children: vec![tabs, Widget::Progress { fraction: 0.5, text: "Half".into() }] };

@@ -283,6 +283,24 @@ pub fn cases() -> Vec<Case> {
             expect: Expect::Events(vec![event(11, UiEventKind::Click)]),
         },
         Case {
+            name: "clicking an image with no upload yet, in a grid cell under a scroll area, sends one Click with its id",
+            size: [200.0, 120.0],
+            tree: vec![Widget::Scroll {
+                id: 7,
+                height: 100.0,
+                rows: None,
+                children: vec![Widget::Grid {
+                    id: 8,
+                    columns: 3,
+                    children: vec![Widget::Column {
+                        children: vec![Widget::Image { id: 9, key: "thumb/0".into(), size: [40.0, 30.0] }, Widget::Tooltip { text: "Linear".into() }],
+                    }],
+                }],
+            }],
+            steps: vec![Step::Click("thumb/0")],
+            expect: Expect::Events(vec![event(9, UiEventKind::Click)]),
+        },
+        Case {
             name: "clicking an off toggle sends Bool(true)",
             size: [200.0, 80.0],
             tree: vec![Widget::Toggle { id: 12, text: "Live".into(), value: false }],
