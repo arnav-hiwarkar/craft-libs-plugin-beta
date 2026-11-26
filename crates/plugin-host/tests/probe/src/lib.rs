@@ -1497,7 +1497,7 @@ fn make() -> Plugin {
         .icon("image")
         .panel("pad", "Pad", Pad::default())
         .panel("app", "App", AppPanel::default())
-        .keys(&["Delete", "Cmd+D"])
+        .keys(&["Delete", "Cmd+D", "Cmd+Z"])
         .help("https://example.org/probe-app")
         .command("app-act", "Probe Action", || {
             host::notify("Probe Action ran");
@@ -1521,6 +1521,10 @@ fn make() -> Plugin {
         .context(Context::Layers)
         .toolbar()
         .icon("wand")
+        .command("mark", "Mark Here", || host::command("layer.newNull", json!({"name": "From Context"})).map(drop))
+        .menu("Layer/Probe Tools")
+        .context(Context::Timeline)
+        .context(Context::Viewer)
         .command("read", "Read Document", || host::command("comp.info", json!({})).map(|_| ()))
         .shortcut("Cmd+Shift+J")
         .command("ask", "Ask For Settings", || {
@@ -1910,7 +1914,7 @@ struct AppPanel {
 
 impl Panel for AppPanel {
     fn ui(&mut self, ui: &mut Ui) {
-        if let Some(chord) = ["Delete", "Cmd+D"].into_iter().find(|chord| ui.key(chord)) {
+        if let Some(chord) = ["Delete", "Cmd+D", "Cmd+Z"].into_iter().find(|chord| ui.key(chord)) {
             self.said = format!("pressed {chord}");
         }
         let (mut fit, mut reset) = (false, false);
