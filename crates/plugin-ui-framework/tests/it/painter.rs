@@ -235,3 +235,14 @@ fn the_split_divider_moves_by_drag_and_by_arrow_keys_and_keeps_the_share() {
     assert!(right(&fixture) < dragged - 1.0, "Left moves the divider back: {dragged} then {}", right(&fixture));
     assert_eq!(*events.borrow(), vec![], "moving the divider sends the plugin nothing");
 }
+
+#[test]
+fn an_image_takes_the_size_the_plugin_gave_and_a_click_on_it_sends_its_id() {
+    let image = Widget::Image { id: 9, key: "thumb/0".into(), size: [40.0, 30.0] };
+    let (mut fixture, events) = shown(vec![image]);
+    let target = fixture.by_label("thumb/0").expect("the image is named by its key");
+    assert_eq!(target.rect.size(), Vec2::new(40.0, 30.0));
+    fixture.click(&target);
+    fixture.settle();
+    assert_eq!(*events.borrow(), vec![UiEvent { id: 9, kind: craft_plugin::UiEventKind::Click }]);
+}

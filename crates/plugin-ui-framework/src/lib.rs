@@ -305,9 +305,9 @@ impl Painter<'_> {
             }
             Widget::Curve { id, text, points } => self.curve(ui, *id, text, points),
             Widget::Gradient { id, text, value } => self.gradient(ui, *id, text, value),
-            Widget::Image { id, key, .. } => self.image(ui, *id, key),
+            Widget::Image { id, key, size } => self.image(ui, *id, key, *size, extras),
             Widget::Grid { id, columns, children } => {
-                let widths = vec![craft_behavior::ColumnWidth::fill(1.0); (*columns).clamp(1, values::MAX_COLUMNS) as usize];
+                let widths = vec![craft_behavior::ColumnWidth::Content; (*columns).clamp(1, values::MAX_COLUMNS) as usize];
                 Grid::new(widths).id_salt(self.salt(*id)).show(ui, |ui, _| self.all(ui, children));
             }
             Widget::Split { id, axis, first, second } => self.split(ui, *id, *axis, first, second),
@@ -417,13 +417,18 @@ impl Painter<'_> {
         }
     }
 
-    fn image(&mut self, ui: &mut egui::Ui, id: u64, key: &str) {
+    fn image(&mut self, ui: &mut egui::Ui, id: u64, key: &str, size: [f32; 2], extras: &Extras) {
         let host = &*self.host;
         let make = || host.picture(key).unwrap_or_else(|| egui::ColorImage::new([1, 1], vec![Default::default()]));
         let revision = craft_ui::primitives::Revision::new(host.version(key));
-        let out = craft_ui::display::Picture::new(key.to_string(), values::key_hash(key), &make).revision(revision).id_salt(self.salt(id)).show(ui);
-        self.seen(ui, &out, Keys::Panel);
-        if craft_ui::contract::clicked(&out) {
+        let room = egui::Vec2::new(values::extent(size[0]), values::extent(size[1]));
+        let out = craft_ui::buttons::PictureButton::new(extras.label(key), values::key_hash(key), &make, room)
+            .revision(revision)
+            .id_salt(self.salt(id))
+            .tip(extras)
+            .show(ui);
+        self.seen(ui, out.response(), Keys::Panel);
+        if out.clicked() {
             self.emit(id, UiEventKind::Click);
         }
     }
