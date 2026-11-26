@@ -66,7 +66,9 @@ SDK (EffectCraft keeps `crates/plugin/tests/it/legacy/legacy.wasm`).
    each started on first use: UI (panels, controls, buttons, migrations), viewer (overlays, drags, tools)
    and commands, so a slow panel call holds back no overlay, tool or command. The kit runs a sandboxed
    overlay or drag on a pooled instance and a tool on an instance of its own; only commands share the
-   panels' instance. The UI thread posts requests, answers host calls that need the document, and applies
+   panels' instance. A plugin whose `event_level()` is below 2 (built before lanes) keeps one instance for
+   panels, tools, overlays and drags, so statics its panel sets still reach its tool and overlay; the
+   threads stay, and its viewer calls wait while a panel call runs. The UI thread posts requests, answers host calls that need the document, and applies
    replies, with a time budget per UI frame. Give each request the plugin's load, the project's token and the surface's
    token, and drop it when any is stale. Feed `Retained` with the app's events (`Topic`: selection, time,
    comp, project, edit, mapped to the app's nearest equivalents). Give each custom parameter row its own
