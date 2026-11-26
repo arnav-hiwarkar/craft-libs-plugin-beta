@@ -7,12 +7,14 @@ mod form;
 mod list;
 mod marks;
 mod panel;
+mod pen;
 #[cfg(test)]
 mod tests;
 
 pub use form::{Answer, draw_form, param_button};
 pub use marks::{draw_marks, filled_polygon};
 pub use panel::draw;
+pub use pen::PenSource;
 
 pub type Triangulate = fn(&[[f64; 2]]) -> Vec<[usize; 3]>;
 

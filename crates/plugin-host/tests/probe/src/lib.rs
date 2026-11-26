@@ -1196,19 +1196,24 @@ impl Tool for Stamp {
             return Ok(());
         }
         let [x, y] = event.comp;
-        self.seen.push(format!("{:?} {x:.1} {y:.1}", event.kind));
+        let pen = event.pen.map_or(String::new(), |pen| {
+            let end = if pen.eraser { " eraser" } else { "" };
+            format!(" pen {:.2} {:.2} {:.2}{end} at {:.2}", pen.pressure, pen.tilt[0], pen.tilt[1], event.pressure)
+        });
+        let line = format!("{:?} {x:.1} {y:.1}{pen}", event.kind);
         match event.kind {
             ToolEventKind::Down => {
-                self.seen = vec![format!("Down {x:.1} {y:.1}")];
+                self.seen = vec![line];
                 let reply = host::command("layer.newNull", json!({"name": "Stamp"}))?;
                 self.null = reply["layer"].as_u64();
             }
             ToolEventKind::Move | ToolEventKind::Up => {
+                self.seen.push(line);
                 if let Some(layer) = self.null {
                     host::command("prop.set", json!({"layer": layer, "path": "transform/position", "value": [x, y]}))?;
                 }
             }
-            _ => {}
+            _ => self.seen.push(line),
         }
         for (row, line) in self.seen.iter().enumerate() {
             overlay.text([x, y + 12.0 * row as f64], line);
