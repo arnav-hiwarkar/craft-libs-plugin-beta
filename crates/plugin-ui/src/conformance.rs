@@ -500,6 +500,32 @@ pub fn cases() -> Vec<Case> {
             expect: Expect::Events(vec![list_event(ListEvent::Move { rows: vec![2], to: 0 })]),
         },
         Case {
+            name: "a row dragged out of the list and let go elsewhere moves nothing",
+            size: [240.0, 260.0],
+            tree: vec![reorderable(vec![2]), button(23, "Elsewhere")],
+            steps: vec![Step::Drag("file 2", "Elsewhere")],
+            expect: Expect::Events(vec![]),
+        },
+        Case {
+            name: "a rename is kept when the name field loses the focus to Tab",
+            size: [240.0, 200.0],
+            tree: vec![renamable()],
+            steps: vec![Step::Key(egui::Key::Tab), Step::Key(egui::Key::F2), Step::TypeFocused("New"), Step::Key(egui::Key::Tab)],
+            expect: Expect::Events(vec![list_event(ListEvent::Rename { row: 0, text: "New".into() })]),
+        },
+        Case {
+            name: "a scroll area sized in rows holds a button that can be clicked",
+            size: [240.0, 200.0],
+            tree: vec![Widget::Scroll {
+                id: 24,
+                height: 0.0,
+                rows: Some(3),
+                children: vec![button(25, "One"), button(26, "Two"), button(27, "Three")],
+            }],
+            steps: vec![Step::Click("Three")],
+            expect: Expect::Events(vec![event(27, UiEventKind::Click)]),
+        },
+        Case {
             name: "Alt+Down moves the selected row below the next one",
             size: [240.0, 200.0],
             tree: vec![reorderable(vec![1])],
