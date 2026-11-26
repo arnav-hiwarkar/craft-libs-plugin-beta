@@ -1,46 +1,10 @@
-use craft_plugin::{Drag, Dropped, Key, Modifiers, Paint, Pointer, PointerPhase, Shape, TextStyle, UiEvent, UiEventKind, Widget};
-use egui::{Color32, FontFamily, vec2};
+use craft_plugin::{Key, Modifiers, Paint, Pointer, PointerPhase, Shape, TextStyle, UiEvent, UiEventKind, Widget};
+use egui::vec2;
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 
-use crate::{Answer, Host, Theme, Triangulate, draw, draw_form};
-
-struct Bare;
-
-impl Host for Bare {
-    type Payload = ();
-
-    fn tr(&self, english: &str) -> String {
-        english.to_string()
-    }
-    fn register(&mut self, _: &str, _: &egui::Response, _: &str) {}
-    fn texture(&mut self, _: &egui::Context, _: &str) -> Option<egui::TextureId> {
-        None
-    }
-    fn triangulate(&self) -> Triangulate {
-        |_| Vec::new()
-    }
-    fn drag(&self, _: &Drag) -> Option<()> {
-        None
-    }
-    fn dropped(&self, _: &()) -> Option<Dropped> {
-        None
-    }
-    fn accept_files(&mut self, _: &[String]) {}
-}
-
-fn theme() -> Theme {
-    Theme {
-        text: Color32::WHITE,
-        weak: Color32::GRAY,
-        accent: Color32::LIGHT_BLUE,
-        background: Color32::BLACK,
-        surface: Color32::DARK_GRAY,
-        border: Color32::GRAY,
-        error: Color32::RED,
-        heading: FontFamily::Proportional,
-    }
-}
+use crate::conformance::{Bare, theme};
+use crate::{Answer, draw, draw_form};
 
 fn harness(widgets: Vec<Widget>) -> Harness<'static, Vec<UiEvent>> {
     Harness::new_ui_state(
@@ -154,7 +118,7 @@ fn clicking_an_image_with_no_upload_yet_still_sends_a_click_with_its_id() {
     let tip = Widget::Tooltip { text: "Linear".into() };
     let cell = Widget::Column { children: vec![image, tip] };
     let grid = Widget::Grid { id: 8, columns: 3, children: vec![cell] };
-    let mut harness = harness(vec![Widget::Scroll { id: 7, height: 100.0, children: vec![grid] }]);
+    let mut harness = harness(vec![Widget::Scroll { id: 7, height: 100.0, rows: None, children: vec![grid] }]);
     harness.get_by_label("thumb/0").click();
     harness.run();
     assert_eq!(harness.state(), &vec![UiEvent { id: 9, kind: UiEventKind::Click }]);
@@ -164,7 +128,7 @@ fn clicking_an_image_with_no_upload_yet_still_sends_a_click_with_its_id() {
 fn clicking_a_tab_inside_a_scroll_area_and_a_grid_sends_its_index() {
     let tabs = Widget::Tabs { id: 5, options: vec!["Red".into(), "Green".into()], selected: 0 };
     let grid = Widget::Grid { id: 6, columns: 2, children: vec![tabs, Widget::Progress { fraction: 0.5, text: "Half".into() }] };
-    let mut harness = harness(vec![Widget::Scroll { id: 4, height: 80.0, children: vec![grid] }]);
+    let mut harness = harness(vec![Widget::Scroll { id: 4, height: 80.0, rows: None, children: vec![grid] }]);
     harness.get_by_label("Green").click();
     harness.run();
     assert_eq!(harness.state(), &vec![UiEvent { id: 5, kind: UiEventKind::Number(1.0) }]);
@@ -348,4 +312,10 @@ fn a_parameter_button_reports_a_press_by_pointer_and_keyboard_only_while_enabled
         *harness.state()
     };
     assert_eq!((press(true), press(false)), (2, 0));
+}
+
+#[test]
+fn every_conformance_case_passes_on_the_egui_painter() {
+    let failures = crate::conformance::run_all(|| Box::new(|ui, widgets| draw(ui, widgets, &theme(), "plugin.test.panel", &mut Bare)));
+    assert!(failures.is_empty(), "{failures:#?}");
 }

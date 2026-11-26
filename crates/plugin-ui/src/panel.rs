@@ -14,12 +14,12 @@ pub fn draw<H: Host>(ui: &mut egui::Ui, widgets: &[Widget], theme: &Theme, scope
     renderer.events
 }
 
-struct Renderer<'a, H> {
-    theme: &'a Theme,
-    host: &'a mut H,
-    scope: &'a str,
+pub(crate) struct Renderer<'a, H> {
+    pub(crate) theme: &'a Theme,
+    pub(crate) host: &'a mut H,
+    pub(crate) scope: &'a str,
     events: Vec<UiEvent>,
-    last: Option<egui::Response>,
+    pub(crate) last: Option<egui::Response>,
     labels: u32,
 }
 
@@ -37,7 +37,8 @@ fn plugin_id(widget: &Widget) -> Option<u64> {
         | Widget::Scroll { id, .. }
         | Widget::Collapsing { id, .. }
         | Widget::Tabs { id, .. }
-        | Widget::Grid { id, .. } => Some(*id),
+        | Widget::Grid { id, .. }
+        | Widget::List { id, .. } => Some(*id),
         _ => None,
     }
 }
@@ -71,11 +72,11 @@ impl<H: Host> Renderer<'_, H> {
         }
     }
 
-    fn emit(&mut self, id: u64, kind: UiEventKind) {
+    pub(crate) fn emit(&mut self, id: u64, kind: UiEventKind) {
         self.events.push(UiEvent { id, kind });
     }
 
-    fn register(&mut self, id: u64, response: &egui::Response, label: &str) {
+    pub(crate) fn register(&mut self, id: u64, response: &egui::Response, label: &str) {
         self.host.register(&format!("{}.{id}", self.scope), response, label);
         self.last = Some(response.clone());
     }
@@ -84,7 +85,7 @@ impl<H: Host> Renderer<'_, H> {
         self.host.texture(ctx, key)
     }
 
-    fn text(&self, text: &str, style: TextStyle) -> RichText {
+    pub(crate) fn text(&self, text: &str, style: TextStyle) -> RichText {
         let t = self.theme;
         match style {
             TextStyle::Body => RichText::new(text).font(FontId::proportional(12.0)).color(t.text),
@@ -92,6 +93,9 @@ impl<H: Host> Renderer<'_, H> {
             TextStyle::Weak => RichText::new(text).font(FontId::proportional(12.0)).color(t.weak),
             TextStyle::Mono => RichText::new(text).font(FontId::monospace(12.0)).color(t.text),
             TextStyle::Error => RichText::new(text).font(FontId::proportional(12.0)).color(t.error),
+            TextStyle::Caption => RichText::new(text).font(FontId::proportional(10.5)).color(t.weak),
+            TextStyle::Strong => RichText::new(text).font(FontId::new(12.0, t.heading.clone())).color(t.text),
+            TextStyle::Title => RichText::new(text).font(FontId::new(13.0, t.heading.clone())).color(t.text),
         }
     }
 
@@ -188,7 +192,7 @@ impl<H: Host> Renderer<'_, H> {
             Widget::Space { size } => ui.add_space(extent(*size)),
             Widget::Canvas { id, size, shapes } => self.canvas(ui, *id, *size, shapes),
             Widget::Image { id, key, size } => self.image(ui, *id, key, *size),
-            Widget::Scroll { id, height, children } => {
+            Widget::Scroll { id, height, children, .. } => {
                 egui::ScrollArea::vertical().id_salt(id).max_height(extent(*height)).auto_shrink([false, true]).show(ui, |ui| self.all(ui, children));
             }
             Widget::Collapsing { id, title, open, children } => {
@@ -207,7 +211,28 @@ impl<H: Host> Renderer<'_, H> {
             Widget::Grid { id, columns, children } => self.grid(ui, *id, (*columns).max(1) as usize, children),
             Widget::DropTarget { id, children } => self.drop_target(ui, *id, children),
             Widget::DragSource { id, drag, children } => self.drag_source(ui, *id, drag, children),
+            Widget::List { id, columns, count, first, items, selected, multi, rows } => {
+                self.list(ui, *id, crate::list::Rows { columns, count: *count, first: *first, items, selected, multi: *multi, rows: *rows })
+            }
+            Widget::IconButton { .. }
+            | Widget::Toggle { .. }
+            | Widget::Radio { .. }
+            | Widget::TextArea { .. }
+            | Widget::Text { .. }
+            | Widget::Menu { .. }
+            | Widget::Split { .. }
+            | Widget::Curve { .. }
+            | Widget::Gradient { .. }
+            | Widget::Gap { .. }
+            | Widget::Name { .. }
+            | Widget::Focus { .. } => self.not_drawn_yet(ui, widget),
         }
+    }
+
+    fn not_drawn_yet(&mut self, ui: &mut egui::Ui, widget: &Widget) {
+        let name = format!("{widget:?}").split([' ', '{', '(']).next().unwrap_or_default().to_string();
+        let text = self.host.tr("This app does not draw this plug-in widget yet:");
+        self.last = Some(ui.label(self.text(&format!("{text} {name}"), TextStyle::Weak)));
     }
 
     fn drop_target(&mut self, ui: &mut egui::Ui, id: u64, children: &[Widget]) {

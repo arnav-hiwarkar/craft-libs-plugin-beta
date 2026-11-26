@@ -1,7 +1,10 @@
 use craft_plugin::{Drag, Dropped, Paint};
 use egui::{Color32, FontFamily};
 
+#[cfg(any(test, feature = "conformance"))]
+pub mod conformance;
 mod form;
+mod list;
 mod marks;
 mod panel;
 #[cfg(test)]
@@ -22,6 +25,11 @@ pub struct Theme {
     pub surface: Color32,
     pub border: Color32,
     pub error: Color32,
+    pub good: Color32,
+    pub warn: Color32,
+    pub faint: Color32,
+    pub selected: Color32,
+    pub series: [Color32; 8],
     pub heading: FontFamily,
 }
 
@@ -36,6 +44,11 @@ impl Theme {
             Paint::Border => self.border,
             Paint::Error => self.error,
             Paint::Rgba([r, g, b, a]) => Color32::from_rgba_unmultiplied(r, g, b, a),
+            Paint::Good => self.good,
+            Paint::Warn => self.warn,
+            Paint::Faint => self.faint,
+            Paint::Selected => self.selected,
+            Paint::Series(n) => self.series[usize::from(n) % self.series.len()],
         }
     }
 }

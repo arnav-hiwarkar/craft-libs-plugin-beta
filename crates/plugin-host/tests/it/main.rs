@@ -86,6 +86,7 @@ struct Recorder {
     picked: Option<PathBuf>,
     clipboard: String,
     answer: Option<serde_json::Value>,
+    panels: Vec<(String, bool)>,
 }
 
 impl Host for Recorder {
@@ -135,6 +136,11 @@ impl Host for Recorder {
 
     fn clipboard(&mut self) -> Result<String, String> {
         Ok(self.clipboard.clone())
+    }
+
+    fn panel(&mut self, panel: &str, _instance: Option<&str>, open: bool) -> Result<(), String> {
+        self.panels.push((panel.to_string(), open));
+        Ok(())
     }
 
     fn set_clipboard(&mut self, text: &str) -> Result<(), String> {
@@ -1892,4 +1898,35 @@ fn a_plan_called_off_while_loading_frames_loads_no_more() {
     let stopped = frames.run(&[0.25, 0.5, 0.75]).unwrap_err();
     assert!(matches!(stopped, PluginError::Cancelled), "{stopped}");
     assert_eq!(frames.asked.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn a_list_of_a_hundred_thousand_rows_builds_only_its_view_and_activating_a_row_opens_the_floating_inspector() {
+    each_kind(|kind| {
+        let loaded = load(kind, &[]);
+        let panels = loaded.plugin.contributions().panels.clone();
+        let inspector = panels.iter().find(|panel| panel.id == "inspector").map(|panel| (panel.place, panel.size, panel.icon.clone()));
+        assert_eq!(inspector, Some((craft_plugin::PanelPlace::Float, craft_plugin::PanelSize::Large, Some("sliders".into()))));
+        let (mut files, mut host) = (Retained::new(), Recorder::default());
+        let frame = |files: &mut Retained, host: &mut Recorder, now: u64| {
+            let input = files.start([300.0, 200.0], Duration::from_millis(now))?;
+            let reply = loaded.plugin.call::<craft_plugin::PanelReply>(&Call::Panel { panel: "files".into(), input }, None, host);
+            files.finish(reply.map_err(|e| e.to_string()), Duration::from_millis(now));
+            Some(())
+        };
+        let list = |files: &Retained| match files.widgets() {
+            [Widget::List { id, count, first, items, .. }, Widget::Label { text, .. }] => (*id, *count, *first, items.len(), text.clone()),
+            other => panic!("{kind:?}: a list and a label expected, got {other:?}"),
+        };
+        frame(&mut files, &mut host, 0);
+        let (id, count, first, built, text) = list(&files);
+        assert_eq!((count, first, built, text.as_str()), (100_000, 0, 128, "built 128"), "{kind:?}");
+        files.push(vec![UiEvent { id, kind: UiEventKind::List(craft_plugin::ListEvent::Show { first: 50_000, count: 60 }) }], "");
+        frame(&mut files, &mut host, 1);
+        let (_, _, first, built, text) = list(&files);
+        assert_eq!((first, built, text.as_str()), (50_000, 60, "built 188"), "{kind:?}");
+        files.push(vec![UiEvent { id, kind: UiEventKind::List(craft_plugin::ListEvent::Activate(50_010)) }], "");
+        frame(&mut files, &mut host, 2);
+        assert_eq!(host.panels, vec![("inspector".to_string(), true)], "{kind:?}");
+    });
 }

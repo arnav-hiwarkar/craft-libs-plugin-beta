@@ -39,11 +39,12 @@ pub use registry::{Approved, ApprovedBundle, Bundle, BundleError, Consent, Refus
 
 pub mod ui {
     pub use craft_plugin::{
-        AppEvent, ControlsReply, Drag, Dropped, Key, Modifiers, Paint, PanelReply, Pointer, PointerPhase, Root, Shape, TextStyle, Topic, UiEvent,
-        UiEventKind, UiInput, Widget,
+        AppEvent, Axis, Column, ColumnWidth, CommandSpec, Context, ControlsReply, Drag, Dropped, Gap, ICONS, Item, Key, ListEvent, MenuItem,
+        Modifiers, Paint, PanelPlace, PanelReply, PanelSize, PanelSpec, Pointer, PointerPhase, Root, Shape, Span, TextStyle, Topic, UiEvent,
+        UiEventKind, UiInput, View, Widget,
     };
 }
 
 pub mod viewer {
-    pub use craft_plugin::{Bind, Cursor, Handle, Mark, Overlay, Space, ToolEvent, ToolEventKind, ToolSpec};
+    pub use craft_plugin::{Bind, Cursor, Handle, Mark, Overlay, Pen, Space, ToolEvent, ToolEventKind, ToolSpec};
 }

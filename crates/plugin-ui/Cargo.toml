@@ -9,9 +9,13 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[features]
+conformance = ["dep:egui_kittest"]
+
 [dependencies]
 craft-plugin = { workspace = true }
 egui = { workspace = true }
+egui_kittest = { version = "0.37", optional = true }
 
 [dev-dependencies]
 egui_kittest = "0.37"

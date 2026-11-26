@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fmt;
 use std::sync::Mutex;
 
@@ -7,7 +8,10 @@ use crate::abi::Pixels;
 use crate::effect::{Cx, Effect, Frame, Pass, Rows};
 use crate::ui::{Panel, Ui};
 use crate::viewer::{Overlay, Space, Tool, ToolSpec};
-use crate::wire::{Call, CommandSpec, Contributions, ControlsReply, EffectSpec, HostCall, Outcome, PanelReply, PanelSpec, Pixel, TaskSpec, Window};
+use crate::wire::{
+    Call, CommandSpec, Context, Contributions, ControlsReply, EffectSpec, HostCall, Outcome, PanelPlace, PanelReply, PanelSize, PanelSpec, Pixel,
+    TaskSpec, Window,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Error(pub String);
@@ -64,13 +68,36 @@ impl Task {
     }
 }
 
+type MakePanel = Box<dyn Fn() -> Box<dyn Panel> + Send + Sync>;
+
+enum Panels {
+    One(Mutex<Box<dyn Panel>>),
+    Each(MakePanel, Mutex<HashMap<String, Box<dyn Panel>>>),
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Debug)]
+enum Last {
+    #[default]
+    Nothing,
+    Effect,
+    Panel,
+    Command,
+    Task,
+    Tool,
+}
+
+fn misplaced(last: Last, modifier: &str, follows: &str) -> ! {
+    panic!("`.{modifier}(..)` sets a {follows}, but it follows {last:?}; call it right after the `.{follows}(..)` it belongs to")
+}
+
 #[derive(Default)]
 pub struct Plugin {
     effects: Vec<(EffectSpec, Box<dyn Effect>)>,
-    panels: Vec<(PanelSpec, Mutex<Box<dyn Panel>>)>,
+    panels: Vec<(PanelSpec, Panels)>,
     commands: Vec<(CommandSpec, CommandFn)>,
     tasks: Vec<(TaskSpec, TaskFn)>,
     tools: Vec<(ToolSpec, Mutex<Box<dyn Tool>>)>,
+    last: Last,
 }
 
 impl Plugin {
@@ -80,17 +107,28 @@ impl Plugin {
 
     pub fn effect(mut self, effect: impl Effect) -> Self {
         self.effects.push((effect.spec(), Box::new(effect)));
+        self.last = Last::Effect;
         self
     }
 
     pub fn panel(mut self, id: &str, title: &str, panel: impl Panel) -> Self {
-        let spec = PanelSpec { id: id.into(), title: title.into() };
-        self.panels.push((spec, Mutex::new(Box::new(panel))));
+        let spec = PanelSpec { id: id.into(), title: title.into(), ..Default::default() };
+        self.panels.push((spec, Panels::One(Mutex::new(Box::new(panel)))));
+        self.last = Last::Panel;
+        self
+    }
+
+    pub fn panel_each<P: Panel>(mut self, id: &str, title: &str, make: impl Fn() -> P + Send + Sync + 'static) -> Self {
+        let spec = PanelSpec { id: id.into(), title: title.into(), multiple: true, ..Default::default() };
+        let make: MakePanel = Box::new(move || Box::new(make()));
+        self.panels.push((spec, Panels::Each(make, Mutex::new(HashMap::new()))));
+        self.last = Last::Panel;
         self
     }
 
     pub fn command(mut self, id: &str, title: &str, run: impl Fn() -> Result<()> + Send + Sync + 'static) -> Self {
-        self.commands.push((CommandSpec { id: id.into(), title: title.into(), shortcut: None }, Box::new(run)));
+        self.commands.push((CommandSpec { id: id.into(), title: title.into(), ..Default::default() }, Box::new(run)));
+        self.last = Last::Command;
         self
     }
 
@@ -103,12 +141,78 @@ impl Plugin {
 
     pub fn task(mut self, id: &str, title: &str, run: impl Fn(&Task) -> Result<serde_json::Value> + Send + Sync + 'static) -> Self {
         self.tasks.push((TaskSpec { id: id.into(), title: title.into() }, Box::new(run)));
+        self.last = Last::Task;
         self
     }
 
     pub fn tool(mut self, id: &str, name: &str, tool: impl Tool) -> Self {
-        let spec = ToolSpec { id: id.into(), name: name.into(), icon: tool.icon(), cursor: tool.cursor() };
+        let spec = ToolSpec { id: id.into(), name: name.into(), icon: tool.icon(), cursor: tool.cursor(), named_icon: None, options: None };
         self.tools.push((spec, Mutex::new(Box::new(tool))));
+        self.last = Last::Tool;
+        self
+    }
+
+    fn last_panel(&mut self, modifier: &str) -> &mut PanelSpec {
+        let last = self.last;
+        match (last, self.panels.last_mut()) {
+            (Last::Panel, Some((spec, _))) => spec,
+            _ => misplaced(last, modifier, "panel"),
+        }
+    }
+
+    fn last_command(&mut self, modifier: &str) -> &mut CommandSpec {
+        let last = self.last;
+        match (last, self.commands.last_mut()) {
+            (Last::Command, Some((spec, _))) => spec,
+            _ => misplaced(last, modifier, "command"),
+        }
+    }
+
+    pub fn icon(mut self, icon: &str) -> Self {
+        let last = self.last;
+        match (last, self.panels.last_mut(), self.commands.last_mut(), self.tools.last_mut()) {
+            (Last::Panel, Some((spec, _)), _, _) => spec.icon = Some(icon.into()),
+            (Last::Command, _, Some((spec, _)), _) => spec.icon = Some(icon.into()),
+            (Last::Tool, _, _, Some((spec, _))) => spec.named_icon = Some(icon.into()),
+            _ => misplaced(last, "icon", "panel, command or tool"),
+        }
+        self
+    }
+
+    pub fn place(mut self, place: PanelPlace) -> Self {
+        self.last_panel("place").place = place;
+        self
+    }
+
+    pub fn size(mut self, size: PanelSize) -> Self {
+        self.last_panel("size").size = size;
+        self
+    }
+
+    pub fn menu(mut self, path: &str) -> Self {
+        self.last_command("menu").menu = Some(path.into());
+        self
+    }
+
+    pub fn context(mut self, context: Context) -> Self {
+        let spec = self.last_command("context");
+        if !spec.context.contains(&context) {
+            spec.context.push(context);
+        }
+        self
+    }
+
+    pub fn toolbar(mut self) -> Self {
+        self.last_command("toolbar").toolbar = true;
+        self
+    }
+
+    pub fn options(mut self, panel: &str) -> Self {
+        let last = self.last;
+        match (last, self.tools.last_mut()) {
+            (Last::Tool, Some((spec, _))) => spec.options = Some(panel.into()),
+            _ => misplaced(last, "options", "tool"),
+        }
         self
     }
 
@@ -206,8 +310,15 @@ impl Plugin {
             }
             Call::Panel { panel, input } => {
                 let (_, state) = self.panels.iter().find(|(spec, _)| spec.id == panel).ok_or_else(|| Error(format!("no panel `{panel}`")))?;
+                let panicked = || Error("the panel panicked earlier; reload the plugin to start it again".into());
                 let mut ui = Ui::new(&input);
-                state.lock().map_err(|_| Error("the panel panicked earlier; reload the plugin to start it again".into()))?.ui(&mut ui);
+                match state {
+                    Panels::One(one) => one.lock().map_err(|_| panicked())?.ui(&mut ui),
+                    Panels::Each(make, each) => {
+                        let mut each = each.lock().map_err(|_| panicked())?;
+                        each.entry(input.instance.clone().unwrap_or_default()).or_insert_with(make).ui(&mut ui);
+                    }
+                }
                 json(&ui.reply())
             }
             Call::Controls { effect, param, instance, value, input } => {
@@ -274,6 +385,7 @@ fn json(value: &impl Serialize) -> Result<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::viewer::ToolSpec;
     use crate::wire::{Param, ParamKind, Timer, Topic, UiEvent, UiEventKind, UiInput, Widget};
 
     struct Toggle;
@@ -400,5 +512,111 @@ mod tests {
         assert_eq!((reply.topics, reply.timers), (vec![Topic::Selection], vec![Timer { name: "blink".into(), ms: 250, repeat: true }]));
         let older: ControlsReply = serde_json::from_str(r#"{"widgets":[],"value":"on"}"#).unwrap();
         assert_eq!(older, ControlsReply { value: Some("on".into()), ..Default::default() });
+    }
+
+    #[derive(Default)]
+    struct Count(u32);
+
+    impl Panel for Count {
+        fn ui(&mut self, ui: &mut Ui) {
+            self.0 += 1;
+            ui.label(&format!("{} {}", ui.instance().unwrap_or("-"), self.0));
+        }
+    }
+
+    struct Pencil;
+
+    impl Tool for Pencil {
+        fn event(&mut self, _: &crate::ToolEvent, _: &mut Overlay) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn modifiers_set_the_contribution_they_follow() {
+        let plugin = Plugin::new()
+            .panel("inspector", "Inspector", Count::default())
+            .icon("sliders")
+            .place(PanelPlace::Float)
+            .size(PanelSize::Large)
+            .command("tidy", "Tidy Layers", || Ok(()))
+            .menu("Layer/Arrange")
+            .context(Context::Layers)
+            .context(Context::Layers)
+            .toolbar()
+            .icon("wand")
+            .shortcut("ctrl+t")
+            .tool("pencil", "Pencil", Pencil)
+            .icon("pen")
+            .options("pencil-options");
+        let found = plugin.contributions();
+        assert_eq!(
+            found.panels[0],
+            PanelSpec {
+                id: "inspector".into(),
+                title: "Inspector".into(),
+                icon: Some("sliders".into()),
+                place: PanelPlace::Float,
+                size: PanelSize::Large,
+                multiple: false
+            }
+        );
+        assert_eq!(
+            found.commands[0],
+            CommandSpec {
+                id: "tidy".into(),
+                title: "Tidy Layers".into(),
+                shortcut: Some("ctrl+t".into()),
+                menu: Some("Layer/Arrange".into()),
+                context: vec![Context::Layers],
+                toolbar: true,
+                icon: Some("wand".into())
+            }
+        );
+        assert_eq!((found.tools[0].named_icon.as_deref(), found.tools[0].options.as_deref()), (Some("pen"), Some("pencil-options")));
+    }
+
+    #[test]
+    fn a_modifier_after_the_wrong_contribution_says_where_it_belongs() {
+        let caught = std::panic::catch_unwind(|| Plugin::new().command("a", "A", || Ok(())).place(PanelPlace::Float));
+        let message = caught.err().and_then(|e| e.downcast_ref::<String>().cloned()).unwrap_or_default();
+        assert_eq!(message, "`.place(..)` sets a panel, but it follows Command; call it right after the `.panel(..)` it belongs to");
+    }
+
+    fn panel_text(plugin: &Plugin, instance: Option<&str>) -> String {
+        let input = UiInput { instance: instance.map(str::to_string), ..Default::default() };
+        let call = Call::Panel { panel: "view".into(), input };
+        let reply = plugin.dispatch(&serde_json::to_vec(&call).unwrap_or_default(), &mut []);
+        match serde_json::from_slice::<Outcome<PanelReply>>(&reply) {
+            Ok(Outcome::Ok(PanelReply { widgets, .. })) => match &widgets[0] {
+                Widget::Label { text, .. } => text.clone(),
+                other => panic!("{other:?}"),
+            },
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn each_instance_of_a_panel_each_keeps_its_own_state() {
+        let plugin = Plugin::new().panel_each("view", "View", Count::default);
+        assert!(plugin.contributions().panels[0].multiple);
+        let texts = [panel_text(&plugin, Some("a")), panel_text(&plugin, Some("a")), panel_text(&plugin, Some("b")), panel_text(&plugin, None)];
+        assert_eq!(texts, ["a 1", "a 2", "b 1", "- 1"]);
+    }
+
+    #[test]
+    fn specs_events_and_input_from_an_older_sdk_or_host_still_read() {
+        let panel: PanelSpec = serde_json::from_str(r#"{"id":"p","title":"P"}"#).unwrap();
+        assert_eq!(panel, PanelSpec { id: "p".into(), title: "P".into(), ..Default::default() });
+        let command: CommandSpec = serde_json::from_str(r#"{"id":"c","title":"C","shortcut":null}"#).unwrap();
+        assert_eq!(command, CommandSpec { id: "c".into(), title: "C".into(), ..Default::default() });
+        let tool: ToolSpec = serde_json::from_str(r#"{"id":"t","name":"T"}"#).unwrap();
+        assert_eq!((tool.named_icon, tool.options), (None, None));
+        let event: crate::ToolEvent = serde_json::from_str(r#"{"kind":"down","comp":[1.0,2.0],"pressure":1.0}"#).unwrap();
+        assert_eq!((event.pressure, event.pen), (1.0, None));
+        let input: UiInput = serde_json::from_str(r#"{"size":[10.0,10.0]}"#).unwrap();
+        assert_eq!((input.views, input.instance, input.call), (vec![], None, 0));
+        let scroll: Widget = serde_json::from_str(r#"{"w":"scroll","id":1,"height":80.0,"children":[]}"#).unwrap();
+        assert_eq!(scroll, Widget::Scroll { id: 1, height: 80.0, rows: None, children: vec![] });
     }
 }
