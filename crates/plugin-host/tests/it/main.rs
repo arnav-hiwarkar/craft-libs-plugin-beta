@@ -173,7 +173,12 @@ fn a_plugin_describes_its_effects_panels_and_commands() {
         assert!(found.commands.iter().any(|c| c.id == "edit"));
         let ask = found.commands.iter().find(|c| c.id == "ask").unwrap();
         assert_eq!((ask.title.as_str(), ask.shortcut.as_deref()), ("Ask For Settings", Some("Alt+Shift+F11")));
-        assert_eq!(found.commands.iter().find(|c| c.id == "edit").unwrap().shortcut, None);
+        let edit = found.commands.iter().find(|c| c.id == "edit").unwrap();
+        assert_eq!(edit.shortcut, None);
+        assert_eq!(
+            (edit.menu.as_deref(), edit.context.as_slice(), edit.toolbar, edit.icon.as_deref()),
+            (Some("Layer/Probe Tools"), &[craft_plugin::Context::Layers][..], true, Some("wand"))
+        );
     });
 }
 
