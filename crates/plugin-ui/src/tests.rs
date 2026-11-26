@@ -319,3 +319,38 @@ fn every_conformance_case_passes_on_the_egui_painter() {
     let failures = crate::conformance::run_all(|| Box::new(|ui, widgets| draw(ui, widgets, &theme(), "plugin.test.panel", &mut Bare)));
     assert!(failures.is_empty(), "{failures:#?}");
 }
+
+#[test]
+fn tab_enters_a_list_on_its_selected_row_with_real_focus_and_the_next_tab_leaves_the_list() {
+    let items = (0..4).map(|row| craft_plugin::Item::new(&format!("file {row}"))).collect();
+    let list = Widget::List { id: 4, columns: vec![], count: 4, first: 0, items, selected: vec![2], multi: false, rows: 4 };
+    let after = Widget::Button { id: 5, text: "After".into(), enabled: true };
+    let mut harness = harness(vec![list, after]);
+    harness.run();
+    harness.key_press(egui::Key::Tab);
+    harness.run();
+    assert!(harness.get_by_label("file 2").accesskit_node().is_focused());
+    harness.key_press(egui::Key::ArrowDown);
+    harness.run();
+    assert!(harness.get_by_label("file 3").accesskit_node().is_focused());
+    harness.key_press(egui::Key::Tab);
+    harness.run();
+    assert!(harness.get_by_label("After").accesskit_node().is_focused());
+}
+
+#[test]
+fn a_table_is_a_grid_of_rows_under_column_headings_and_tree_rows_say_whether_they_are_open() {
+    let columns = ["Name", "Size"].map(|title| craft_plugin::Column { title: title.into(), ..Default::default() }).to_vec();
+    let items = vec![craft_plugin::Item::cells(&["Shots", "3"]).open(true), craft_plugin::Item::cells(&["shot 1", "1"]).depth(1)];
+    let mut harness = harness(vec![Widget::List { id: 4, columns, count: 2, first: 0, items, selected: vec![0], multi: false, rows: 4 }]);
+    harness.run();
+    assert_eq!(harness.get_by_label("Table").accesskit_node().role(), egui::accesskit::Role::Grid);
+    assert_eq!(harness.query_all_by_role(egui::Role::ColumnHeader).count(), 2);
+    let open = harness.get_by_label("Shots  3").accesskit_node();
+    assert_eq!((open.role(), open.is_selected(), open.data().is_expanded()), (egui::accesskit::Role::Row, Some(true), Some(true)));
+    let child = harness.get_by_label("shot 1  1").accesskit_node();
+    assert_eq!((child.is_selected(), child.data().is_expanded()), (Some(false), None));
+    harness.get_by_label("Close Shots").click();
+    harness.run();
+    assert_eq!(harness.state(), &vec![UiEvent { id: 4, kind: UiEventKind::List(craft_plugin::ListEvent::Toggle { row: 0, open: false }) }]);
+}

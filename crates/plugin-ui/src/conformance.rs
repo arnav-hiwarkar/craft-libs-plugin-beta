@@ -55,6 +55,7 @@ pub enum Step {
     RightClick(&'static str),
     Type(&'static str, &'static str),
     Key(egui::Key),
+    Chord(egui::Modifiers, egui::Key),
     Scroll(&'static str, f32),
 }
 
@@ -107,6 +108,7 @@ pub fn run(case: &Case, mut paint: Painter) -> Vec<UiEvent> {
                 harness.get_by_label(name).type_text(text);
             }
             Step::Key(key) => harness.key_press(*key),
+            Step::Chord(modifiers, key) => harness.key_press_modifiers(*modifiers, *key),
             Step::Scroll(name, delta) => {
                 harness.get_by_label(name).hover();
                 harness.run();
@@ -136,6 +138,29 @@ fn event(id: u64, kind: UiEventKind) -> UiEvent {
 fn list(count: u32, first: u32, shown: u32, selected: Vec<u32>) -> Widget {
     let items = (first..first + shown).map(|row| Item::new(&format!("file {row}"))).collect();
     Widget::List { id: 4, columns: vec![], count, first, items, selected, multi: false, rows: 6 }
+}
+
+fn tree(items: Vec<Item>) -> Widget {
+    Widget::List { id: 4, columns: vec![], count: items.len() as u32, first: 0, items, selected: vec![], multi: false, rows: 6 }
+}
+
+fn multi(mut widget: Widget) -> Widget {
+    if let Widget::List { multi, .. } = &mut widget {
+        *multi = true;
+    }
+    widget
+}
+
+fn select(rows: &[u32]) -> UiEvent {
+    event(4, UiEventKind::List(ListEvent::Select(rows.to_vec())))
+}
+
+fn ends_on_the_last_row_and_asks_for_its_window(events: &[UiEvent]) -> bool {
+    matches!(
+        events,
+        [first, UiEvent { id: 4, kind: UiEventKind::List(ListEvent::Show { first: shown, count }) }]
+            if *first == select(&[99_999]) && *shown > 99_000 && shown + count == 100_000
+    )
 }
 
 fn shows_a_later_window(events: &[UiEvent]) -> bool {
@@ -176,6 +201,66 @@ pub fn cases() -> Vec<Case> {
             tree: vec![list(100_000, 0, 128, vec![])],
             steps: vec![Step::Scroll("file 2", 20_000.0)],
             expect: Expect::Holds("one to three Shows, the last a window after row 100 inside the list", shows_a_later_window),
+        },
+        Case {
+            name: "Down after a click selects the next row",
+            size: [240.0, 200.0],
+            tree: vec![list(5, 0, 5, vec![])],
+            steps: vec![Step::Click("file 1"), Step::Key(egui::Key::ArrowDown)],
+            expect: Expect::Events(vec![select(&[1]), select(&[2])]),
+        },
+        Case {
+            name: "End on a long list selects the last row and asks for the rows around it",
+            size: [240.0, 200.0],
+            tree: vec![list(100_000, 0, 128, vec![])],
+            steps: vec![Step::Click("file 2"), Step::Key(egui::Key::End)],
+            expect: Expect::Holds("Select([2]), Select([99999]) then one Show ending at the last row", |events| {
+                events.first() == Some(&select(&[2])) && ends_on_the_last_row_and_asks_for_its_window(&events[1..])
+            }),
+        },
+        Case {
+            name: "Right on a shut tree row opens it",
+            size: [240.0, 200.0],
+            tree: vec![tree(vec![Item::new("Shots").open(false), Item::new("Notes")])],
+            steps: vec![Step::Click("Shots"), Step::Key(egui::Key::ArrowRight)],
+            expect: Expect::Events(vec![select(&[0]), event(4, UiEventKind::List(ListEvent::Toggle { row: 0, open: true }))]),
+        },
+        Case {
+            name: "clicking the disclosure triangle of a shut row opens it without selecting it",
+            size: [240.0, 200.0],
+            tree: vec![tree(vec![Item::new("Shots").open(false), Item::new("Notes")])],
+            steps: vec![Step::Click("Open Shots")],
+            expect: Expect::Events(vec![event(4, UiEventKind::List(ListEvent::Toggle { row: 0, open: true }))]),
+        },
+        Case {
+            name: "Left on a child row selects its parent, on a shut row its parent again, and on the open root closes it",
+            size: [240.0, 200.0],
+            tree: vec![tree(vec![Item::new("Shots").open(true), Item::new("shot 1").depth(1).open(false), Item::new("take 1").depth(2)])],
+            steps: vec![Step::Click("take 1"), Step::Key(egui::Key::ArrowLeft), Step::Key(egui::Key::ArrowLeft), Step::Key(egui::Key::ArrowLeft)],
+            expect: Expect::Events(vec![
+                select(&[2]),
+                select(&[1]),
+                select(&[0]),
+                event(4, UiEventKind::List(ListEvent::Toggle { row: 0, open: false })),
+            ]),
+        },
+        Case {
+            name: "Shift+Down extends a multi selection from the clicked row",
+            size: [240.0, 200.0],
+            tree: vec![multi(list(5, 0, 5, vec![]))],
+            steps: vec![
+                Step::Click("file 1"),
+                Step::Chord(egui::Modifiers::SHIFT, egui::Key::ArrowDown),
+                Step::Chord(egui::Modifiers::SHIFT, egui::Key::ArrowDown),
+            ],
+            expect: Expect::Events(vec![select(&[1]), select(&[1, 2]), select(&[1, 2, 3])]),
+        },
+        Case {
+            name: "right-clicking an unselected row selects it, and right-clicking a selected row keeps the selection",
+            size: [240.0, 200.0],
+            tree: vec![list(5, 0, 5, vec![3])],
+            steps: vec![Step::RightClick("file 2"), Step::RightClick("file 3")],
+            expect: Expect::Events(vec![select(&[2])]),
         },
     ]
 }
