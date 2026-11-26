@@ -21,6 +21,9 @@ pub struct Retained {
     widgets: Vec<Widget>,
     error: Option<String>,
     events: Vec<UiEvent>,
+    gestures: Vec<u64>,
+    gesture: u64,
+    started: u64,
     keys: String,
     app: Vec<AppEvent>,
     topics: Vec<Topic>,
@@ -99,20 +102,20 @@ fn picked(event: &UiEvent, menus: &[u64]) -> bool {
     matches!(event.kind, UiEventKind::Number(_)) && menus.contains(&event.id)
 }
 
-fn one_call(events: &mut Vec<UiEvent>, menus: &[u64]) -> Vec<UiEvent> {
+fn one_call(events: &[UiEvent], gestures: &[u64], menus: &[u64]) -> usize {
     let mut acted = Vec::new();
     let collapses = |event: &UiEvent| matches!(event.kind, UiEventKind::Click | UiEventKind::Bool(_) | UiEventKind::Drop(_)) || picked(event, menus);
-    let end = events
+    events
         .iter()
-        .position(|event| {
-            let again = collapses(event) && acted.contains(&event.id);
+        .zip(gestures)
+        .position(|(event, gesture)| {
+            let again = (collapses(event) && acted.contains(&event.id)) || Some(gesture) != gestures.first();
             if collapses(event) {
                 acted.push(event.id);
             }
             again
         })
-        .unwrap_or(events.len());
-    events.drain(..end).collect()
+        .unwrap_or(events.len())
 }
 
 impl Retained {
@@ -152,6 +155,22 @@ impl Retained {
         !self.events.is_empty()
     }
 
+    pub fn split(&mut self) {
+        self.gesture += 1;
+    }
+
+    pub fn gesture(&self) -> u64 {
+        self.gesture
+    }
+
+    pub fn started_gesture(&self) -> u64 {
+        self.started
+    }
+
+    pub fn pending_in(&self, gesture: u64) -> bool {
+        self.gestures.contains(&gesture)
+    }
+
     pub fn subscribed(&self, topic: Topic) -> bool {
         self.topics.contains(&topic)
     }
@@ -168,21 +187,26 @@ impl Retained {
                 self.show(View { id: event.id, first, count });
                 continue;
             }
+            let gesture = self.gesture;
             let last = self
                 .events
-                .iter_mut()
-                .rev()
-                .find(|pending| pending.id == event.id || discrete(&pending.kind) || picked(pending, &menus))
-                .filter(|pending| pending.id == event.id && !picked(&event, &menus));
-            match last.filter(|_| in_flight).and_then(|last| merged(&last.kind, &event.kind).map(|kind| (last, kind))) {
-                Some((last, kind)) => last.kind = kind,
-                None => self.events.push(event),
+                .iter()
+                .zip(&self.gestures)
+                .rposition(|(pending, made)| pending.id == event.id || discrete(&pending.kind) || picked(pending, &menus) || *made != gesture)
+                .filter(|at| self.events[*at].id == event.id && self.gestures[*at] == gesture && !picked(&event, &menus));
+            match last.filter(|_| in_flight).and_then(|at| merged(&self.events[at].kind, &event.kind).map(|kind| (at, kind))) {
+                Some((at, kind)) => self.events[at].kind = kind,
+                None => {
+                    self.events.push(event);
+                    self.gestures.push(gesture);
+                }
             }
         }
         while self.events.len() > MAX_BACKLOG
             && let Some(oldest) = self.events.iter().position(|event| motion(&event.kind))
         {
             self.events.remove(oldest);
+            self.gestures.remove(oldest);
         }
         self.keys.push_str(keys);
     }
@@ -218,6 +242,7 @@ impl Retained {
     pub fn hide(&mut self) {
         self.hidden = true;
         self.events.clear();
+        self.gestures.clear();
         self.menus.clear();
         self.keys.clear();
         self.pressed.clear();
@@ -257,7 +282,10 @@ impl Retained {
             }
             timer.repeat
         });
-        let mut events = one_call(&mut self.events, &self.menus);
+        let end = one_call(&self.events, &self.gestures, &self.menus);
+        self.started = self.gestures.first().copied().unwrap_or(self.gesture);
+        self.gestures.drain(..end);
+        let mut events: Vec<UiEvent> = self.events.drain(..end).collect();
         if self.events.is_empty() {
             self.menus.clear();
         }
@@ -526,6 +554,23 @@ mod tests {
         assert_eq!(events(&mut panel, 48), Some(vec![pick(5, 1.0)]));
         assert_eq!(events(&mut panel, 64), Some(vec![pick(5, 3.0), pick(PANEL_MENU, 0.0)]));
         assert_eq!(events(&mut panel, 80), Some(vec![pick(PANEL_MENU, 2.0)]));
+    }
+
+    #[test]
+    fn values_of_two_gestures_made_during_a_slow_call_stay_apart_and_each_call_says_its_gesture() {
+        let mut panel = drawn(vec![], vec![]);
+        slow_call(&mut panel);
+        let number = |value| UiEvent { id: 9, kind: UiEventKind::Number(value) };
+        let first = panel.gesture();
+        panel.push(vec![number(1.0)], "");
+        panel.push(vec![number(2.0)], "");
+        panel.split();
+        panel.push(vec![number(6.0)], "");
+        panel.push(vec![number(7.0)], "");
+        panel.finish(reply(vec![], vec![]), ms(40));
+        assert_eq!((events(&mut panel, 48), panel.started_gesture()), (Some(vec![number(2.0)]), first));
+        assert!(!panel.pending_in(first));
+        assert_eq!((events(&mut panel, 64), panel.started_gesture()), (Some(vec![number(7.0)]), first + 1));
     }
 
     #[test]
