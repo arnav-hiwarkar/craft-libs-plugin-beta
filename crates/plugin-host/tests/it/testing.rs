@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use craft_plugin::{Channel, Overlay, Place, Shape, ToolEventKind, Value};
+use craft_plugin::{Channel, Overlay, PanelPlace, Place, Shape, ToolEventKind, UiEventKind, Value};
 use craft_plugin_host::AuxPlanes;
 use craft_plugin_host::testing::{Pattern, Picture, RENDER_LAYER, TestPlugin, check_frame, json, pointer, updating_frames};
 
@@ -294,4 +294,88 @@ fn a_sandboxed_panel_sees_a_static_its_command_set_while_its_tool_and_overlay_ru
     let tool = written(plugin.tool("census", pointer(ToolEventKind::Move, [0.0; 2])).unwrap());
     let overlay = written(plugin.render("peek").overlay().unwrap());
     assert_eq!((panel, tool, overlay), (vec!["shared 2".to_string()], vec!["shared 0".to_string()], vec!["shared 0".to_string()]));
+}
+
+#[test]
+fn a_tool_reads_the_pen_pressure_tilt_and_end_of_a_move_and_a_mouse_move_has_no_pen() {
+    let (_bundle, plugin) = probe();
+    let pen = craft_plugin::Pen { pressure: 0.5, tilt: [0.25, -0.5], eraser: true, rotation: 0.0 };
+    let drawn = written(
+        plugin.tool("stamp", craft_plugin::ToolEvent { pen: Some(pen), pressure: 0.5, ..pointer(ToolEventKind::Move, [40.0, 30.0]) }).unwrap(),
+    );
+    assert_eq!(drawn, ["Move 40.0 30.0 pen 0.50 0.25 -0.50 eraser at 0.50"]);
+    let drawn = written(plugin.tool("stamp", pointer(ToolEventKind::Move, [50.0, 35.0])).unwrap());
+    assert_eq!(drawn, ["Move 40.0 30.0 pen 0.50 0.25 -0.50 eraser at 0.50", "Move 50.0 35.0"]);
+}
+
+#[test]
+fn a_tree_panel_opens_folders_from_toggles_and_its_ten_thousand_row_table_builds_only_its_view() {
+    use craft_plugin::ListEvent::{Activate, Show, Toggle};
+    let (_bundle, plugin) = probe();
+    let mut panel = plugin.panel("tree").unwrap();
+    assert_eq!(panel.rows(0).unwrap(), (0, vec!["Folder 0".to_string(), "Folder 1".into(), "Folder 2".into()]));
+    panel.list_event(0, Toggle { row: 0, open: true }).unwrap();
+    panel.list_event(0, Toggle { row: 1, open: true }).unwrap();
+    let shown = ["Folder 0", "Shot 0.0", "Take 0.0.0", "Take 0.0.1", "Shot 0.1", "Folder 1", "Folder 2"];
+    assert_eq!(panel.rows(0).unwrap(), (0, shown.map(String::from).to_vec()));
+    assert!(panel.texts().contains(&"opened Shot 0.0".to_string()), "{:?}", panel.texts());
+    panel.list_event(0, Toggle { row: 0, open: false }).unwrap();
+    assert_eq!(panel.rows(0).unwrap().1.len(), 3);
+    panel.list_event(1, Show { first: 9_990, count: 10 }).unwrap();
+    let (first, rows) = panel.rows(1).unwrap();
+    assert_eq!((first, rows.len(), rows[5].as_str()), (9_990, 10, "take 9995\t35.5 s\t*"));
+    panel.list_event(1, Activate(9_995)).unwrap();
+    assert!(panel.texts().contains(&"activated take 9995".to_string()), "{:?}", panel.texts());
+}
+
+#[test]
+fn a_status_item_and_a_stamp_option_bar_take_their_places_and_each_notes_panel_keeps_its_own_text() {
+    let (_bundle, plugin) = probe();
+    let found = plugin.plugin().contributions();
+    let place = |id: &str| found.panels.iter().find(|panel| panel.id == id).map(|panel| (panel.place, panel.multiple, panel.icon.clone()));
+    assert_eq!(
+        [place("status"), place("stamp-options"), place("notes")],
+        [
+            Some((PanelPlace::Status, false, Some("bell".into()))),
+            Some((PanelPlace::Bar, false, None)),
+            Some((PanelPlace::Bottom, true, Some("text".into())))
+        ]
+    );
+    let options = found.tools.iter().find(|tool| tool.id == "stamp").and_then(|tool| tool.options.clone());
+    assert_eq!(options.as_deref(), Some("stamp-options"));
+    let mut status = plugin.panel("status").unwrap();
+    status.click("Ping").unwrap();
+    assert_eq!(status.texts(), ["Ping", "1 pings"]);
+    let mut one = plugin.panel_for("notes", "1").unwrap();
+    let mut two = plugin.panel_for("notes", "2").unwrap();
+    one.send("Note", UiEventKind::Text("milk".into())).unwrap();
+    two.send("Note", UiEventKind::Text("eggs".into())).unwrap();
+    one.redraw().unwrap();
+    assert_eq!((one.texts(), two.texts()), (vec!["Note".to_string(), "note 1: milk".into()], vec!["Note".to_string(), "note 2: eggs".into()]));
+}
+
+#[test]
+fn the_controls_panel_takes_toggle_radio_text_area_menu_curve_and_gradient_events_by_label() {
+    let (_bundle, plugin) = probe();
+    let mut panel = plugin.panel("controls").unwrap();
+    let status = |panel: &craft_plugin_host::testing::PanelTest| panel.texts().into_iter().find(|text| text.starts_with("live ")).unwrap_or_default();
+    assert!(panel.widgets().iter().any(|widget| matches!(widget, craft_plugin::Widget::Focus { .. })), "the first call asks for the focus");
+    panel.send("Live", craft_plugin::UiEventKind::Bool(true)).unwrap();
+    panel.send("Mode", craft_plugin::UiEventKind::Number(1.0)).unwrap();
+    panel.send("Notes", craft_plugin::UiEventKind::Text("one\ntwo".into())).unwrap();
+    assert_eq!(status(&panel), r#"live true mode 1 pinned false notes "one\ntwo" said "#);
+    assert!(!panel.widgets().iter().any(|widget| matches!(widget, craft_plugin::Widget::Focus { .. })), "later calls leave the focus alone");
+    panel.click("Clear notes").unwrap();
+    panel.pick("More", "Pinned").unwrap();
+    panel.pick("More", "Hard").unwrap();
+    panel.pick("", "Say hello").unwrap();
+    assert_eq!(status(&panel), r#"live true mode 2 pinned true notes "" said hello"#);
+    let error = panel.pick("More", "Sort").unwrap_err();
+    assert_eq!(error, "a menu `More` of panel `controls` has no item `Sort`");
+    panel.send("Shape", craft_plugin::UiEventKind::Points(vec![[0.0, 0.0], [0.5, 0.7], [1.0, 1.0]])).unwrap();
+    let ramp = craft_plugin::Gradient::new(&[(0.0, [0.0; 4]), (0.5, [1.0; 4]), (1.0, [0.0; 4])]);
+    panel.send("Ramp", craft_plugin::UiEventKind::Gradient(ramp)).unwrap();
+    let texts = panel.texts();
+    assert!(texts.contains(&"3 points".to_string()) && texts.contains(&"3 stops".to_string()), "{texts:?}");
+    assert!(texts.contains(&"Probe controls".to_string()), "{texts:?}");
 }

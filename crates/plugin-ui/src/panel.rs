@@ -8,6 +8,13 @@ pub(crate) const MAX_EXTENT: f32 = 16_384.0;
 const MAX_FONT: f32 = 512.0;
 pub(crate) const MAX_LINE_POINTS: usize = 65_536;
 
+pub fn paint_icon<H: Host>(host: &mut H, painter: &egui::Painter, rect: Rect, name: &str, title: &str, color: Color32) {
+    if !host.icon(painter, rect, name, color) {
+        let initial: String = title.chars().find(|c| c.is_alphanumeric()).map(|c| c.to_uppercase().collect()).unwrap_or_default();
+        painter.text(rect.center(), Align2::CENTER_CENTER, initial, FontId::proportional(font_size(rect.height() * 0.75)), color);
+    }
+}
+
 pub fn draw<H: Host>(ui: &mut egui::Ui, widgets: &[Widget], theme: &Theme, scope: &str, host: &mut H) -> Vec<UiEvent> {
     let mut renderer = Renderer { theme, host, scope, events: Vec::new(), last: None, labels: 0 };
     renderer.all(ui, widgets);
@@ -38,7 +45,15 @@ fn plugin_id(widget: &Widget) -> Option<u64> {
         | Widget::Collapsing { id, .. }
         | Widget::Tabs { id, .. }
         | Widget::Grid { id, .. }
-        | Widget::List { id, .. } => Some(*id),
+        | Widget::List { id, .. }
+        | Widget::IconButton { id, .. }
+        | Widget::Toggle { id, .. }
+        | Widget::Radio { id, .. }
+        | Widget::TextArea { id, .. }
+        | Widget::Menu { id, .. }
+        | Widget::Split { id, .. }
+        | Widget::Curve { id, .. }
+        | Widget::Gradient { id, .. } => Some(*id),
         _ => None,
     }
 }
@@ -56,7 +71,7 @@ fn font_size(size: f32) -> f32 {
 }
 
 impl<H: Host> Renderer<'_, H> {
-    fn all(&mut self, ui: &mut egui::Ui, widgets: &[Widget]) {
+    pub(crate) fn all(&mut self, ui: &mut egui::Ui, widgets: &[Widget]) {
         for widget in widgets {
             self.scoped(ui, widget);
         }
@@ -103,9 +118,7 @@ impl<H: Host> Renderer<'_, H> {
         match widget {
             Widget::Label { text, style } => {
                 let response = ui.label(self.text(text, *style));
-                self.host.register(&format!("{}.label.{}", self.scope, self.labels), &response, text);
-                self.labels += 1;
-                self.last = Some(response);
+                self.label_registered(&response, text);
             }
             Widget::Button { id, text, enabled } => {
                 let response = ui.add_enabled(*enabled, egui::Button::new(text));
@@ -214,32 +227,29 @@ impl<H: Host> Renderer<'_, H> {
             Widget::List { id, columns, count, first, items, selected, multi, rows } => {
                 self.list(ui, *id, crate::list::Rows { columns, count: *count, first: *first, items, selected, multi: *multi, rows: *rows })
             }
-            Widget::IconButton { .. }
-            | Widget::Toggle { .. }
-            | Widget::Radio { .. }
-            | Widget::TextArea { .. }
-            | Widget::Text { .. }
-            | Widget::Menu { .. }
-            | Widget::Split { .. }
-            | Widget::Curve { .. }
-            | Widget::Gradient { .. }
-            | Widget::Gap { .. }
-            | Widget::Name { .. }
-            | Widget::Focus { .. } => self.not_drawn_yet(ui, widget),
+            Widget::IconButton { id, icon, text, enabled } => self.icon_button(ui, *id, icon, text, *enabled),
+            Widget::Toggle { id, text, value } => self.toggle(ui, *id, text, *value),
+            Widget::Radio { id, text, options, selected } => self.radio(ui, *id, text, options, *selected as usize),
+            Widget::TextArea { id, value, hint, rows } => self.text_area(ui, *id, value, hint, *rows),
+            Widget::Text { spans } => self.paragraph(ui, spans),
+            Widget::Menu { id, text, items } => self.menu(ui, *id, text.as_deref(), items),
+            Widget::Split { id, axis, first, second } => self.split(ui, *id, *axis, first, second),
+            Widget::Curve { id, text, points } => self.curve(ui, *id, text, points),
+            Widget::Gradient { id, text, value } => self.gradient(ui, *id, text, value),
+            Widget::Gap { gap } => ui.add_space(crate::controls::gap(ui.spacing(), *gap)),
+            Widget::Name { text } => self.name(ui, text),
+            Widget::Focus { call } => self.focus(ui, *call),
         }
     }
 
     pub(crate) fn paint_icon(&mut self, painter: &egui::Painter, rect: Rect, name: &str, title: &str, color: Color32) {
-        if !self.host.icon(painter, rect, name, color) {
-            let initial: String = title.chars().find(|c| c.is_alphanumeric()).map(|c| c.to_uppercase().collect()).unwrap_or_default();
-            painter.text(rect.center(), Align2::CENTER_CENTER, initial, FontId::proportional(font_size(rect.height() * 0.75)), color);
-        }
+        paint_icon(self.host, painter, rect, name, title, color);
     }
 
-    fn not_drawn_yet(&mut self, ui: &mut egui::Ui, widget: &Widget) {
-        let name = format!("{widget:?}").split([' ', '{', '(']).next().unwrap_or_default().to_string();
-        let text = self.host.tr("This app does not draw this plug-in widget yet:");
-        self.last = Some(ui.label(self.text(&format!("{text} {name}"), TextStyle::Weak)));
+    pub(crate) fn label_registered(&mut self, response: &egui::Response, text: &str) {
+        self.host.register(&format!("{}.label.{}", self.scope, self.labels), response, text);
+        self.labels += 1;
+        self.last = Some(response.clone());
     }
 
     fn drop_target(&mut self, ui: &mut egui::Ui, id: u64, children: &[Widget]) {

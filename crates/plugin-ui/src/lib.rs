@@ -1,18 +1,21 @@
-use craft_plugin::{Drag, Dropped, Paint};
+use craft_plugin::{Drag, Dropped, Gradient, Paint};
 use egui::{Color32, FontFamily};
 
 #[cfg(any(test, feature = "conformance"))]
 pub mod conformance;
+mod controls;
 mod form;
 mod list;
 mod marks;
 mod panel;
+mod pen;
 #[cfg(test)]
 mod tests;
 
 pub use form::{Answer, draw_form, param_button};
 pub use marks::{draw_marks, filled_polygon};
-pub use panel::draw;
+pub use panel::{draw, paint_icon};
+pub use pen::PenSource;
 
 pub type Triangulate = fn(&[[f64; 2]]) -> Vec<[usize; 3]>;
 
@@ -66,6 +69,14 @@ pub trait Host {
 
     fn icon(&mut self, _painter: &egui::Painter, _rect: egui::Rect, _name: &str, _color: Color32) -> bool {
         false
+    }
+
+    fn curve(&mut self, _ui: &mut egui::Ui, _key: &str, _points: &[[f64; 2]]) -> Option<(egui::Response, Option<Vec<[f64; 2]>>)> {
+        None
+    }
+
+    fn gradient(&mut self, _ui: &mut egui::Ui, _key: &str, _value: &Gradient) -> Option<(egui::Response, Option<Gradient>)> {
+        None
     }
 
     #[expect(clippy::disallowed_types)]

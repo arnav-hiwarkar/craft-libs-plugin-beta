@@ -1196,19 +1196,24 @@ impl Tool for Stamp {
             return Ok(());
         }
         let [x, y] = event.comp;
-        self.seen.push(format!("{:?} {x:.1} {y:.1}", event.kind));
+        let pen = event.pen.map_or(String::new(), |pen| {
+            let end = if pen.eraser { " eraser" } else { "" };
+            format!(" pen {:.2} {:.2} {:.2}{end} at {:.2}", pen.pressure, pen.tilt[0], pen.tilt[1], event.pressure)
+        });
+        let line = format!("{:?} {x:.1} {y:.1}{pen}", event.kind);
         match event.kind {
             ToolEventKind::Down => {
-                self.seen = vec![format!("Down {x:.1} {y:.1}")];
+                self.seen = vec![line];
                 let reply = host::command("layer.newNull", json!({"name": "Stamp"}))?;
                 self.null = reply["layer"].as_u64();
             }
             ToolEventKind::Move | ToolEventKind::Up => {
+                self.seen.push(line);
                 if let Some(layer) = self.null {
                     host::command("prop.set", json!({"layer": layer, "path": "transform/position", "value": [x, y]}))?;
                 }
             }
-            _ => {}
+            _ => self.seen.push(line),
         }
         for (row, line) in self.seen.iter().enumerate() {
             overlay.text([x, y + 12.0 * row as f64], line);
@@ -1456,6 +1461,7 @@ fn make() -> Plugin {
         .effect(AuxDepth)
         .effect(AuxUndeclared)
         .tool("stamp", "Stamp", Stamp::default())
+        .options("stamp-options")
         .panel("counter", "Counter", Counter::default())
         .panel("watch", "Watch", Watch::default())
         .panel("ticker", "Ticker", Ticker::default())
@@ -1466,6 +1472,18 @@ fn make() -> Plugin {
         .icon("sliders")
         .place(PanelPlace::Float)
         .size(PanelSize::Large)
+        .panel("tree", "Tree", Tree::default())
+        .icon("list")
+        .panel("status", "Status", StatusItem::default())
+        .icon("bell")
+        .place(PanelPlace::Status)
+        .panel("stamp-options", "Stamp Options", StampOptions::default())
+        .place(PanelPlace::Bar)
+        .panel_each("notes", "Notes", Notes::default)
+        .icon("text")
+        .place(PanelPlace::Bottom)
+        .panel("controls", "Controls", Controls::default())
+        .icon("sliders")
         .effect(Peek)
         .tool("census", "Census", Census)
         .panel("shared", "Shared", Shared)
@@ -1477,6 +1495,10 @@ fn make() -> Plugin {
             let reply = host::command("layer.newNull", json!({"name": "From Plugin"}))?;
             host::write_file(Root::Data, "last-reply.json", reply.to_string().as_bytes())
         })
+        .menu("Layer/Probe Tools")
+        .context(Context::Layers)
+        .toolbar()
+        .icon("wand")
         .command("read", "Read Document", || host::command("comp.info", json!({})).map(|_| ()))
         .shortcut("Cmd+Shift+J")
         .command("ask", "Ask For Settings", || {
@@ -1609,4 +1631,168 @@ fn make() -> Plugin {
         .task("edit", "Edit From A Task", |_task: &Task| host::command("layer.newNull", json!({"name": "From Task"})))
 }
 
+#[derive(Default)]
+struct Controls {
+    live: bool,
+    mode: usize,
+    notes: String,
+    shape: Option<Vec<[f64; 2]>>,
+    ramp: Option<Gradient>,
+    pinned: bool,
+    said: String,
+    focused: bool,
+}
+
+impl Panel for Controls {
+    fn ui(&mut self, ui: &mut Ui) {
+        ui.text(&[("Probe ", TextStyle::Body), ("controls", TextStyle::Strong)]);
+        ui.toggle("Live", &mut self.live);
+        ui.context_menu(|menu| {
+            if menu.item("Say hello") {
+                self.said = "hello".into();
+            }
+        });
+        ui.radio("Mode", &mut self.mode, &["Plain", "Soft", "Hard"]);
+        ui.text_area("notes", &mut self.notes, "Notes", 3);
+        if !std::mem::replace(&mut self.focused, true) {
+            ui.focus();
+        }
+        ui.gap(Gap::Medium);
+        if ui.icon_button("trash", "Clear notes") {
+            self.notes.clear();
+        }
+        ui.name("Clear the notes");
+        ui.menu("More", |menu| {
+            if menu.item("Reset") {
+                self.said = "reset".into();
+            }
+            menu.check("Pinned", &mut self.pinned);
+            menu.separator();
+            menu.submenu("Mode", |menu| {
+                if menu.item("Hard") {
+                    self.mode = 2;
+                }
+            });
+        });
+        let shape = self.shape.get_or_insert_with(|| vec![[0.0, 0.0], [1.0, 1.0]]);
+        ui.curve("Shape", shape);
+        let points = shape.len();
+        let ramp = self.ramp.get_or_insert_with(|| Gradient::new(&[(0.0, [0.0, 0.0, 0.0, 1.0]), (1.0, [1.0, 1.0, 1.0, 1.0])]));
+        ui.gradient("Ramp", ramp);
+        let stops = ramp.colors.len();
+        ui.split("summary", Axis::Horizontal, |ui| ui.label(&format!("{points} points")), |ui| ui.label(&format!("{stops} stops")));
+        ui.label(&format!("live {} mode {} pinned {} notes {:?} said {}", self.live, self.mode, self.pinned, self.notes, self.said));
+    }
+}
+
 craft_plugin::export!(make);
+
+fn folders() -> Vec<(u8, String)> {
+    let mut nodes = Vec::new();
+    for a in 0..3 {
+        nodes.push((0, format!("Folder {a}")));
+        for b in 0..2 {
+            nodes.push((1, format!("Shot {a}.{b}")));
+            nodes.extend((0..2).map(|c| (2, format!("Take {a}.{b}.{c}"))));
+        }
+    }
+    nodes
+}
+
+#[derive(Default)]
+struct Tree {
+    open: Vec<usize>,
+    folder: Option<usize>,
+    takes: Vec<usize>,
+    said: String,
+}
+
+impl Tree {
+    fn shown(&self, nodes: &[(u8, String)]) -> Vec<usize> {
+        let mut shut_below = u8::MAX;
+        (0..nodes.len())
+            .filter(|at| {
+                let depth = nodes[*at].0;
+                if depth > shut_below {
+                    return false;
+                }
+                shut_below = if depth < 2 && !self.open.contains(at) { depth } else { u8::MAX };
+                true
+            })
+            .collect()
+    }
+}
+
+impl Panel for Tree {
+    fn ui(&mut self, ui: &mut Ui) {
+        let nodes = folders();
+        let before = self.shown(&nodes);
+        if let Some((row, open)) = ui.toggled("folders") {
+            let picked = self.folder.and_then(|row| before.get(row).copied());
+            let node = before.get(row).copied().unwrap_or_default();
+            self.open.retain(|at| *at != node);
+            if open {
+                self.open.push(node);
+            }
+            self.folder = picked.and_then(|node| self.shown(&nodes).iter().position(|at| *at == node));
+        }
+        let shown = self.shown(&nodes);
+        let picked = ui.list("folders", shown.len(), &mut self.folder, |row| {
+            let (depth, name) = &nodes[shown[row]];
+            let item = Item::new(name).depth(*depth).icon(if *depth < 2 { "folder" } else { "film" });
+            if *depth < 2 { item.open(self.open.contains(&shown[row])) } else { item }
+        });
+        if let Some((row, open)) = picked.toggled {
+            self.said = format!("{} {}", if open { "opened" } else { "closed" }, nodes[shown[row]].1);
+        }
+        let takes = ui.table("takes", &["Take", "Length", "Rating"], 10_000, &mut self.takes, |row| {
+            Item::cells(&[&format!("take {row}"), &format!("{}.{} s", row % 60, row % 10), &"*".repeat(row % 5 + 1)])
+        });
+        if let Some(row) = takes.activated {
+            self.said = format!("activated take {row}");
+        }
+        ui.label(&self.said);
+    }
+}
+
+#[derive(Default)]
+struct StatusItem {
+    pings: u32,
+}
+
+impl Panel for StatusItem {
+    fn ui(&mut self, ui: &mut Ui) {
+        ui.row(|ui| {
+            if ui.button("Ping") {
+                self.pings += 1;
+            }
+            ui.label(&format!("{} pings", self.pings));
+        });
+    }
+}
+
+#[derive(Default)]
+struct StampOptions {
+    soft: bool,
+}
+
+impl Panel for StampOptions {
+    fn ui(&mut self, ui: &mut Ui) {
+        ui.row(|ui| {
+            ui.checkbox("Soft", &mut self.soft);
+            ui.label(if self.soft { "soft stamp" } else { "hard stamp" });
+        });
+    }
+}
+
+#[derive(Default)]
+struct Notes {
+    text: String,
+}
+
+impl Panel for Notes {
+    fn ui(&mut self, ui: &mut Ui) {
+        ui.text_edit("note", &mut self.text, "Note");
+        ui.label(&format!("note {}: {}", ui.instance().unwrap_or("-"), self.text));
+    }
+}

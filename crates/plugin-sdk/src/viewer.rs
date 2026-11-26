@@ -243,6 +243,8 @@ pub struct Pen {
     pub tilt: [f32; 2],
     #[serde(default)]
     pub eraser: bool,
+    #[serde(default)]
+    pub rotation: f32,
 }
 
 pub trait Tool: Send + 'static {
