@@ -235,6 +235,11 @@ impl Retained {
         }
     }
 
+    pub fn reset(&mut self) {
+        let (topics, app, timers) = (std::mem::take(&mut self.topics), std::mem::take(&mut self.app), std::mem::take(&mut self.timers));
+        *self = Retained { level: self.level, calls: self.calls, gesture: self.gesture + 1, topics, app, timers, ..Retained::default() };
+    }
+
     pub fn invalidate(&mut self) {
         self.stale = true;
     }
@@ -571,6 +576,23 @@ mod tests {
         assert_eq!((events(&mut panel, 48), panel.started_gesture()), (Some(vec![number(2.0)]), first));
         assert!(!panel.pending_in(first));
         assert_eq!((events(&mut panel, 64), panel.started_gesture()), (Some(vec![number(7.0)]), first + 1));
+    }
+
+    #[test]
+    fn a_reset_panel_forgets_its_tree_and_input_but_keeps_its_app_events_and_is_called_again() {
+        let mut panel = drawn(vec![], vec![Topic::Project]);
+        slow_call(&mut panel);
+        panel.push(vec![click(7)], "x");
+        panel.press("Delete");
+        panel.push(vec![UiEvent { id: 5, kind: UiEventKind::List(ListEvent::Show { first: 10, count: 5 }) }], "");
+        panel.notify(&AppEvent::Project { path: None });
+        panel.reset();
+        assert_eq!((panel.widgets(), panel.in_flight(), panel.pending()), (&[][..], false, false));
+        let input = panel.start(SIZE, ms(48)).unwrap_or_default();
+        assert_eq!(
+            (input.events, input.keys, input.pressed, input.views, input.app),
+            (vec![], String::new(), Vec::<String>::new(), vec![], vec![AppEvent::Project { path: None }])
+        );
     }
 
     #[test]
