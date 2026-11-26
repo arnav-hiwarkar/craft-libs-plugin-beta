@@ -71,7 +71,12 @@ fn sanitized(sample: Pen) -> Pen {
     let quarter = std::f32::consts::FRAC_PI_2;
     let pressure = if sample.pressure.is_nan() { 1.0 } else { sample.pressure.clamp(0.0, 1.0) };
     let tilt = sample.tilt.map(|tilt| if tilt.is_finite() { tilt.clamp(-quarter, quarter) } else { 0.0 });
-    Pen { pressure, tilt, eraser: sample.eraser }
+    let rotation = if sample.rotation.is_finite() {
+        (sample.rotation + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI
+    } else {
+        0.0
+    };
+    Pen { pressure, tilt, eraser: sample.eraser, rotation }
 }
 
 #[cfg(test)]
@@ -82,7 +87,7 @@ mod tests {
     use super::PenSource;
 
     fn pen(pressure: f32) -> Option<Pen> {
-        Some(Pen { pressure, tilt: [0.25, -0.5], eraser: false })
+        Some(Pen { pressure, tilt: [0.25, -0.5], eraser: false, rotation: 0.0 })
     }
 
     fn moved() -> Event {
@@ -100,19 +105,23 @@ mod tests {
     #[test]
     fn a_pens_readings_reach_the_moves_of_the_pass_with_their_pressure_tilt_and_end() {
         let source = PenSource::default();
-        source.set(Some(Pen { pressure: 0.0, tilt: [0.0, 0.0], eraser: true }));
-        source.set(Some(Pen { pressure: 0.5, tilt: [0.25, -0.5], eraser: true }));
-        source.set(Some(Pen { pressure: 0.75, tilt: [0.5, 0.125], eraser: true }));
+        source.set(Some(Pen { pressure: 0.0, tilt: [0.0, 0.0], eraser: true, rotation: 0.0 }));
+        source.set(Some(Pen { pressure: 0.5, tilt: [0.25, -0.5], eraser: true, rotation: 0.0 }));
+        source.set(Some(Pen { pressure: 0.75, tilt: [0.5, 0.125], eraser: true, rotation: 0.0 }));
         assert_eq!(
             source.pens(&[moved(), button(true), moved()]),
             [
-                Some(Pen { pressure: 0.5, tilt: [0.25, -0.5], eraser: true }),
-                Some(Pen { pressure: 0.5, tilt: [0.25, -0.5], eraser: true }),
-                Some(Pen { pressure: 0.75, tilt: [0.5, 0.125], eraser: true }),
+                Some(Pen { pressure: 0.5, tilt: [0.25, -0.5], eraser: true, rotation: 0.0 }),
+                Some(Pen { pressure: 0.5, tilt: [0.25, -0.5], eraser: true, rotation: 0.0 }),
+                Some(Pen { pressure: 0.75, tilt: [0.5, 0.125], eraser: true, rotation: 0.0 }),
             ],
             "the hover reading before the touch is dropped, the press takes the first contact"
         );
-        assert_eq!(source.pens(&[moved()]), [Some(Pen { pressure: 0.75, tilt: [0.5, 0.125], eraser: true })], "no new reading repeats the latest");
+        assert_eq!(
+            source.pens(&[moved()]),
+            [Some(Pen { pressure: 0.75, tilt: [0.5, 0.125], eraser: true, rotation: 0.0 })],
+            "no new reading repeats the latest"
+        );
     }
 
     #[test]
@@ -145,12 +154,23 @@ mod tests {
     #[test]
     fn readings_out_of_range_are_brought_into_range() {
         let source = PenSource::default();
-        source.set(Some(Pen { pressure: f32::NAN, tilt: [f32::INFINITY, -4.0], eraser: false }));
-        source.set(Some(Pen { pressure: 4.0, tilt: [f32::NAN, 4.0], eraser: false }));
+        source.set(Some(Pen { pressure: f32::NAN, tilt: [f32::INFINITY, -4.0], eraser: false, rotation: 0.0 }));
+        source.set(Some(Pen { pressure: 4.0, tilt: [f32::NAN, 4.0], eraser: false, rotation: 0.0 }));
         let quarter = std::f32::consts::FRAC_PI_2;
         assert_eq!(
             source.pens(&[moved(), moved()]),
-            [Some(Pen { pressure: 1.0, tilt: [0.0, -quarter], eraser: false }), Some(Pen { pressure: 1.0, tilt: [0.0, quarter], eraser: false })]
+            [
+                Some(Pen { pressure: 1.0, tilt: [0.0, -quarter], eraser: false, rotation: 0.0 }),
+                Some(Pen { pressure: 1.0, tilt: [0.0, quarter], eraser: false, rotation: 0.0 })
+            ]
         );
+    }
+
+    #[test]
+    fn a_barrel_rotation_is_kept_inside_one_half_turn_either_way_and_a_broken_one_is_zero() {
+        let turn = |rotation| super::sanitized(Pen { pressure: 0.5, rotation, ..Default::default() }).rotation;
+        let pi = std::f32::consts::PI;
+        assert!((turn(1.5 * pi) + 0.5 * pi).abs() < 1e-5 && (turn(0.25) - 0.25).abs() < 1e-6, "{} {}", turn(1.5 * pi), turn(0.25));
+        assert_eq!(turn(f32::NAN), 0.0);
     }
 }
