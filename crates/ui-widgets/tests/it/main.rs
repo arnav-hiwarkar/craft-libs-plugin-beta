@@ -19,6 +19,7 @@ mod list;
 mod menu;
 mod notices;
 mod overlay;
+mod paint_area;
 
 mod pickers;
 mod popover;

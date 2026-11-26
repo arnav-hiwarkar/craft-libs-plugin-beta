@@ -1,12 +1,13 @@
 //! `PaintArea`: an area the caller paints and that reports the pointer and the keys over it. A press, drag and
-//! release, the hover position and the wheel come out as samples in the area's own space; while it has the focus every
-//! key press comes out as a chord. It edits no value: the caller turns the samples into its own changes.
+//! release, a secondary press, the hover position and the wheel come out as samples in the area's own space, each with
+//! its press's click count; while it has the focus every key press comes out as a chord. It edits no value: the caller
+//! turns the samples into its own changes.
 
 use crate::contract::{Common, Component, Cx, Focus as _, MeasureCx, NoValue, Outcome, PaintUi, PartsCx, Pointer as _, Role};
 use crate::primitives::ContentPainterCx;
 use crate::runtime::focus::KeyUse;
 use crate::style::{ComponentStyle, FocusLook, StyleCx};
-use craft_behavior::{CursorIcon, Metrics, PartKey, PointerSample, PressPhase, Sense};
+use craft_behavior::{CursorIcon, Metrics, PartKey, PointerButton, PointerSample, PressPhase, PressStart, Sense};
 use craft_keymap::{Chord, Mods};
 use egui::{Rect, Response, Vec2};
 
@@ -16,6 +17,9 @@ mod stories;
 /// The area's one part: every press, hover and wheel over it is the caller's.
 pub const AREA: PartKey = PartKey::new("area");
 
+/// The memory of the last pointer position the area saw, so a hover sample comes only when the pointer moved.
+const SEEN: &str = "seen";
+
 /// The aspect the area takes when the caller gives none: twice as wide as high.
 const DEFAULT_ASPECT: f32 = 2.0;
 
@@ -23,7 +27,8 @@ const DEFAULT_ASPECT: f32 = 2.0;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum PaintPhase {
-    /// The pointer moves over the area with no button held, or the wheel turns over it.
+    /// The pointer arrived at a new position over the area with no button held (just before a press there too), or the
+    /// wheel turns over it.
     Hover,
     /// The button went down on the area.
     Down,
@@ -31,6 +36,9 @@ pub enum PaintPhase {
     Drag,
     /// The button came up, wherever the pointer is.
     Up,
+    /// The secondary button went down on the area: a request for its context menu there. The rest of that press is
+    /// not reported.
+    Context,
 }
 
 /// One sample of the pointer over the area.
@@ -47,6 +55,9 @@ pub struct PaintPointer {
     pub scroll: Vec2,
     /// The pen's pressure and tilt; `None` for a mouse.
     pub sample: Option<PointerSample>,
+    /// The click count of the press the sample belongs to: 2 on each sample of the second press of a double click,
+    /// 0 for a hover or the wheel.
+    pub clicks: u32,
 }
 
 /// What a pass of the area reports.
@@ -111,8 +122,17 @@ impl<'a> PaintArea<'a> {
 
     fn sample(&mut self, cx: &Cx<'_, Self>, pos: egui::Pos2, phase: PaintPhase, scroll: Option<(Vec2, Mods)>) {
         let press = cx.part(AREA).press;
+        let clicks = press.phase.start().filter(|_| scroll.is_none() && phase != PaintPhase::Hover).map_or(0, |start| start.clicks);
         let (scroll, mods) = scroll.unwrap_or((Vec2::ZERO, press.mods));
-        self.pointers.push(PaintPointer { pos: pos - cx.rect.min, phase, mods, scroll, sample: press.sample });
+        self.pointers.push(PaintPointer { pos: pos - cx.rect.min, phase, mods, scroll, sample: press.sample, clicks });
+    }
+
+    fn arrived(cx: &mut Cx<'_, Self>, pos: egui::Pos2) -> bool {
+        let id = crate::runtime::memory::sub(cx.id, SEEN);
+        let seen = cx.core.memory.shown::<Option<egui::Pos2>>(id);
+        let arrived = *seen != Some(pos);
+        *seen = Some(pos);
+        arrived
     }
 }
 
@@ -147,20 +167,36 @@ impl Component for PaintArea<'_> {
 
     fn parts(&mut self, rect: Rect, cx: &mut PartsCx<'_, Self>) {
         cx.part(AREA, rect)
-            .sense(Sense::CLICK | Sense::DRAG | Sense::TAKE_FOCUS | Sense::FOLLOWS_IN_SLOP)
+            .sense(Sense::CLICK | Sense::CONTEXT_CLICK | Sense::DRAG | Sense::TAKE_FOCUS | Sense::FOLLOWS_IN_SLOP)
             .cursor(CursorIcon::Crosshair)
             .pointer_only("the caller's keys reach the area while it has the focus");
     }
 
     fn update(&mut self, cx: &mut Cx<'_, Self>) {
         let none = None;
-        match cx.part(AREA).press.phase {
-            PressPhase::Down { start, .. } => self.sample(cx, start.origin, PaintPhase::Down, none),
-            PressPhase::DragStart { pos, .. } | PressPhase::Drag { pos, .. } => self.sample(cx, pos, PaintPhase::Drag, none),
-            PressPhase::Release { pos, .. } => self.sample(cx, pos, PaintPhase::Up, none),
+        let phase = cx.part(AREA).press.phase;
+        let secondary = phase.start().is_some_and(|start: PressStart| start.button == PointerButton::Secondary);
+        match phase {
+            PressPhase::Down { start, .. } => {
+                if Self::arrived(cx, start.origin) {
+                    self.sample(cx, start.origin, PaintPhase::Hover, none);
+                }
+                self.sample(cx, start.origin, if secondary { PaintPhase::Context } else { PaintPhase::Down }, none);
+            }
+            _ if secondary => {}
+            PressPhase::DragStart { pos, .. } | PressPhase::Drag { pos, .. } => {
+                Self::arrived(cx, pos);
+                self.sample(cx, pos, PaintPhase::Drag, none);
+            }
+            PressPhase::Release { pos, .. } => {
+                Self::arrived(cx, pos);
+                self.sample(cx, pos, PaintPhase::Up, none);
+            }
             PressPhase::Cancel { start, .. } => self.sample(cx, start.origin, PaintPhase::Up, none),
             PressPhase::Hover => {
-                if let Some(pos) = cx.hover_pos(AREA) {
+                if let Some(pos) = cx.hover_pos(AREA)
+                    && Self::arrived(cx, pos)
+                {
                     self.sample(cx, pos, PaintPhase::Hover, none);
                 }
             }
