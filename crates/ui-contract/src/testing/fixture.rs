@@ -237,6 +237,14 @@ impl Fixture {
         self
     }
 
+    /// Gives every following pass the app's run-time commands, as an app's `FrameInput.commands` does: their chords
+    /// fire into `FrameOutput::fired`, and a catalog of another generation rebuilds the keymap.
+    pub fn catalog(&mut self, catalog: crate::runtime::commands::AppCatalog) -> &mut Self {
+        self.commands = std::mem::take(&mut self.commands).catalog(catalog);
+        self.frames.commands(self.commands.clone());
+        self
+    }
+
     /// Sets the app's one gate over commands for every following pass, as an app's `FrameInput.commands` does.
     pub fn gate(&mut self, gate: CommandGate) -> &mut Self {
         self.commands.gate = Some(gate);
