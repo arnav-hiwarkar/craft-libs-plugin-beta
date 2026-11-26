@@ -1491,6 +1491,7 @@ fn make() -> Plugin {
         .panel_each("notes", "Notes", Notes::default)
         .icon("text")
         .place(PanelPlace::Bottom)
+        .panel("notes.1", "Dotted Notes", Notes::default())
         .panel("controls", "Controls", Controls::default())
         .icon("sliders")
         .panel("preview", "Preview", Preview::default())
