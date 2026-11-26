@@ -96,7 +96,99 @@ impl Contributions {
     }
 
     pub fn check(&self) -> Result<(), String> {
-        self.effects.iter().try_for_each(|effect| effect.check_bounded(self.bounded))
+        self.effects.iter().try_for_each(|effect| effect.check_bounded(self.bounded))?;
+        self.tools.iter().try_for_each(|tool| self.check_options(&tool.id, tool.options.as_deref()))?;
+        self.panels.iter().try_for_each(PanelSpec::check)
+    }
+
+    fn check_options(&self, tool: &str, options: Option<&str>) -> Result<(), String> {
+        let Some(options) = options else { return Ok(()) };
+        match self.panels.iter().find(|panel| panel.id == options) {
+            None => Err(format!(
+                "tool `{tool}` names options panel `{options}`, but the plugin has no panel `{options}`; declare it with .panel(\"{options}\", ..).place(PanelPlace::Bar)"
+            )),
+            Some(panel) if panel.place != PanelPlace::Bar => Err(format!(
+                "tool `{tool}` names options panel `{options}`, which is not an option bar; add .place(PanelPlace::Bar) after .panel(\"{options}\", ..)"
+            )),
+            Some(_) => Ok(()),
+        }
+    }
+
+    pub fn warnings(&self) -> Vec<String> {
+        let panels = self.panels.iter().map(|panel| ("panel", &panel.id, &panel.icon));
+        let commands = self.commands.iter().map(|command| ("command", &command.id, &command.icon));
+        let tools = self.tools.iter().map(|tool| ("tool", &tool.id, &tool.named_icon));
+        panels
+            .chain(commands)
+            .chain(tools)
+            .filter_map(|(kind, id, icon)| icon.as_ref().filter(|icon| !ICONS.contains(&icon.as_str())).map(|icon| (kind, id, icon)))
+            .map(|(kind, id, icon)| {
+                format!("{kind} `{id}` names icon `{icon}`, which is not in craft_plugin::ICONS, so the app draws a letter; pick a name from ICONS")
+            })
+            .collect()
+    }
+}
+
+const KEY_NAMES: &[&str] = &[
+    "Up",
+    "Down",
+    "Left",
+    "Right",
+    "ArrowUp",
+    "ArrowDown",
+    "ArrowLeft",
+    "ArrowRight",
+    "Escape",
+    "Tab",
+    "Backspace",
+    "Enter",
+    "Insert",
+    "Delete",
+    "Home",
+    "End",
+    "PageUp",
+    "PageDown",
+    "Space",
+    ";",
+    "'",
+    ",",
+    ".",
+    "/",
+    "\\",
+    "=",
+    "-",
+    "`",
+    "[",
+    "]",
+    "+",
+];
+
+pub fn is_chord(text: &str) -> bool {
+    let (head, key) = match text.strip_suffix("++") {
+        Some(head) => (head, "+"),
+        None if text == "+" => ("", "+"),
+        None => text.rsplit_once('+').unwrap_or(("", text)),
+    };
+    let function = key.strip_prefix('F').and_then(|n| n.parse::<u8>().ok()).is_some_and(|n| (1..=35).contains(&n));
+    let single = key.len() == 1 && key.bytes().all(|b| b.is_ascii_alphanumeric());
+    let modifiers = head.is_empty() || head.split('+').all(|modifier| matches!(modifier, "Cmd" | "Ctrl" | "Shift" | "Alt"));
+    modifiers && (function || single || KEY_NAMES.contains(&key))
+}
+
+impl PanelSpec {
+    fn check(&self) -> Result<(), String> {
+        if let Some(key) = self.keys.iter().find(|key| !is_chord(key)) {
+            return Err(format!(
+                "panel `{}` takes key `{key}`, which the app cannot read; write the modifiers Cmd, Ctrl, Shift or Alt and one key, joined by +, like \"Delete\" or \"Cmd+Shift+D\"",
+                self.id
+            ));
+        }
+        match &self.help {
+            Some(help) if !help.starts_with("https://") => {
+                Err(format!("panel `{}` has help `{help}`; .help(..) takes only an https:// address", self.id))
+            }
+            _ => Ok(()),
+        }
     }
 }
 

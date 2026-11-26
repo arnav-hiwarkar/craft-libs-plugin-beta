@@ -86,8 +86,15 @@ enum Last {
     Tool,
 }
 
-fn misplaced(last: Last, modifier: &str, follows: &str) -> ! {
-    panic!("`.{modifier}(..)` sets a {follows}, but it follows {last:?}; call it right after the `.{follows}(..)` it belongs to")
+fn misplaced(last: Last, modifier: &str, kinds: &[&str]) -> ! {
+    let either = |words: Vec<String>| match words.split_last() {
+        Some((final_word, [])) => final_word.clone(),
+        Some((final_word, rest)) => format!("{} or {final_word}", rest.join(", ")),
+        None => String::new(),
+    };
+    let follows = either(kinds.iter().map(|kind| kind.to_string()).collect());
+    let calls = either(kinds.iter().map(|kind| format!("`.{kind}(..)`")).collect());
+    panic!("`.{modifier}(..)` sets a {follows}, but it follows {last:?}; call it right after the {calls} it belongs to")
 }
 
 #[derive(Default)]
@@ -133,9 +140,7 @@ impl Plugin {
     }
 
     pub fn shortcut(mut self, keys: &str) -> Self {
-        if let Some((spec, _)) = self.commands.last_mut() {
-            spec.shortcut = Some(keys.into());
-        }
+        self.last_command("shortcut").shortcut = Some(keys.into());
         self
     }
 
@@ -156,7 +161,7 @@ impl Plugin {
         let last = self.last;
         match (last, self.panels.last_mut()) {
             (Last::Panel, Some((spec, _))) => spec,
-            _ => misplaced(last, modifier, "panel"),
+            _ => misplaced(last, modifier, &["panel"]),
         }
     }
 
@@ -164,7 +169,7 @@ impl Plugin {
         let last = self.last;
         match (last, self.commands.last_mut()) {
             (Last::Command, Some((spec, _))) => spec,
-            _ => misplaced(last, modifier, "command"),
+            _ => misplaced(last, modifier, &["command"]),
         }
     }
 
@@ -174,7 +179,7 @@ impl Plugin {
             (Last::Panel, Some((spec, _)), _, _) => spec.icon = Some(icon.into()),
             (Last::Command, _, Some((spec, _)), _) => spec.icon = Some(icon.into()),
             (Last::Tool, _, _, Some((spec, _))) => spec.named_icon = Some(icon.into()),
-            _ => misplaced(last, "icon", "panel, command or tool"),
+            _ => misplaced(last, "icon", &["panel", "command", "tool"]),
         }
         self
     }
@@ -221,7 +226,7 @@ impl Plugin {
         let last = self.last;
         match (last, self.tools.last_mut()) {
             (Last::Tool, Some((spec, _))) => spec.options = Some(panel.into()),
-            _ => misplaced(last, "options", "tool"),
+            _ => misplaced(last, "options", &["tool"]),
         }
         self
     }
@@ -591,11 +596,67 @@ mod tests {
         assert_eq!((found.tools[0].named_icon.as_deref(), found.tools[0].options.as_deref()), (Some("pen"), Some("pencil-options")));
     }
 
+    fn misplaced_message(build: impl FnOnce() -> Plugin + std::panic::UnwindSafe) -> String {
+        std::panic::catch_unwind(build).err().and_then(|e| e.downcast_ref::<String>().cloned()).unwrap_or_default()
+    }
+
     #[test]
     fn a_modifier_after_the_wrong_contribution_says_where_it_belongs() {
-        let caught = std::panic::catch_unwind(|| Plugin::new().command("a", "A", || Ok(())).place(PanelPlace::Float));
-        let message = caught.err().and_then(|e| e.downcast_ref::<String>().cloned()).unwrap_or_default();
-        assert_eq!(message, "`.place(..)` sets a panel, but it follows Command; call it right after the `.panel(..)` it belongs to");
+        assert_eq!(
+            misplaced_message(|| Plugin::new().command("a", "A", || Ok(())).place(PanelPlace::Float)),
+            "`.place(..)` sets a panel, but it follows Command; call it right after the `.panel(..)` it belongs to"
+        );
+        assert_eq!(
+            misplaced_message(|| Plugin::new().command("a", "A", || Ok(())).panel("p", "P", Count::default()).shortcut("Cmd+T")),
+            "`.shortcut(..)` sets a command, but it follows Panel; call it right after the `.command(..)` it belongs to"
+        );
+        assert_eq!(
+            misplaced_message(|| Plugin::new().icon("list")),
+            "`.icon(..)` sets a panel, command or tool, but it follows Nothing; call it right after the `.panel(..)`, `.command(..)` or `.tool(..)` it belongs to"
+        );
+    }
+
+    #[test]
+    fn a_load_refuses_an_options_panel_that_is_missing_or_not_a_bar_a_key_it_cannot_read_and_help_that_is_not_https() {
+        let tool = ToolSpec {
+            id: "stamp".into(),
+            name: "Stamp".into(),
+            icon: vec![],
+            cursor: Default::default(),
+            named_icon: None,
+            options: Some("stamp-options".into()),
+        };
+        let bar = PanelSpec { id: "stamp-options".into(), title: "Stamp".into(), place: PanelPlace::Bar, ..Default::default() };
+        let with = |panel: PanelSpec| Contributions { tools: vec![tool.clone()], panels: vec![panel], ..Default::default() };
+        assert_eq!(with(bar.clone()).check(), Ok(()));
+        let keyed = |keys: &[&str]| with(PanelSpec { keys: keys.iter().map(|key| key.to_string()).collect(), ..bar.clone() }).check();
+        assert_eq!(keyed(&["Delete", "Cmd+D", "Cmd+Shift+Left", "Cmd++", "F12", "Alt+,"]), Ok(()));
+        let refused = [
+            with(PanelSpec { id: "options".into(), ..bar.clone() }).check(),
+            with(PanelSpec { place: PanelPlace::Side, ..bar.clone() }).check(),
+            keyed(&["Delete", "Ctl+D"]),
+            keyed(&["Cmd+"]),
+            with(PanelSpec { help: Some("file:///Applications/X.app".into()), ..bar.clone() }).check(),
+        ];
+        assert_eq!(
+            refused.map(|result| result.unwrap_err()),
+            [
+                "tool `stamp` names options panel `stamp-options`, but the plugin has no panel `stamp-options`; declare it with .panel(\"stamp-options\", ..).place(PanelPlace::Bar)",
+                "tool `stamp` names options panel `stamp-options`, which is not an option bar; add .place(PanelPlace::Bar) after .panel(\"stamp-options\", ..)",
+                "panel `stamp-options` takes key `Ctl+D`, which the app cannot read; write the modifiers Cmd, Ctrl, Shift or Alt and one key, joined by +, like \"Delete\" or \"Cmd+Shift+D\"",
+                "panel `stamp-options` takes key `Cmd+`, which the app cannot read; write the modifiers Cmd, Ctrl, Shift or Alt and one key, joined by +, like \"Delete\" or \"Cmd+Shift+D\"",
+                "panel `stamp-options` has help `file:///Applications/X.app`; .help(..) takes only an https:// address",
+            ]
+        );
+    }
+
+    #[test]
+    fn an_icon_name_outside_icons_is_a_warning_naming_what_carries_it() {
+        let plugin = Plugin::new().panel("p", "P", Count::default()).icon("list").command("c", "C", || Ok(())).icon("wands");
+        assert_eq!(
+            plugin.contributions().warnings(),
+            ["command `c` names icon `wands`, which is not in craft_plugin::ICONS, so the app draws a letter; pick a name from ICONS"]
+        );
     }
 
     fn panel_text(plugin: &Plugin, instance: Option<&str>) -> String {
