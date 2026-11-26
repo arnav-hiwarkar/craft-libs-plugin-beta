@@ -54,6 +54,11 @@ pub(crate) fn rows_height(ui: &egui::Ui, rows: u32) -> f32 {
     extent(Env::of(ui).tokens.size.row.text * rows as f32)
 }
 
+pub(crate) fn control_rows_height(ui: &egui::Ui, rows: u32) -> f32 {
+    let tokens = &Env::of(ui).tokens;
+    extent((tokens.size.control.md + tokens.space.gap.stack) * rows as f32)
+}
+
 pub(crate) fn key_hash(key: &str) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();

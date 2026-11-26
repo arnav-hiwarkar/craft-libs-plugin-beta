@@ -361,7 +361,7 @@ impl Painter<'_> {
 
     fn scroll(&mut self, ui: &mut egui::Ui, id: u64, height: f32, rows: Option<u32>, children: &[Widget]) {
         let room = match rows {
-            Some(rows) => values::rows_height(ui, rows),
+            Some(rows) => values::control_rows_height(ui, rows),
             None => values::extent(height),
         };
         Stack::new().id_salt(self.salt(id)).scroll(craft_ui::contract::Scroll::vertical()).room_height(room).show(ui, |ui, _| self.all(ui, children));
