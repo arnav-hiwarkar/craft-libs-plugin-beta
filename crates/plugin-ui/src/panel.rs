@@ -21,6 +21,13 @@ pub fn draw<H: Host>(ui: &mut egui::Ui, widgets: &[Widget], theme: &Theme, scope
     renderer.events
 }
 
+pub fn draw_panel_menu<H: Host>(ui: &mut egui::Ui, items: &[craft_plugin::MenuItem], theme: &Theme, scope: &str, host: &mut H) -> Vec<UiEvent> {
+    let mut renderer = Renderer { theme, host, scope, events: Vec::new(), last: None, labels: 0 };
+    let mut picked = None;
+    renderer.menu_items(ui, craft_plugin::PANEL_MENU, items, 0, &mut picked);
+    picked.map(|index| UiEvent { id: craft_plugin::PANEL_MENU, kind: UiEventKind::Number(f64::from(index)) }).into_iter().collect()
+}
+
 pub(crate) struct Renderer<'a, H> {
     pub(crate) theme: &'a Theme,
     pub(crate) host: &'a mut H,

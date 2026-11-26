@@ -4,7 +4,7 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 
 use crate::conformance::{Bare, theme};
-use crate::{Answer, draw, draw_form};
+use crate::{Answer, draw, draw_form, draw_panel_menu};
 
 fn harness(widgets: Vec<Widget>) -> Harness<'static, Vec<UiEvent>> {
     Harness::new_ui_state(
@@ -34,6 +34,26 @@ fn an_open_section_inside_a_row_stays_open_when_a_sibling_appears_above_the_row(
     harness.run();
     assert!(harness.query_by_label("Name taken").is_some());
     assert!(harness.query_by_label("Inside").is_some());
+}
+
+#[test]
+fn picking_a_panel_menu_item_sends_its_index_counting_separators_and_a_disabled_item_sends_nothing() {
+    let item = |text: &str| craft_plugin::MenuItem { text: text.into(), ..Default::default() };
+    let items = vec![
+        item("Zoom to Fit"),
+        craft_plugin::MenuItem { separator: true, ..Default::default() },
+        item("Reset View"),
+        craft_plugin::MenuItem { disabled: true, ..item("Export") },
+    ];
+    let mut harness = Harness::new_ui_state(
+        move |ui, events: &mut Vec<UiEvent>| events.extend(draw_panel_menu(ui, &items, &theme(), "plugin.test.panel", &mut Bare)),
+        Vec::new(),
+    );
+    harness.get_by_label("Export").click();
+    harness.run();
+    harness.get_by_label("Reset View").click();
+    harness.run();
+    assert_eq!(harness.state(), &vec![UiEvent { id: craft_plugin::PANEL_MENU, kind: UiEventKind::Number(2.0) }]);
 }
 
 #[test]

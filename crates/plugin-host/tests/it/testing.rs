@@ -379,3 +379,31 @@ fn the_controls_panel_takes_toggle_radio_text_area_menu_curve_and_gradient_event
     assert!(texts.contains(&"3 points".to_string()) && texts.contains(&"3 stops".to_string()), "{texts:?}");
     assert!(texts.contains(&"Probe controls".to_string()), "{texts:?}");
 }
+
+#[test]
+fn the_app_panel_takes_its_own_keys_and_panel_menu_picks_and_records_the_command_state_it_sets() {
+    let (_bundle, plugin) = probe();
+    let found = plugin.plugin().contributions();
+    let spec = found.panels.iter().find(|panel| panel.id == "app").map(|panel| (panel.keys.clone(), panel.help.clone()));
+    assert_eq!(spec, Some((vec!["Delete".to_string(), "Cmd+D".into()], Some("https://example.org/probe-app".into()))));
+    let mut panel = plugin.panel("app").unwrap();
+    assert_eq!(panel.panel_menu(), ["Zoom to Fit", "Reset View"]);
+    let said = |panel: &craft_plugin_host::testing::PanelTest| panel.texts().last().cloned().unwrap_or_default();
+    panel.press("cmd+d").unwrap();
+    assert_eq!(said(&panel), "pressed Cmd+D");
+    panel.press("Delete").unwrap();
+    assert_eq!(said(&panel), "pressed Delete");
+    assert_eq!(
+        panel.press("Backspace").unwrap_err(),
+        r#"panel `app` does not take `Backspace`; it takes ["Delete", "Cmd+D"]. Add the chord with .keys(&[..]) after .panel(..)"#
+    );
+    panel.pick_panel_menu("Reset View").unwrap();
+    assert_eq!(said(&panel), "view reset");
+    panel.pick_panel_menu("Zoom to Fit").unwrap();
+    assert_eq!(said(&panel), "zoomed to fit");
+    assert_eq!(panel.pick_panel_menu("Help").unwrap_err(), r#"the panel menu of `app` has no item `Help`; it has ["Zoom to Fit", "Reset View"]"#);
+    panel.send("Disable Probe Action", UiEventKind::Bool(true)).unwrap();
+    panel.send("Disable Probe Action", UiEventKind::Bool(false)).unwrap();
+    let state = |enabled: bool| craft_plugin_host::testing::CommandState { command: "app-act".into(), enabled, checked: Some(enabled) };
+    assert_eq!(plugin.command_states(), [state(false), state(true)]);
+}
