@@ -1,4 +1,4 @@
-use craft_plugin::{Drag, Dropped, UiEvent, UiEventKind, Widget};
+use craft_plugin::{Drag, Dropped, Item, ListEvent, UiEvent, UiEventKind, Widget};
 use egui::{Color32, FontFamily};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
@@ -88,6 +88,7 @@ pub fn run(case: &Case, mut paint: Painter) -> Vec<UiEvent> {
     let tree = case.tree.clone();
     let mut harness = Harness::builder()
         .with_size(egui::vec2(case.size[0], case.size[1]))
+        .with_max_steps(64)
         .build_ui_state(move |ui, events: &mut Vec<UiEvent>| events.extend(paint(ui, &tree)), Vec::new());
     harness.run();
     harness.state_mut().clear();
@@ -132,12 +133,49 @@ fn event(id: u64, kind: UiEventKind) -> UiEvent {
     UiEvent { id, kind }
 }
 
+fn list(count: u32, first: u32, shown: u32, selected: Vec<u32>) -> Widget {
+    let items = (first..first + shown).map(|row| Item::new(&format!("file {row}"))).collect();
+    Widget::List { id: 4, columns: vec![], count, first, items, selected, multi: false, rows: 6 }
+}
+
+fn shows_a_later_window(events: &[UiEvent]) -> bool {
+    let shows: Vec<(u32, u32)> = events
+        .iter()
+        .filter_map(|event| match event {
+            UiEvent { id: 4, kind: UiEventKind::List(ListEvent::Show { first, count }) } => Some((*first, *count)),
+            _ => None,
+        })
+        .collect();
+    shows.len() == events.len()
+        && (1..=3).contains(&shows.len())
+        && shows.last().is_some_and(|(first, count)| *first > 100 && *count >= 6 && first + count <= 100_000)
+}
+
 pub fn cases() -> Vec<Case> {
-    vec![Case {
-        name: "a button click is one Click on its id",
-        size: [200.0, 80.0],
-        tree: vec![Widget::Button { id: 9, text: "Apply".into(), enabled: true }],
-        steps: vec![Step::Click("Apply")],
-        expect: Expect::Events(vec![event(9, UiEventKind::Click)]),
-    }]
+    vec![
+        Case {
+            name: "a button click is one Click on its id",
+            size: [200.0, 80.0],
+            tree: vec![Widget::Button { id: 9, text: "Apply".into(), enabled: true }],
+            steps: vec![Step::Click("Apply")],
+            expect: Expect::Events(vec![event(9, UiEventKind::Click)]),
+        },
+        Case {
+            name: "clicking a list row selects it, and Enter then activates it",
+            size: [240.0, 200.0],
+            tree: vec![list(3, 0, 3, vec![])],
+            steps: vec![Step::Click("file 1"), Step::Key(egui::Key::Enter)],
+            expect: Expect::Events(vec![
+                event(4, UiEventKind::List(ListEvent::Select(vec![1]))),
+                event(4, UiEventKind::List(ListEvent::Activate(1))),
+            ]),
+        },
+        Case {
+            name: "scrolling a long list past its built rows asks a few times, not every frame, for the rows now in view",
+            size: [240.0, 200.0],
+            tree: vec![list(100_000, 0, 128, vec![])],
+            steps: vec![Step::Scroll("file 2", 20_000.0)],
+            expect: Expect::Holds("one to three Shows, the last a window after row 100 inside the list", shows_a_later_window),
+        },
+    ]
 }

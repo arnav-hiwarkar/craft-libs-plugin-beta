@@ -14,12 +14,12 @@ pub fn draw<H: Host>(ui: &mut egui::Ui, widgets: &[Widget], theme: &Theme, scope
     renderer.events
 }
 
-struct Renderer<'a, H> {
-    theme: &'a Theme,
-    host: &'a mut H,
-    scope: &'a str,
+pub(crate) struct Renderer<'a, H> {
+    pub(crate) theme: &'a Theme,
+    pub(crate) host: &'a mut H,
+    pub(crate) scope: &'a str,
     events: Vec<UiEvent>,
-    last: Option<egui::Response>,
+    pub(crate) last: Option<egui::Response>,
     labels: u32,
 }
 
@@ -37,7 +37,8 @@ fn plugin_id(widget: &Widget) -> Option<u64> {
         | Widget::Scroll { id, .. }
         | Widget::Collapsing { id, .. }
         | Widget::Tabs { id, .. }
-        | Widget::Grid { id, .. } => Some(*id),
+        | Widget::Grid { id, .. }
+        | Widget::List { id, .. } => Some(*id),
         _ => None,
     }
 }
@@ -71,11 +72,11 @@ impl<H: Host> Renderer<'_, H> {
         }
     }
 
-    fn emit(&mut self, id: u64, kind: UiEventKind) {
+    pub(crate) fn emit(&mut self, id: u64, kind: UiEventKind) {
         self.events.push(UiEvent { id, kind });
     }
 
-    fn register(&mut self, id: u64, response: &egui::Response, label: &str) {
+    pub(crate) fn register(&mut self, id: u64, response: &egui::Response, label: &str) {
         self.host.register(&format!("{}.{id}", self.scope), response, label);
         self.last = Some(response.clone());
     }
@@ -84,7 +85,7 @@ impl<H: Host> Renderer<'_, H> {
         self.host.texture(ctx, key)
     }
 
-    fn text(&self, text: &str, style: TextStyle) -> RichText {
+    pub(crate) fn text(&self, text: &str, style: TextStyle) -> RichText {
         let t = self.theme;
         match style {
             TextStyle::Body => RichText::new(text).font(FontId::proportional(12.0)).color(t.text),
@@ -210,8 +211,10 @@ impl<H: Host> Renderer<'_, H> {
             Widget::Grid { id, columns, children } => self.grid(ui, *id, (*columns).max(1) as usize, children),
             Widget::DropTarget { id, children } => self.drop_target(ui, *id, children),
             Widget::DragSource { id, drag, children } => self.drag_source(ui, *id, drag, children),
-            Widget::List { .. }
-            | Widget::IconButton { .. }
+            Widget::List { id, columns, count, first, items, selected, multi, rows } => {
+                self.list(ui, *id, crate::list::Rows { columns, count: *count, first: *first, items, selected, multi: *multi, rows: *rows })
+            }
+            Widget::IconButton { .. }
             | Widget::Toggle { .. }
             | Widget::Radio { .. }
             | Widget::TextArea { .. }

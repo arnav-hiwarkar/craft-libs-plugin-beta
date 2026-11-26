@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use craft_plugin::{
-    AppEvent, Call, Channel, EffectSpec, FrameRequest, Layout, MaskPath, Overlay, PanelReply, ParamKind, ParamsAt, Pixel, Place, Plan, PlanPass,
-    Rect, RenderCx, Scene, TaskStatus, ToolEvent, ToolEventKind, UiEvent, UiEventKind, UiInput, Value, Widget,
+    AppEvent, Call, Channel, EffectSpec, FrameRequest, Layout, ListEvent, MaskPath, Overlay, PanelReply, ParamKind, ParamsAt, Pixel, Place, Plan,
+    PlanPass, Rect, RenderCx, Scene, TaskStatus, ToolEvent, ToolEventKind, UiEvent, UiEventKind, UiInput, Value, View, Widget,
 };
 pub use serde_json::json;
 
@@ -299,6 +299,14 @@ struct Recorder {
     clipboard: String,
     frames: Option<Frames>,
     data: Vec<(Place, crate::data::Data)>,
+    panels: Vec<PanelRequest>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PanelRequest {
+    pub panel: String,
+    pub instance: Option<String>,
+    pub open: bool,
 }
 
 fn own(place: Place) -> Place {
@@ -345,6 +353,11 @@ impl Host for TestHost<'_> {
         if let Ok(mut recorder) = self.recorder.lock() {
             recorder.notes.push(message.to_string());
         }
+    }
+
+    fn panel(&mut self, panel: &str, instance: Option<&str>, open: bool) -> Result<(), String> {
+        let request = PanelRequest { panel: panel.into(), instance: instance.map(str::to_string), open };
+        self.recorder.lock().map(|mut recorder| recorder.panels.push(request)).map_err(|_| "the test host panicked earlier".into())
     }
 
     fn layer(&mut self, param: &str, _comp_time: Option<f64>) -> Option<Pixels> {
@@ -529,6 +542,10 @@ impl TestPlugin {
         self.recorder.lock().map(|recorder| recorder.notes.clone()).unwrap_or_default()
     }
 
+    pub fn panel_requests(&self) -> Vec<PanelRequest> {
+        self.recorder.lock().map(|recorder| recorder.panels.clone()).unwrap_or_default()
+    }
+
     pub fn logs(&self) -> Vec<String> {
         self.plugin.logs(0).into_iter().map(|line| line.message).collect()
     }
@@ -583,7 +600,7 @@ impl TestPlugin {
     }
 
     pub fn panel(&self, id: &str) -> Result<PanelTest<'_>, String> {
-        let mut panel = PanelTest { plugin: self, id: id.to_string(), reply: PanelReply::default() };
+        let mut panel = PanelTest { plugin: self, id: id.to_string(), reply: PanelReply::default(), views: Vec::new() };
         panel.call(UiInput::default())?;
         Ok(panel)
     }
@@ -900,11 +917,12 @@ pub struct PanelTest<'a> {
     plugin: &'a TestPlugin,
     id: String,
     reply: PanelReply,
+    views: Vec<View>,
 }
 
 impl PanelTest<'_> {
     fn call(&mut self, input: UiInput) -> Result<(), String> {
-        let input = UiInput { size: [320.0, 480.0], ..input };
+        let input = UiInput { size: [320.0, 480.0], views: self.views.clone(), ..input };
         let call = Call::Panel { panel: self.id.clone(), input };
         self.reply = self.plugin.plugin.call(&call, None, &mut TestHost::bare(&self.plugin.recorder)).map_err(|e| e.to_string())?;
         Ok(())
@@ -955,6 +973,31 @@ impl PanelTest<'_> {
     pub fn redraw(&mut self) -> Result<(), String> {
         self.call(UiInput::default())
     }
+
+    fn nth_list(&self, list: usize) -> Result<(u64, u32, Vec<String>), String> {
+        let mut lists = Vec::new();
+        walk(&self.reply.widgets, &mut |widget| {
+            if let Widget::List { id, first, items, .. } = widget {
+                lists.push((*id, *first, items.iter().map(|item| item.cells.join("\t")).collect()));
+            }
+        });
+        let shown = lists.len();
+        lists.into_iter().nth(list).ok_or_else(|| format!("panel `{}` shows {shown} lists, so it has no list {list}", self.id))
+    }
+
+    pub fn rows(&self, list: usize) -> Result<(u32, Vec<String>), String> {
+        self.nth_list(list).map(|(_, first, rows)| (first, rows))
+    }
+
+    pub fn list_event(&mut self, list: usize, event: ListEvent) -> Result<(), String> {
+        let (id, ..) = self.nth_list(list)?;
+        if let ListEvent::Show { first, count } = event {
+            self.views.retain(|view| view.id != id);
+            self.views.push(View { id, first, count });
+            return self.redraw();
+        }
+        self.call(UiInput { events: vec![UiEvent { id, kind: UiEventKind::List(event) }], ..Default::default() })
+    }
 }
 
 fn labelled(widget: &Widget) -> Option<(u64, &str)> {
@@ -982,6 +1025,10 @@ fn walk(widgets: &[Widget], visit: &mut impl FnMut(&Widget)) {
             | Widget::Grid { children, .. }
             | Widget::DropTarget { children, .. }
             | Widget::DragSource { children, .. } => walk(children, visit),
+            Widget::Split { first, second, .. } => {
+                walk(first, visit);
+                walk(second, visit);
+            }
             _ => {}
         }
     }

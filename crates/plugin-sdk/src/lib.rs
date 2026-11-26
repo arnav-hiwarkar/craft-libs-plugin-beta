@@ -26,11 +26,12 @@ pub use wire::*;
 pub mod prelude {
     pub use crate::host;
     pub use crate::{
-        AppEvent, AudioRequest, Aux, Bind, Blend, BlendMode, BlurShape, Camera, Canvas, Channel, Cull, Cursor, Curve, Cx, Dab, Drag, Dropped, Effect,
-        EffectSpec, Encoding, Error, FileErrorKind, Filter, Form, Frame, FrameRequest, Gradient, Handle, HostKernel, Image, Is, Key, LayerParam,
-        LayerPlacement, Layout, Light, LightKind, LogLevel, Mark, MaskPath, Measure, Modifiers, Negatives, Overlay, Paint, Panel, Param, Pass,
-        PickFile, Pixel, Place, Plan, PlanData, PlanImage, PlanPass, Plugin, Pointer, PointerPhase, Press, Rect, Result, Root, Rows, Scene, Space,
-        Taps, Task, TaskState, TaskStatus, Tool, ToolEvent, ToolEventKind, Topic, Ui, Value,
+        AppEvent, AudioRequest, Aux, Axis, Bind, Blend, BlendMode, BlurShape, Camera, Canvas, Channel, Context, Cull, Cursor, Curve, Cx, Dab, Drag,
+        Dropped, Effect, EffectSpec, Encoding, Error, FileErrorKind, Filter, Form, Frame, FrameRequest, Gap, Gradient, Handle, HostKernel, Image, Is,
+        Item, Key, LayerParam, LayerPlacement, Layout, Light, LightKind, LogLevel, Mark, MaskPath, Measure, Menu, Modifiers, Negatives, Overlay,
+        Paint, Panel, PanelPlace, PanelSize, Param, Pass, Pen, PickFile, Picked, Pixel, Place, Plan, PlanData, PlanImage, PlanPass, Plugin, Pointer,
+        PointerPhase, Press, Rect, Result, Root, Rows, Scene, Space, Taps, Task, TaskState, TaskStatus, TextStyle, Tool, ToolEvent, ToolEventKind,
+        Topic, Ui, Value,
     };
     pub use crate::{log, params};
     pub use serde_json::{self, json};

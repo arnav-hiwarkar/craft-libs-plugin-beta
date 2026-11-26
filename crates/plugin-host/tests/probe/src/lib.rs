@@ -766,15 +766,16 @@ struct Switches;
 
 impl Effect for Switches {
     fn spec(&self) -> EffectSpec {
-        EffectSpec::new("switches", "Switches", "Probe").params([
-            Param::popup("mode", "Mode", &["Plain", "Soft"], 0),
-            Param::slider("softness", "Softness", 4.0, 0.0..=10.0).visible_when("mode", Is::Equals(1.0)),
-            Param::checkbox("manual", "Manual", false),
-            Param::slider("amount", "Amount", 1.0, 0.0..=10.0).enabled_when("manual", Is::On),
-            Param::button("reset", "Reset"),
-            Param::button("ask", "Ask Then Reset").visible_when("mode", Is::Equals(0.0)),
-        ])
-        .preset("Calm", [("softness", craft_plugin::Value::Number(2.0)), ("amount", craft_plugin::Value::Number(5.0))])
+        EffectSpec::new("switches", "Switches", "Probe")
+            .params([
+                Param::popup("mode", "Mode", &["Plain", "Soft"], 0),
+                Param::slider("softness", "Softness", 4.0, 0.0..=10.0).visible_when("mode", Is::Equals(1.0)),
+                Param::checkbox("manual", "Manual", false),
+                Param::slider("amount", "Amount", 1.0, 0.0..=10.0).enabled_when("manual", Is::On),
+                Param::button("reset", "Reset"),
+                Param::button("ask", "Ask Then Reset").visible_when("mode", Is::Equals(0.0)),
+            ])
+            .preset("Calm", [("softness", craft_plugin::Value::Number(2.0)), ("amount", craft_plugin::Value::Number(5.0))])
     }
 
     fn render(&self, cx: &Cx, frame: &mut Frame) -> Result<()> {
@@ -784,7 +785,9 @@ impl Effect for Switches {
     }
 
     fn button(&self, press: &Press) -> Result<()> {
-        let zero = |param: &str| host::command("prop.set", json!({"layer": press.layer, "path": format!("effects/@{}/{param}", press.instance), "value": 0.0}));
+        let zero = |param: &str| {
+            host::command("prop.set", json!({"layer": press.layer, "path": format!("effects/@{}/{param}", press.instance), "value": 0.0}))
+        };
         zero("softness")?;
         if press.param == "ask" {
             host::form(Form::new("Go on?"))?;
@@ -1228,6 +1231,43 @@ impl Panel for Counter {
     }
 }
 
+static OPENED: std::sync::Mutex<Option<usize>> = std::sync::Mutex::new(None);
+
+#[derive(Default)]
+struct Files {
+    selected: Option<usize>,
+    built: usize,
+}
+
+impl Panel for Files {
+    fn ui(&mut self, ui: &mut Ui) {
+        let picked = ui.list("files", 100_000, &mut self.selected, |row| {
+            self.built += 1;
+            Item::new(&format!("file {row}"))
+        });
+        if let Some(row) = picked.activated {
+            *OPENED.lock().unwrap_or_else(|e| e.into_inner()) = Some(row);
+            if let Err(error) = host::show_panel("inspector") {
+                ui.error(&error.0);
+            }
+        }
+        ui.label(&format!("built {}", self.built));
+    }
+}
+
+#[derive(Default)]
+struct Inspector;
+
+impl Panel for Inspector {
+    fn ui(&mut self, ui: &mut Ui) {
+        let opened = *OPENED.lock().unwrap_or_else(|e| e.into_inner());
+        ui.label(&opened.map_or("nothing open".into(), |row| format!("inspecting file {row}")));
+        if ui.button("Close") && host::close_panel("inspector", None).is_err() {
+            ui.error("the app did not close the inspector");
+        }
+    }
+}
+
 #[derive(Default)]
 struct Watch {
     seen: Vec<String>,
@@ -1380,6 +1420,12 @@ fn make() -> Plugin {
         .panel("watch", "Watch", Watch::default())
         .panel("ticker", "Ticker", Ticker::default())
         .panel("relay", "Relay", Relay::default())
+        .panel("files", "Files", Files::default())
+        .icon("list")
+        .panel("inspector", "Inspector", Inspector)
+        .icon("sliders")
+        .place(PanelPlace::Float)
+        .size(PanelSize::Large)
         .command("edit", "Edit Document", || {
             let reply = host::command("layer.newNull", json!({"name": "From Plugin"}))?;
             host::write_file(Root::Data, "last-reply.json", reply.to_string().as_bytes())
