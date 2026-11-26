@@ -1263,17 +1263,24 @@ struct Counter {
     clicks: u32,
     speed: f64,
     calls: u32,
+    deletes: u32,
 }
 
 impl Panel for Counter {
     fn ui(&mut self, ui: &mut Ui) {
         self.calls += 1;
+        if ui.key("Delete") {
+            self.deletes += 1;
+        }
         if ui.button("Count") {
             self.clicks += 1;
         }
         ui.slider("Speed", &mut self.speed, 0.0..=10.0);
         ui.label(&format!("{} clicks at speed {}", self.clicks, self.speed));
         ui.label(&format!("calls {}", self.calls));
+        if self.deletes > 0 {
+            ui.label(&format!("{} deletes", self.deletes));
+        }
     }
 }
 
@@ -1464,6 +1471,7 @@ fn make() -> Plugin {
         .tool("stamp", "Stamp", Stamp::default())
         .options("stamp-options")
         .panel("counter", "Counter", Counter::default())
+        .keys(&["Delete"])
         .panel("watch", "Watch", Watch::default())
         .panel("ticker", "Ticker", Ticker::default())
         .panel("relay", "Relay", Relay::default())
