@@ -251,7 +251,9 @@ impl Retained {
     fn show(&mut self, view: View) {
         self.views.retain(|shown| shown.id != view.id);
         if self.views.len() == MAX_VIEWS {
-            self.views.remove(0);
+            let drawn = lists(&self.widgets);
+            let gone = self.views.iter().position(|shown| !drawn.iter().any(|(list, _)| *list == shown.id));
+            self.views.remove(gone.unwrap_or(0));
         }
         self.views.push(view);
         self.stale = true;
@@ -687,6 +689,29 @@ mod tests {
         panel.push(vec![rename(2)], "");
         panel.finish(answered(&["new", "a", "c"]), ms(40));
         assert_eq!((panel.pending(), panel.start(SIZE, ms(50))), (false, None), "the renamed item is gone, so the rename is dropped");
+    }
+
+    #[test]
+    fn a_full_set_of_list_views_makes_room_by_forgetting_a_list_that_is_no_longer_drawn() {
+        let list = |id| Widget::List {
+            id,
+            columns: Vec::new(),
+            count: 100,
+            first: 0,
+            items: Vec::new(),
+            selected: Vec::new(),
+            multi: false,
+            rows: 8,
+            edit: Default::default(),
+        };
+        let mut panel = Retained::new();
+        panel.start(SIZE, ms(0));
+        panel.finish(Ok(PanelReply { widgets: vec![list(1), list(70)], ..Default::default() }), ms(0));
+        let show = |id| UiEvent { id, kind: UiEventKind::List(ListEvent::Show { first: 10, count: 8 }) };
+        panel.push((1..=MAX_VIEWS as u64).map(show).collect(), "");
+        panel.push(vec![show(70)], "");
+        let views = panel.start(SIZE, ms(1)).map(|input| input.views.iter().map(|view| view.id).collect::<Vec<_>>()).unwrap_or_default();
+        assert_eq!((views.len(), views.contains(&1), views.contains(&2), views.contains(&70)), (MAX_VIEWS, true, false, true));
     }
 
     #[test]
