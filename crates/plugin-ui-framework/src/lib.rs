@@ -288,7 +288,7 @@ impl Painter<'_> {
 
     fn color(&mut self, ui: &mut egui::Ui, id: u64, text: &str, value: [f32; 4], extras: &Extras) {
         let given = values::picked(value);
-        let out = craft_color_ui::ui::ColorPopover::new(extras.label(text), Bind::given(given.clone())).show(ui);
+        let out = craft_color_ui::ui::ColorPopover::new(extras.label(text), Bind::given(given)).show(ui);
         if let Some(picked) = out.events.value()
             && *picked != given
         {
