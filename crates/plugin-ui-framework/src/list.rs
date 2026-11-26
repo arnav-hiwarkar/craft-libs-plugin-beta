@@ -23,8 +23,6 @@ pub(crate) struct Rows<'a> {
     pub(crate) edit: &'a ListEdit,
 }
 
-const KEYS: [&str; 16] = ["c0", "c1", "c2", "c3", "c4", "c5", "c6", "c7", "c8", "c9", "c10", "c11", "c12", "c13", "c14", "c15"];
-
 #[derive(Clone, Default)]
 struct Kept {
     lead: Option<u32>,
@@ -71,8 +69,8 @@ impl Rows<'_> {
         if let Some(open) = item.open {
             shown = shown.group(open);
         }
-        for (cell, key) in item.cells.iter().zip(KEYS).skip(1).take(self.columns.len().saturating_sub(1)) {
-            shown = shown.cell(ColumnKey::new(key), cell.clone());
+        for (at, cell) in item.cells.iter().enumerate().skip(1).take(self.columns.len().saturating_sub(1)) {
+            shown = shown.cell(ColumnKey::index(at as u32), cell.clone());
         }
         if let Some(icon) = &item.icon {
             shown = shown.icon(icons::spec(icon, item.cells.first().map_or("", String::as_str)));
@@ -139,7 +137,7 @@ fn moved(change: &ReorderMove<u32>, count: u32) -> ListEvent {
 }
 
 fn column_of(key: &craft_behavior::ColumnKey) -> Option<u32> {
-    KEYS.iter().position(|held| ColumnKey::new(held) == *key).map(|at| at as u32)
+    key.position()
 }
 
 fn sorted(mut rows: Vec<u32>) -> Vec<u32> {
@@ -176,9 +174,9 @@ impl Painter<'_> {
             let specs = rows
                 .columns
                 .iter()
-                .zip(KEYS)
-                .map(|(column, key)| {
-                    let spec = ColumnSpec::new(ColumnKey::new(key), column.title.clone(), width(column.width));
+                .enumerate()
+                .map(|(at, column)| {
+                    let spec = ColumnSpec::new(ColumnKey::index(at as u32), column.title.clone(), width(column.width));
                     if edit.sortable { spec.sortable() } else { spec }
                 })
                 .collect();
@@ -186,7 +184,7 @@ impl Painter<'_> {
                 (kept.told, kept.sorting) = (edit.sorted, None);
             }
             let shown = kept.sorting.or(edit.sorted);
-            let sort = shown.and_then(|(column, descending)| KEYS.get(column as usize).map(|key| ColumnSort::new(ColumnKey::new(key), descending)));
+            let sort = shown.map(|(column, descending)| ColumnSort::new(ColumnKey::index(column), descending));
             let table = Table::new(String::new(), specs).id_salt(self.salt(id)).select(mode).rename(edit.rename).sort(sort);
             let table = match reorder {
                 Some(rule) => table.reorder(rule),
