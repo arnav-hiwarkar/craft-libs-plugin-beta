@@ -354,3 +354,22 @@ fn a_table_is_a_grid_of_rows_under_column_headings_and_tree_rows_say_whether_the
     harness.run();
     assert_eq!(harness.state(), &vec![UiEvent { id: 4, kind: UiEventKind::List(craft_plugin::ListEvent::Toggle { row: 0, open: false }) }]);
 }
+
+#[test]
+fn a_panel_icon_the_app_cannot_draw_is_the_first_letter_of_its_title() {
+    let ctx = egui::Context::default();
+    let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), vec2(16.0, 16.0));
+        crate::paint_icon(&mut Bare, ui.painter(), rect, "nonesuch", "notes", egui::Color32::WHITE);
+    });
+    output.textures_delta.clear();
+    let texts: Vec<String> = output
+        .shapes
+        .iter()
+        .filter_map(|clipped| match &clipped.shape {
+            egui::Shape::Text(text) => Some(text.galley.text().to_string()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(texts, ["N"]);
+}

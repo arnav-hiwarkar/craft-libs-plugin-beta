@@ -1,4 +1,4 @@
-use craft_plugin::{Drag, Dropped, Item, ListEvent, UiEvent, UiEventKind, Widget};
+use craft_plugin::{Drag, Dropped, Item, ListEvent, TextStyle, UiEvent, UiEventKind, Widget};
 use egui::{Color32, FontFamily};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
@@ -261,6 +261,30 @@ pub fn cases() -> Vec<Case> {
             tree: vec![list(5, 0, 5, vec![3])],
             steps: vec![Step::RightClick("file 2"), Step::RightClick("file 3")],
             expect: Expect::Events(vec![select(&[2])]),
+        },
+        Case {
+            name: "a status item one row high sends its button's Click",
+            size: [240.0, 22.0],
+            tree: vec![Widget::Row {
+                children: vec![
+                    Widget::Button { id: 3, text: "Ping".into(), enabled: true },
+                    Widget::Label { text: "0 pings".into(), style: TextStyle::Body },
+                ],
+            }],
+            steps: vec![Step::Click("Ping")],
+            expect: Expect::Events(vec![event(3, UiEventKind::Click)]),
+        },
+        Case {
+            name: "a tool option bar row toggles its checkbox",
+            size: [400.0, 26.0],
+            tree: vec![Widget::Row {
+                children: vec![
+                    Widget::Checkbox { id: 6, text: "Soft".into(), value: false },
+                    Widget::Label { text: "hard stamp".into(), style: TextStyle::Body },
+                ],
+            }],
+            steps: vec![Step::Click("Soft")],
+            expect: Expect::Events(vec![event(6, UiEventKind::Bool(true))]),
         },
     ]
 }

@@ -600,7 +600,15 @@ impl TestPlugin {
     }
 
     pub fn panel(&self, id: &str) -> Result<PanelTest<'_>, String> {
-        let mut panel = PanelTest { plugin: self, id: id.to_string(), reply: PanelReply::default(), views: Vec::new() };
+        self.open_panel(id, None)
+    }
+
+    pub fn panel_for(&self, id: &str, instance: &str) -> Result<PanelTest<'_>, String> {
+        self.open_panel(id, Some(instance.to_string()))
+    }
+
+    fn open_panel(&self, id: &str, instance: Option<String>) -> Result<PanelTest<'_>, String> {
+        let mut panel = PanelTest { plugin: self, id: id.to_string(), instance, reply: PanelReply::default(), views: Vec::new() };
         panel.call(UiInput::default())?;
         Ok(panel)
     }
@@ -916,13 +924,14 @@ fn placed(cropped: &[Pixel], area: Rect, size: [u32; 2]) -> Vec<Pixel> {
 pub struct PanelTest<'a> {
     plugin: &'a TestPlugin,
     id: String,
+    instance: Option<String>,
     reply: PanelReply,
     views: Vec<View>,
 }
 
 impl PanelTest<'_> {
     fn call(&mut self, input: UiInput) -> Result<(), String> {
-        let input = UiInput { size: [320.0, 480.0], views: self.views.clone(), ..input };
+        let input = UiInput { size: [320.0, 480.0], views: self.views.clone(), instance: self.instance.clone(), ..input };
         let call = Call::Panel { panel: self.id.clone(), input };
         self.reply = self.plugin.plugin.call(&call, None, &mut TestHost::bare(&self.plugin.recorder)).map_err(|e| e.to_string())?;
         Ok(())

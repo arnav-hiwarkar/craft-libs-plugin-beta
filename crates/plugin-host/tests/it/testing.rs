@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use craft_plugin::{Channel, Overlay, Place, Shape, ToolEventKind, Value};
+use craft_plugin::{Channel, Overlay, PanelPlace, Place, Shape, ToolEventKind, UiEventKind, Value};
 use craft_plugin_host::AuxPlanes;
 use craft_plugin_host::testing::{Pattern, Picture, RENDER_LAYER, TestPlugin, check_frame, json, pointer, updating_frames};
 
@@ -326,4 +326,30 @@ fn a_tree_panel_opens_folders_from_toggles_and_its_ten_thousand_row_table_builds
     assert_eq!((first, rows.len(), rows[5].as_str()), (9_990, 10, "take 9995\t35.5 s\t*"));
     panel.list_event(1, Activate(9_995)).unwrap();
     assert!(panel.texts().contains(&"activated take 9995".to_string()), "{:?}", panel.texts());
+}
+
+#[test]
+fn a_status_item_and_a_stamp_option_bar_take_their_places_and_each_notes_panel_keeps_its_own_text() {
+    let (_bundle, plugin) = probe();
+    let found = plugin.plugin().contributions();
+    let place = |id: &str| found.panels.iter().find(|panel| panel.id == id).map(|panel| (panel.place, panel.multiple, panel.icon.clone()));
+    assert_eq!(
+        [place("status"), place("stamp-options"), place("notes")],
+        [
+            Some((PanelPlace::Status, false, Some("bell".into()))),
+            Some((PanelPlace::Bar, false, None)),
+            Some((PanelPlace::Bottom, true, Some("text".into())))
+        ]
+    );
+    let options = found.tools.iter().find(|tool| tool.id == "stamp").and_then(|tool| tool.options.clone());
+    assert_eq!(options.as_deref(), Some("stamp-options"));
+    let mut status = plugin.panel("status").unwrap();
+    status.click("Ping").unwrap();
+    assert_eq!(status.texts(), ["Ping", "1 pings"]);
+    let mut one = plugin.panel_for("notes", "1").unwrap();
+    let mut two = plugin.panel_for("notes", "2").unwrap();
+    one.send("Note", UiEventKind::Text("milk".into())).unwrap();
+    two.send("Note", UiEventKind::Text("eggs".into())).unwrap();
+    one.redraw().unwrap();
+    assert_eq!((one.texts(), two.texts()), (vec!["Note".to_string(), "note 1: milk".into()], vec!["Note".to_string(), "note 2: eggs".into()]));
 }

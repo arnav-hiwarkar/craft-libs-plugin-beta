@@ -1461,6 +1461,7 @@ fn make() -> Plugin {
         .effect(AuxDepth)
         .effect(AuxUndeclared)
         .tool("stamp", "Stamp", Stamp::default())
+        .options("stamp-options")
         .panel("counter", "Counter", Counter::default())
         .panel("watch", "Watch", Watch::default())
         .panel("ticker", "Ticker", Ticker::default())
@@ -1473,6 +1474,14 @@ fn make() -> Plugin {
         .size(PanelSize::Large)
         .panel("tree", "Tree", Tree::default())
         .icon("list")
+        .panel("status", "Status", StatusItem::default())
+        .icon("bell")
+        .place(PanelPlace::Status)
+        .panel("stamp-options", "Stamp Options", StampOptions::default())
+        .place(PanelPlace::Bar)
+        .panel_each("notes", "Notes", Notes::default)
+        .icon("text")
+        .place(PanelPlace::Bottom)
         .effect(Peek)
         .tool("census", "Census", Census)
         .panel("shared", "Shared", Shared)
@@ -1687,5 +1696,47 @@ impl Panel for Tree {
             self.said = format!("activated take {row}");
         }
         ui.label(&self.said);
+    }
+}
+
+#[derive(Default)]
+struct StatusItem {
+    pings: u32,
+}
+
+impl Panel for StatusItem {
+    fn ui(&mut self, ui: &mut Ui) {
+        ui.row(|ui| {
+            if ui.button("Ping") {
+                self.pings += 1;
+            }
+            ui.label(&format!("{} pings", self.pings));
+        });
+    }
+}
+
+#[derive(Default)]
+struct StampOptions {
+    soft: bool,
+}
+
+impl Panel for StampOptions {
+    fn ui(&mut self, ui: &mut Ui) {
+        ui.row(|ui| {
+            ui.checkbox("Soft", &mut self.soft);
+            ui.label(if self.soft { "soft stamp" } else { "hard stamp" });
+        });
+    }
+}
+
+#[derive(Default)]
+struct Notes {
+    text: String,
+}
+
+impl Panel for Notes {
+    fn ui(&mut self, ui: &mut Ui) {
+        ui.text_edit("note", &mut self.text, "Note");
+        ui.label(&format!("note {}: {}", ui.instance().unwrap_or("-"), self.text));
     }
 }
