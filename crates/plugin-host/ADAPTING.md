@@ -62,9 +62,12 @@ SDK (EffectCraft keeps `crates/plugin/tests/it/legacy/legacy.wasm`).
    commands to `document.write`, require both file permissions for any command that names a file, and run
    one plugin batch as one undo step. Keep a census of every allowed command with its decision and a test
    that fails when a command is added. Test each rule with a probe call that is refused without it.
-3. **Panels.** Dock a panel per contribution. Run every interactive call on one worker thread per plugin;
-   the UI thread posts requests, answers host calls that need the document, and applies replies, with a
-   time budget per UI frame. Give each request the plugin's load, the project's token and the surface's
+3. **Panels.** Dock a panel per contribution. Run interactive calls on three worker threads per plugin,
+   each started on first use: UI (panels, controls, buttons, migrations), viewer (overlays, drags, tools)
+   and commands, so a slow panel call holds back no overlay, tool or command. The kit runs a sandboxed
+   overlay or drag on a pooled instance and a tool on an instance of its own; only commands share the
+   panels' instance. The UI thread posts requests, answers host calls that need the document, and applies
+   replies, with a time budget per UI frame. Give each request the plugin's load, the project's token and the surface's
    token, and drop it when any is stale. Feed `Retained` with the app's events (`Topic`: selection, time,
    comp, project, edit, mapped to the app's nearest equivalents). Give each custom parameter row its own
    `Retained` on the same worker and pass a `ControlsReply`'s `topics` and `timers` into it, so rows
