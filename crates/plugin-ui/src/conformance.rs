@@ -1,4 +1,4 @@
-use craft_plugin::{Axis, Drag, Dropped, Gap, Item, ListEvent, MenuItem, Span, TextStyle, UiEvent, UiEventKind, Widget};
+use craft_plugin::{Axis, Column, Drag, Dropped, Gap, Item, ListEdit, ListEvent, MenuItem, Span, TextStyle, UiEvent, UiEventKind, Widget};
 use egui::{Color32, FontFamily};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
@@ -57,6 +57,7 @@ pub enum Step {
     Key(egui::Key),
     Chord(egui::Modifiers, egui::Key),
     Scroll(&'static str, f32),
+    Drag(&'static str, &'static str),
 }
 
 pub enum Expect {
@@ -120,6 +121,22 @@ pub fn run(case: &Case, mut paint: Painter) -> Vec<UiEvent> {
                     modifiers: Default::default(),
                 });
             }
+            Step::Drag(from, to) => {
+                let start = harness.get_by_label(from).rect().center();
+                let target = harness.get_by_label(to).rect();
+                let end = egui::pos2(target.center().x, target.top() + target.height() / 4.0);
+                let button =
+                    |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+                harness.event(egui::Event::PointerMoved(start));
+                harness.run();
+                harness.event(button(start, true));
+                harness.run();
+                for step in 1..=4 {
+                    harness.event(egui::Event::PointerMoved(start.lerp(end, step as f32 / 4.0)));
+                    harness.run();
+                }
+                harness.event(button(end, false));
+            }
         }
         harness.run();
     }
@@ -152,6 +169,33 @@ fn tree(items: Vec<Item>) -> Widget {
         rows: 6,
         edit: Default::default(),
     }
+}
+
+fn editable(mut widget: Widget, allowed: ListEdit) -> Widget {
+    if let Widget::List { edit, .. } = &mut widget {
+        *edit = allowed;
+    }
+    widget
+}
+
+fn renamable() -> Widget {
+    editable(list(3, 0, 3, vec![]), ListEdit { rename: true, ..Default::default() })
+}
+
+fn reorderable(selected: Vec<u32>) -> Widget {
+    editable(list(5, 0, 5, selected), ListEdit { reorder: true, ..Default::default() })
+}
+
+fn sortable() -> Widget {
+    let mut widget = editable(list(3, 0, 3, vec![]), ListEdit { sortable: true, ..Default::default() });
+    if let Widget::List { columns, .. } = &mut widget {
+        *columns = ["Name", "Size"].map(|title| Column { title: title.into(), ..Default::default() }).to_vec();
+    }
+    widget
+}
+
+fn list_event(kind: ListEvent) -> UiEvent {
+    event(4, UiEventKind::List(kind))
 }
 
 fn multi(mut widget: Widget) -> Widget {
@@ -385,6 +429,44 @@ pub fn cases() -> Vec<Case> {
             tree: vec![list(5, 0, 5, vec![3])],
             steps: vec![Step::RightClick("file 2"), Step::RightClick("file 3")],
             expect: Expect::Events(vec![select(&[2])]),
+        },
+        Case {
+            name: "F2 on the focused row opens its name for editing, and typing and Enter rename it",
+            size: [240.0, 200.0],
+            tree: vec![renamable()],
+            steps: vec![Step::Key(egui::Key::Tab), Step::Key(egui::Key::F2), Step::Type("Rename", "New"), Step::Key(egui::Key::Enter)],
+            expect: Expect::Events(vec![list_event(ListEvent::Rename { row: 0, text: "New".into() })]),
+        },
+        Case {
+            name: "Escape in the name field cancels the rename and sends nothing",
+            size: [240.0, 200.0],
+            tree: vec![renamable()],
+            steps: vec![Step::Key(egui::Key::Tab), Step::Key(egui::Key::F2), Step::Type("Rename", "New"), Step::Key(egui::Key::Escape)],
+            expect: Expect::Events(vec![]),
+        },
+        Case {
+            name: "dragging the selected row above the first row moves it to the top",
+            size: [240.0, 200.0],
+            tree: vec![reorderable(vec![2])],
+            steps: vec![Step::Drag("file 2", "file 0")],
+            expect: Expect::Events(vec![list_event(ListEvent::Move { rows: vec![2], to: 0 })]),
+        },
+        Case {
+            name: "Alt+Down moves the selected row below the next one",
+            size: [240.0, 200.0],
+            tree: vec![reorderable(vec![1])],
+            steps: vec![Step::Key(egui::Key::Tab), Step::Chord(egui::Modifiers::ALT, egui::Key::ArrowDown)],
+            expect: Expect::Events(vec![list_event(ListEvent::Move { rows: vec![1], to: 3 })]),
+        },
+        Case {
+            name: "clicking a column heading sorts by it, and clicking it again flips the order",
+            size: [240.0, 200.0],
+            tree: vec![sortable()],
+            steps: vec![Step::Click("Size"), Step::Click("Size")],
+            expect: Expect::Events(vec![
+                list_event(ListEvent::Sort { column: 1, descending: false }),
+                list_event(ListEvent::Sort { column: 1, descending: true }),
+            ]),
         },
         Case {
             name: "a status item one row high sends its button's Click",

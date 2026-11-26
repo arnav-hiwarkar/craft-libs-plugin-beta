@@ -1,4 +1,4 @@
-use craft_plugin::{Column, ColumnWidth, Item, LIST_WINDOW, ListEvent, MAX_LIST_ITEMS, TextStyle, UiEventKind};
+use craft_plugin::{Column, ColumnWidth, Item, LIST_WINDOW, ListEdit, ListEvent, MAX_LIST_ITEMS, TextStyle, UiEventKind};
 use egui::{Align2, FontId, Key, Rect, Sense, Stroke, StrokeKind, UiBuilder, pos2, vec2};
 
 use crate::Host;
@@ -12,6 +12,7 @@ pub(crate) struct Rows<'w> {
     pub selected: &'w [u32],
     pub multi: bool,
     pub rows: u32,
+    pub edit: &'w ListEdit,
 }
 
 #[derive(Clone, Default)]
@@ -22,6 +23,18 @@ struct Cursor {
     focus: Option<u32>,
     scroll: Option<f32>,
     area: Option<Rect>,
+    renaming: Option<Renaming>,
+    clicked_name: Option<(u32, f64)>,
+    dragging: Option<Vec<u32>>,
+    told: Option<(u32, bool)>,
+    sent: Option<(u32, bool)>,
+}
+
+#[derive(Clone)]
+struct Renaming {
+    row: u32,
+    text: String,
+    fresh: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -30,6 +43,8 @@ enum Action {
     Toggle(bool),
     Activate,
     Flip,
+    Rename,
+    Reorder(u32),
 }
 
 impl Rows<'_> {
@@ -47,9 +62,25 @@ impl Rows<'_> {
         (self.first..row).rev().find(|at| self.item(*at).is_some_and(|item| item.depth < depth))
     }
 
-    fn action(&self, row: u32, key: Key, page: u32) -> Option<Action> {
+    fn moving(&self, row: u32) -> Vec<u32> {
+        let mut rows = if self.selected.contains(&row) { self.selected.to_vec() } else { vec![row] };
+        rows.sort_unstable();
+        rows.dedup();
+        rows
+    }
+
+    fn action(&self, row: u32, key: Key, alt: bool, page: u32) -> Option<Action> {
         let last = self.count.saturating_sub(1);
         let item = self.item(row)?;
+        if alt && self.edit.reorder {
+            let moving = self.moving(row);
+            let (low, high) = (*moving.first()?, *moving.last()?);
+            return match key {
+                Key::ArrowUp if low > 0 => Some(Action::Reorder(low - 1)),
+                Key::ArrowDown if high + 1 < self.count => Some(Action::Reorder(high + 2)),
+                _ => None,
+            };
+        }
         let action = match key {
             Key::ArrowUp => Action::Move(row.saturating_sub(1)),
             Key::ArrowDown => Action::Move((row + 1).min(last)),
@@ -68,6 +99,7 @@ impl Rows<'_> {
             },
             Key::Enter => Action::Activate,
             Key::Space => Action::Flip,
+            Key::F2 if self.edit.rename => Action::Rename,
             _ => return None,
         };
         (action != Action::Move(row)).then_some(action)
@@ -82,6 +114,18 @@ impl Rows<'_> {
             _ => vec![row],
         }
     }
+}
+
+fn moves(rows: &[u32], to: u32) -> bool {
+    let contiguous = rows.windows(2).all(|pair| pair[1] == pair[0] + 1);
+    match (rows.first(), rows.last()) {
+        (Some(low), Some(high)) => !contiguous || to < *low || to > high + 1,
+        _ => false,
+    }
+}
+
+fn insertion(placed: &[(u32, Rect)], y: f32) -> Option<u32> {
+    placed.iter().find(|(_, rect)| y < rect.center().y).map(|(row, _)| *row).or(placed.last().map(|(row, _)| row + 1))
 }
 
 pub(crate) fn window(shown: &std::ops::Range<u32>, count: u32) -> (u32, u32) {
@@ -125,8 +169,17 @@ impl<H: Host> Renderer<'_, H> {
         let cells = rows.columns.len().max(rows.items.iter().map(|item| item.cells.len()).max().unwrap_or(1));
         let kinds: Vec<ColumnWidth> = (0..cells).map(|at| rows.columns.get(at).map_or(ColumnWidth::Auto, |column| column.width)).collect();
         let widths = widths(&kinds, ui.available_width(), font);
+        if cursor.told != rows.edit.sorted {
+            (cursor.told, cursor.sent) = (rows.edit.sorted, None);
+        }
         if !rows.columns.is_empty() {
-            self.headings(ui, rows.columns, &widths, row_height);
+            let sorted = cursor.sent.or(rows.edit.sorted);
+            let heading = Heading { list: id, sortable: rows.edit.sortable, sorted, row_height };
+            if let Some(column) = self.headings(ui, rows.columns, &widths, &heading) {
+                let descending = sorted == Some((column, false));
+                cursor.sent = Some((column, descending));
+                self.emit(id, UiEventKind::List(ListEvent::Sort { column, descending }));
+            }
         }
         let height = match rows.rows {
             0 => ui.available_height().max(row_height),
@@ -140,8 +193,19 @@ impl<H: Host> Renderer<'_, H> {
         self.host.register(&format!("{}.{id}", self.scope), &list, name);
         let tree = rows.items.iter().any(|item| item.open.is_some());
         let current = cursor.current.or(rows.selected.first().copied()).unwrap_or(rows.first);
+        let now = ui.input(|i| i.time);
+        let double_click = ui.ctx().options(|options| options.input_options.max_double_click_delay);
+        if let Some((row, at)) = cursor.clicked_name {
+            if now - at > double_click {
+                cursor.clicked_name = None;
+                cursor.renaming = rows.item(row).map(|item| Renaming { row, text: item.cells.first().cloned().unwrap_or_default(), fresh: true });
+            }
+            ui.ctx().request_repaint();
+        }
         let mut menu = list.clone();
         let mut shown_rows = 0..0;
+        let mut placed = Vec::new();
+        let mut renamed = None;
         let mut pressed = None;
         let mut area = egui::ScrollArea::vertical().id_salt(("plugin-list", id)).max_height(height).auto_shrink([false, true]);
         if let Some(offset) = cursor.scroll.take() {
@@ -154,8 +218,24 @@ impl<H: Host> Renderer<'_, H> {
                     ui.allocate_exact_size(vec2(ui.available_width(), row_height), Sense::hover());
                     continue;
                 };
-                let line = Line { item, row, selected: rows.selected.contains(&row), current: row == current, tree, table: !rows.columns.is_empty() };
-                let response = self.row(ui, id, &line, &widths, row_height);
+                let renaming = cursor.renaming.as_ref().is_some_and(|renaming| renaming.row == row);
+                let line = Line {
+                    item,
+                    row,
+                    selected: rows.selected.contains(&row),
+                    current: row == current,
+                    tree,
+                    table: !rows.columns.is_empty(),
+                    drags: rows.edit.reorder,
+                    renaming,
+                };
+                let (response, cell, name) = self.row(ui, id, &line, &widths, row_height);
+                placed.push((row, response.rect));
+                if let Some(renaming) = cursor.renaming.as_mut().filter(|renaming| renaming.row == row)
+                    && let Some(done) = self.rename_field(ui, response.id.with("rename"), cell, renaming)
+                {
+                    renamed = Some((row, done));
+                }
                 if cursor.focus == Some(row) {
                     response.request_focus();
                     cursor.focus = None;
@@ -170,6 +250,10 @@ impl<H: Host> Renderer<'_, H> {
                 if response.clicked_by(egui::PointerButton::Primary) || (response.secondary_clicked() && !line.selected) {
                     let held = ui.input(|i| i.modifiers);
                     let picked = rows.picked(&cursor, row, held.shift, held.command);
+                    let on_name = response.interact_pointer_pos().is_some_and(|at| name.contains(at));
+                    if rows.edit.rename && line.selected && rows.selected.len() == 1 && on_name && held.is_none() && response.clicked() {
+                        cursor.clicked_name = Some((row, now));
+                    }
                     if !(held.shift && rows.multi) {
                         cursor.anchor = Some(row);
                     }
@@ -177,21 +261,36 @@ impl<H: Host> Renderer<'_, H> {
                     response.request_focus();
                     self.emit(id, UiEventKind::List(ListEvent::Select(picked)));
                 }
+                if response.drag_started() {
+                    cursor.dragging = Some(rows.moving(row));
+                }
                 if let Some(open) = line.item.open
                     && ui.ctx().read_response(response.id.with("disclosure")).is_some_and(|toggle| toggle.clicked())
                 {
                     self.emit(id, UiEventKind::List(ListEvent::Toggle { row, open: !open }));
                 }
                 if response.double_clicked() {
+                    (cursor.clicked_name, cursor.renaming) = (None, None);
                     self.emit(id, UiEventKind::List(ListEvent::Activate(row)));
                 }
                 menu |= response;
             }
         });
         cursor.area = Some(output.inner_rect);
-        if let Some((row, (key, shift))) = pressed {
+        if let Some((row, done)) = renamed {
+            if let Some(text) = done.filter(|text| rows.item(row).and_then(|item| item.cells.first()) != Some(text)) {
+                self.emit(id, UiEventKind::List(ListEvent::Rename { row, text }));
+            }
+            (cursor.renaming, cursor.focus) = (None, Some(row));
+        }
+        if cursor.renaming.as_ref().is_some_and(|renaming| !shown_rows.contains(&renaming.row)) {
+            cursor.renaming = None;
+        }
+        self.drag_rows(ui, id, &mut cursor, &placed, &output, stride);
+        if let Some((row, (key, held))) = pressed {
             let page = ((output.inner_rect.height() / stride).floor() as u32).max(1);
-            match rows.action(row, key, page) {
+            let shift = held.shift;
+            match rows.action(row, key, held.alt, page) {
                 Some(Action::Move(to)) => {
                     let picked = rows.picked(&cursor, to, shift, false);
                     if !(shift && rows.multi) {
@@ -213,6 +312,16 @@ impl<H: Host> Renderer<'_, H> {
                     cursor.anchor = Some(row);
                     self.emit(id, UiEventKind::List(ListEvent::Select(rows.picked(&cursor, row, false, true))));
                 }
+                Some(Action::Rename) => {
+                    let text = rows.item(row).and_then(|item| item.cells.first().cloned()).unwrap_or_default();
+                    cursor.renaming = Some(Renaming { row, text, fresh: true });
+                }
+                Some(Action::Reorder(to)) => {
+                    let moving = rows.moving(row);
+                    let next = if to > row { row + 1 } else { row - 1 };
+                    (cursor.current, cursor.focus, cursor.anchor) = (Some(next), Some(next), Some(next));
+                    self.emit(id, UiEventKind::List(ListEvent::Move { rows: moving, to }));
+                }
                 None => {}
             }
             ui.ctx().request_repaint();
@@ -232,25 +341,111 @@ impl<H: Host> Renderer<'_, H> {
         self.last = Some(menu);
     }
 
-    fn headings(&mut self, ui: &mut egui::Ui, columns: &[Column], widths: &[f32], row_height: f32) {
+    fn drag_rows(
+        &mut self,
+        ui: &egui::Ui,
+        id: u64,
+        cursor: &mut Cursor,
+        placed: &[(u32, Rect)],
+        output: &egui::scroll_area::ScrollAreaOutput<()>,
+        stride: f32,
+    ) {
+        let (Some(moving), Some(pointer)) = (cursor.dragging.clone(), ui.ctx().pointer_latest_pos()) else { return };
+        let area = output.inner_rect;
+        let to = insertion(placed, pointer.y);
+        if ui.input(|i| !i.pointer.any_down() || i.pointer.any_released()) {
+            cursor.dragging = None;
+            if let Some(to) = to.filter(|to| moves(&moving, *to)) {
+                self.emit(id, UiEventKind::List(ListEvent::Move { rows: moving, to }));
+            }
+            return;
+        }
+        if let Some(to) = to.filter(|to| moves(&moving, *to)) {
+            let y = placed
+                .iter()
+                .find(|(row, _)| *row == to)
+                .map_or_else(|| placed.last().map_or(area.top(), |(_, rect)| rect.bottom()), |(_, rect)| rect.top());
+            ui.painter_at(area.expand(1.0)).hline(area.x_range(), y, Stroke::new(2.0, self.theme.accent));
+        }
+        let top = output.state.clamped_offset().y;
+        let bottom = (output.content_size.y - area.height()).max(0.0);
+        if pointer.y < area.top() + stride && top > 0.0 {
+            cursor.scroll = Some((top - stride / 4.0).max(0.0));
+        } else if pointer.y > area.bottom() - stride && top < bottom {
+            cursor.scroll = Some((top + stride / 4.0).min(bottom));
+        }
+    }
+
+    fn rename_field(&mut self, ui: &mut egui::Ui, field_id: egui::Id, cell: Rect, renaming: &mut Renaming) -> Option<Option<String>> {
+        if renaming.fresh {
+            let mut state = egui::text_edit::TextEditState::load(ui.ctx(), field_id).unwrap_or_default();
+            state.cursor.set_char_range(Some(egui::text::CCursorRange::select_all_str(&renaming.text)));
+            state.store(ui.ctx(), field_id);
+            ui.memory_mut(|memory| memory.request_focus(field_id));
+            ui.ctx().request_repaint();
+        }
+        let hint = self.host.tr("Rename");
+        let mut field_ui = ui.new_child(UiBuilder::new().max_rect(cell));
+        let field =
+            field_ui.add(egui::TextEdit::singleline(&mut renaming.text).id(field_id).desired_width(cell.width()).font(FontId::proportional(12.0)));
+        ui.ctx().accesskit_node_builder(field.id, |node| node.set_label(hint.as_str()));
+        if std::mem::take(&mut renaming.fresh) {
+            return None;
+        }
+        field.lost_focus().then(|| ui.input(|i| i.key_pressed(Key::Enter)).then(|| renaming.text.clone()))
+    }
+
+    fn headings(&mut self, ui: &mut egui::Ui, columns: &[Column], widths: &[f32], heading: &Heading) -> Option<u32> {
+        let row_height = heading.row_height;
         let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), row_height), Sense::hover());
         let mut left = rect.left();
-        for (column, width) in columns.iter().zip(widths) {
+        let mut clicked = None;
+        for (at, (column, width)) in columns.iter().zip(widths).enumerate() {
+            let at = at as u32;
             let cell = Rect::from_min_size(pos2(left, rect.top()), vec2(*width, row_height));
-            let layout = egui::Layout::left_to_right(egui::Align::Center);
-            let heading = ui.scope_builder(UiBuilder::new().max_rect(cell.shrink2(vec2(4.0, 0.0))).layout(layout), |ui| {
-                ui.add(egui::Label::new(self.text(&column.title, TextStyle::Strong)).truncate())
+            let sense = if heading.sortable { Sense::click() } else { Sense::hover() };
+            let response = ui.interact(cell, egui::Id::unique(("plugin-list-heading", self.scope, heading.list, at)), sense);
+            let order = heading.sorted.filter(|(column, _)| *column == at).map(|(_, descending)| descending);
+            response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ColumnHeader, true, &column.title));
+            ui.ctx().accesskit_node_builder(response.id, |node| match order {
+                Some(true) => node.set_sort_direction(egui::accesskit::SortDirection::Descending),
+                Some(false) => node.set_sort_direction(egui::accesskit::SortDirection::Ascending),
+                None => {}
             });
-            heading.inner.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ColumnHeader, true, &column.title));
+            if heading.sortable && response.hovered() {
+                ui.painter().rect_filled(cell, 2.0, self.theme.faint.gamma_multiply(0.5));
+            }
+            let arrow = if order.is_some() { row_height } else { 0.0 };
+            let clip = Rect::from_x_y_ranges((cell.left() + 4.0)..=(cell.right() - 4.0 - arrow).max(cell.left() + 4.0), cell.y_range());
+            let title = self.text(&column.title, TextStyle::Strong);
+            let galley = egui::WidgetText::from(title).into_galley(ui, Some(egui::TextWrapMode::Truncate), clip.width(), egui::TextStyle::Body);
+            ui.painter_at(clip).galley(pos2(clip.left(), cell.center().y - galley.size().y / 2.0), galley, self.theme.text);
+            if let Some(descending) = order {
+                let c = pos2(cell.right() - 4.0 - row_height / 2.0, cell.center().y);
+                let r = row_height * 0.18;
+                let points = if descending {
+                    vec![pos2(c.x - r, c.y - r * 0.6), pos2(c.x + r, c.y - r * 0.6), pos2(c.x, c.y + r * 0.8)]
+                } else {
+                    vec![pos2(c.x - r, c.y + r * 0.6), pos2(c.x + r, c.y + r * 0.6), pos2(c.x, c.y - r * 0.8)]
+                };
+                ui.painter().add(egui::Shape::convex_polygon(points, self.theme.weak, Stroke::NONE));
+            }
+            if response.clicked() {
+                clicked = Some(at);
+            }
             left += width;
         }
         ui.painter().hline(rect.x_range(), rect.bottom(), Stroke::new(1.0, self.theme.border));
+        clicked
     }
 
-    fn row(&mut self, ui: &mut egui::Ui, id: u64, line: &Line, widths: &[f32], row_height: f32) -> egui::Response {
-        let Line { item, row, selected, current, tree, table } = *line;
+    fn row(&mut self, ui: &mut egui::Ui, id: u64, line: &Line, widths: &[f32], row_height: f32) -> (egui::Response, Rect, Rect) {
+        let Line { item, row, selected, current, tree, table, drags, renaming } = *line;
         let text = item.cells.join("  ");
-        let sense = if current { Sense::click() } else { Sense::CLICK };
+        let mut sense = if current { Sense::click() } else { Sense::CLICK };
+        if drags {
+            sense |= Sense::DRAG;
+        }
         let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), row_height), Sense::hover());
         let response = ui.interact(rect, egui::Id::unique(("plugin-list-row", self.scope, id, row)), sense);
         let role = if table { egui::Role::Row } else { egui::Role::ListItem };
@@ -287,14 +482,23 @@ impl<H: Host> Renderer<'_, H> {
         }
         let color = if item.weak { theme.weak } else { theme.text };
         let mut edge = rect.left();
+        let (mut first_cell, mut name) = (Rect::NOTHING, Rect::NOTHING);
         for (at, cell) in item.cells.iter().enumerate() {
             let width = widths.get(at).copied().unwrap_or_default();
             let start = if at == 0 { left } else { edge + 4.0 };
             let clip = Rect::from_x_y_ranges(start..=(edge + width - 4.0).max(start), rect.y_range());
-            ui.painter_at(clip).text(pos2(start, rect.center().y), Align2::LEFT_CENTER, cell, FontId::proportional(12.0), color);
+            if at == 0 {
+                first_cell = clip;
+            }
+            if !(at == 0 && renaming) {
+                let drawn = ui.painter_at(clip).text(pos2(start, rect.center().y), Align2::LEFT_CENTER, cell, FontId::proportional(12.0), color);
+                if at == 0 {
+                    name = drawn.intersect(clip);
+                }
+            }
             edge += width;
         }
-        response
+        (response, first_cell, name)
     }
 
     fn disclosure(&mut self, ui: &mut egui::Ui, toggle_id: egui::Id, rect: Rect, open: bool, text: &str) {
@@ -322,12 +526,21 @@ struct Line<'w> {
     current: bool,
     tree: bool,
     table: bool,
+    drags: bool,
+    renaming: bool,
 }
 
-fn pressed_keys(ui: &egui::Ui) -> Option<(Key, bool)> {
+struct Heading {
+    list: u64,
+    sortable: bool,
+    sorted: Option<(u32, bool)>,
+    row_height: f32,
+}
+
+fn pressed_keys(ui: &egui::Ui) -> Option<(Key, egui::Modifiers)> {
     ui.input(|i| {
         i.events.iter().find_map(|event| match event {
-            egui::Event::Key { key, pressed: true, modifiers, .. } => Some((*key, modifiers.shift)),
+            egui::Event::Key { key, pressed: true, modifiers, .. } => Some((*key, *modifiers)),
             _ => None,
         })
     })
@@ -335,10 +548,10 @@ fn pressed_keys(ui: &egui::Ui) -> Option<(Key, bool)> {
 
 #[cfg(test)]
 mod tests {
-    use craft_plugin::{ColumnWidth, Item};
-    use egui::Key;
+    use craft_plugin::{ColumnWidth, Item, ListEdit};
+    use egui::{Key, Rect, pos2, vec2};
 
-    use super::{Action, Rows, widths, window};
+    use super::{Action, Rows, insertion, moves, widths, window};
 
     #[test]
     fn a_window_covers_the_rows_in_view_with_one_screen_either_side_and_stays_inside_the_list() {
@@ -361,19 +574,47 @@ mod tests {
     fn keys_move_through_a_tree_open_and_close_rows_and_left_goes_to_the_parent() {
         let items =
             [Item::new("a").open(true), Item::new("b").depth(1).open(false), Item::new("c").depth(2), Item::new("d").depth(1), Item::new("e")];
-        let rows = Rows { columns: &[], count: 50, first: 10, items: &items, selected: &[], multi: false, rows: 0 };
-        assert_eq!(rows.action(10, Key::ArrowRight, 5), Some(Action::Move(11)));
-        assert_eq!(rows.action(11, Key::ArrowRight, 5), Some(Action::Toggle(true)));
-        assert_eq!(rows.action(10, Key::ArrowLeft, 5), Some(Action::Toggle(false)));
-        assert_eq!(rows.action(12, Key::ArrowLeft, 5), Some(Action::Move(11)));
-        assert_eq!(rows.action(13, Key::ArrowLeft, 5), Some(Action::Move(10)));
-        assert_eq!(rows.action(14, Key::ArrowLeft, 5), None);
-        assert_eq!(rows.action(10, Key::ArrowUp, 5), Some(Action::Move(9)));
-        assert_eq!(rows.action(12, Key::PageDown, 5), Some(Action::Move(17)));
-        assert_eq!(rows.action(12, Key::PageUp, 5), Some(Action::Move(7)));
-        assert_eq!(rows.action(12, Key::End, 5), Some(Action::Move(49)));
-        assert_eq!(rows.action(12, Key::Home, 5), Some(Action::Move(0)));
-        assert_eq!(rows.action(12, Key::Enter, 5), Some(Action::Activate));
-        assert_eq!(rows.action(12, Key::A, 5), None);
+        let edit = ListEdit { rename: true, reorder: true, ..Default::default() };
+        let rows = Rows { columns: &[], count: 50, first: 10, items: &items, selected: &[12], multi: false, rows: 0, edit: &edit };
+        assert_eq!(rows.action(10, Key::ArrowRight, false, 5), Some(Action::Move(11)));
+        assert_eq!(rows.action(11, Key::ArrowRight, false, 5), Some(Action::Toggle(true)));
+        assert_eq!(rows.action(10, Key::ArrowLeft, false, 5), Some(Action::Toggle(false)));
+        assert_eq!(rows.action(12, Key::ArrowLeft, false, 5), Some(Action::Move(11)));
+        assert_eq!(rows.action(13, Key::ArrowLeft, false, 5), Some(Action::Move(10)));
+        assert_eq!(rows.action(14, Key::ArrowLeft, false, 5), None);
+        assert_eq!(rows.action(10, Key::ArrowUp, false, 5), Some(Action::Move(9)));
+        assert_eq!(rows.action(12, Key::PageDown, false, 5), Some(Action::Move(17)));
+        assert_eq!(rows.action(12, Key::PageUp, false, 5), Some(Action::Move(7)));
+        assert_eq!(rows.action(12, Key::End, false, 5), Some(Action::Move(49)));
+        assert_eq!(rows.action(12, Key::Home, false, 5), Some(Action::Move(0)));
+        assert_eq!(rows.action(12, Key::Enter, false, 5), Some(Action::Activate));
+        assert_eq!(rows.action(12, Key::A, false, 5), None);
+    }
+
+    #[test]
+    fn alt_arrows_move_the_selection_by_one_row_and_f2_renames_only_in_lists_that_allow_them() {
+        let items: Vec<Item> = (0..5).map(|row| Item::new(&format!("file {row}"))).collect();
+        let edit = ListEdit { rename: true, reorder: true, ..Default::default() };
+        let rows = Rows { columns: &[], count: 5, first: 0, items: &items, selected: &[2, 1], multi: true, rows: 0, edit: &edit };
+        assert_eq!(rows.action(1, Key::ArrowDown, true, 5), Some(Action::Reorder(4)));
+        assert_eq!(rows.action(2, Key::ArrowUp, true, 5), Some(Action::Reorder(0)));
+        assert_eq!(rows.action(4, Key::ArrowDown, true, 5), None);
+        assert_eq!(rows.action(0, Key::ArrowUp, true, 5), None);
+        assert_eq!(rows.action(1, Key::F2, false, 5), Some(Action::Rename));
+        let fixed = Rows { edit: &ListEdit::default(), ..rows };
+        assert_eq!((fixed.action(1, Key::F2, false, 5), fixed.action(1, Key::ArrowDown, true, 5)), (None, Some(Action::Move(2))));
+    }
+
+    #[test]
+    fn a_drop_goes_before_the_row_whose_upper_half_holds_the_pointer_and_a_drop_beside_the_rows_moves_nothing() {
+        let placed: Vec<(u32, Rect)> = (3..6).map(|row| (row, Rect::from_min_size(pos2(0.0, row as f32 * 20.0), vec2(100.0, 20.0)))).collect();
+        assert_eq!(
+            [insertion(&placed, 61.0), insertion(&placed, 75.0), insertion(&placed, 500.0), insertion(&[], 5.0)],
+            [Some(3), Some(4), Some(6), None]
+        );
+        assert_eq!(
+            [moves(&[2], 0), moves(&[2], 2), moves(&[2], 3), moves(&[2], 4), moves(&[1, 2], 3), moves(&[1, 3], 2)],
+            [true, false, false, true, false, true]
+        );
     }
 }
