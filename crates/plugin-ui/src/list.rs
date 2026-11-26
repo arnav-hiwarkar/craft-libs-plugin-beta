@@ -1,4 +1,4 @@
-use craft_plugin::{Column, ColumnWidth, Item, LIST_WINDOW, ListEdit, ListEvent, MAX_LIST_ITEMS, TextStyle, UiEventKind};
+use craft_plugin::{Column, ColumnWidth, Item, LIST_WINDOW, ListEdit, ListEvent, MAX_LIST_ITEMS, MAX_SELECTED, TextStyle, UiEventKind};
 use egui::{Align2, FontId, Key, Rect, Sense, Stroke, StrokeKind, UiBuilder, pos2, vec2};
 
 use crate::Host;
@@ -28,6 +28,7 @@ struct Cursor {
     dragging: Option<Vec<u32>>,
     told: Option<(u32, bool)>,
     sent: Option<(u32, bool)>,
+    seek: Option<(u32, u8, u32)>,
 }
 
 #[derive(Clone)]
@@ -45,6 +46,7 @@ enum Action {
     Flip,
     Rename,
     Reorder(u32),
+    Seek,
 }
 
 impl Rows<'_> {
@@ -58,8 +60,12 @@ impl Rows<'_> {
     }
 
     fn parent(&self, row: u32) -> Option<u32> {
-        let depth = self.item(row)?.depth;
-        (self.first..row).rev().find(|at| self.item(*at).is_some_and(|item| item.depth < depth))
+        self.ancestor(row, self.item(row)?.depth)
+    }
+
+    fn ancestor(&self, row: u32, depth: u8) -> Option<u32> {
+        let end = row.min(self.first.saturating_add(self.items.len() as u32));
+        (self.first..end).rev().find(|at| self.item(*at).is_some_and(|item| item.depth < depth))
     }
 
     fn moving(&self, row: u32) -> Vec<u32> {
@@ -93,9 +99,11 @@ impl Rows<'_> {
                 Some(true) if self.item(row + 1).is_some_and(|child| child.depth > item.depth) => Action::Move(row + 1),
                 _ => return None,
             },
-            Key::ArrowLeft => match item.open {
-                Some(true) => Action::Toggle(false),
-                _ => Action::Move(self.parent(row)?),
+            Key::ArrowLeft => match (item.open, self.parent(row)) {
+                (Some(true), _) => Action::Toggle(false),
+                (_, Some(parent)) => Action::Move(parent),
+                (_, None) if item.depth > 0 && self.first > 0 => Action::Seek,
+                (_, None) => return None,
             },
             Key::Enter => Action::Activate,
             Key::Space => Action::Flip,
@@ -110,10 +118,31 @@ impl Rows<'_> {
         match (self.multi, extend, flip, anchor) {
             (true, _, true, _) if self.selected.contains(&row) => self.selected.iter().copied().filter(|at| *at != row).collect(),
             (true, _, true, _) => self.selected.iter().copied().chain([row]).collect(),
-            (true, true, _, Some(anchor)) => (anchor.min(row)..=anchor.max(row)).collect(),
+            (true, true, _, Some(anchor)) if anchor <= row => (anchor.max(row.saturating_sub(MAX_SELECTED - 1))..=row).collect(),
+            (true, true, _, Some(anchor)) => (row..=anchor.min(row.saturating_add(MAX_SELECTED - 1))).collect(),
             _ => vec![row],
         }
     }
+}
+
+fn landing(moving: &[u32], row: u32, to: u32) -> u32 {
+    let start = to - moving.iter().filter(|at| **at < to).count() as u32;
+    start + moving.iter().position(|at| *at == row).unwrap_or_default() as u32
+}
+
+fn seek(rows: &Rows, cursor: &mut Cursor, stride: f32) -> Option<(u32, u32)> {
+    let (row, depth, scrolled) = cursor.seek?;
+    if let Some(parent) = rows.ancestor(row, depth) {
+        cursor.seek = None;
+        return Some((row, parent));
+    }
+    if rows.first == 0 {
+        cursor.seek = None;
+    } else if rows.first != scrolled {
+        cursor.scroll = Some(rows.first as f32 * stride);
+        cursor.seek = Some((row, depth, rows.first));
+    }
+    None
 }
 
 fn moves(rows: &[u32], to: u32) -> bool {
@@ -257,7 +286,7 @@ impl<H: Host> Renderer<'_, H> {
                     if !(held.shift && rows.multi) {
                         cursor.anchor = Some(row);
                     }
-                    cursor.current = Some(row);
+                    (cursor.current, cursor.seek) = (Some(row), None);
                     response.request_focus();
                     self.emit(id, UiEventKind::List(ListEvent::Select(picked)));
                 }
@@ -287,10 +316,16 @@ impl<H: Host> Renderer<'_, H> {
             cursor.renaming = None;
         }
         self.drag_rows(ui, id, &mut cursor, &placed, &output, stride);
-        if let Some((row, (key, held))) = pressed {
-            let page = ((output.inner_rect.height() / stride).floor() as u32).max(1);
-            let shift = held.shift;
-            match rows.action(row, key, held.alt, page) {
+        let page = ((output.inner_rect.height() / stride).floor() as u32).max(1);
+        let mut acted = pressed.map(|(row, (key, held))| (row, held.shift, rows.action(row, key, held.alt, page)));
+        if acted.is_some() {
+            cursor.seek = None;
+        }
+        if let Some((row, parent)) = seek(&rows, &mut cursor, stride) {
+            acted = Some((row, false, Some(Action::Move(parent))));
+        }
+        if let Some((row, shift, action)) = acted {
+            match action {
                 Some(Action::Move(to)) => {
                     let picked = rows.picked(&cursor, to, shift, false);
                     if !(shift && rows.multi) {
@@ -318,10 +353,11 @@ impl<H: Host> Renderer<'_, H> {
                 }
                 Some(Action::Reorder(to)) => {
                     let moving = rows.moving(row);
-                    let next = if to > row { row + 1 } else { row - 1 };
+                    let next = landing(&moving, row, to);
                     (cursor.current, cursor.focus, cursor.anchor) = (Some(next), Some(next), Some(next));
                     self.emit(id, UiEventKind::List(ListEvent::Move { rows: moving, to }));
                 }
+                Some(Action::Seek) => cursor.seek = rows.item(row).map(|item| (row, item.depth, u32::MAX)),
                 None => {}
             }
             ui.ctx().request_repaint();
@@ -352,7 +388,12 @@ impl<H: Host> Renderer<'_, H> {
     ) {
         let (Some(moving), Some(pointer)) = (cursor.dragging.clone(), ui.ctx().pointer_latest_pos()) else { return };
         let area = output.inner_rect;
-        let to = insertion(placed, pointer.y);
+        let rows_area = Rect::from_min_size(area.min, vec2(area.width(), area.height().min(output.content_size.y)));
+        let to = insertion(placed, pointer.y).filter(|_| rows_area.contains(pointer));
+        if ui.input(|i| i.key_pressed(Key::Escape)) {
+            cursor.dragging = None;
+            return;
+        }
         if ui.input(|i| !i.pointer.any_down() || i.pointer.any_released()) {
             cursor.dragging = None;
             if let Some(to) = to.filter(|to| moves(&moving, *to)) {
@@ -392,7 +433,7 @@ impl<H: Host> Renderer<'_, H> {
         if std::mem::take(&mut renaming.fresh) {
             return None;
         }
-        field.lost_focus().then(|| ui.input(|i| i.key_pressed(Key::Enter)).then(|| renaming.text.clone()))
+        field.lost_focus().then(|| (!ui.input(|i| i.key_pressed(Key::Escape))).then(|| renaming.text.clone()))
     }
 
     fn headings(&mut self, ui: &mut egui::Ui, columns: &[Column], widths: &[f32], heading: &Heading) -> Option<u32> {
@@ -551,7 +592,7 @@ mod tests {
     use craft_plugin::{ColumnWidth, Item, ListEdit};
     use egui::{Key, Rect, pos2, vec2};
 
-    use super::{Action, Rows, insertion, moves, widths, window};
+    use super::{Action, Cursor, Rows, insertion, landing, moves, widths, window};
 
     #[test]
     fn a_window_covers_the_rows_in_view_with_one_screen_either_side_and_stays_inside_the_list() {
@@ -603,6 +644,37 @@ mod tests {
         assert_eq!(rows.action(1, Key::F2, false, 5), Some(Action::Rename));
         let fixed = Rows { edit: &ListEdit::default(), ..rows };
         assert_eq!((fixed.action(1, Key::F2, false, 5), fixed.action(1, Key::ArrowDown, true, 5)), (None, Some(Action::Move(2))));
+    }
+
+    #[test]
+    fn left_on_a_child_whose_parent_is_above_the_built_rows_seeks_it_and_finds_it_once_it_is_built() {
+        let children: Vec<Item> = (0..5).map(|row| Item::new(&format!("child {row}")).depth(1)).collect();
+        let edit = ListEdit::default();
+        let rows = Rows { columns: &[], count: 1000, first: 10, items: &children, selected: &[12], multi: false, rows: 0, edit: &edit };
+        assert_eq!(rows.action(12, Key::ArrowLeft, false, 5), Some(Action::Seek));
+        assert_eq!(rows.ancestor(12, 1), None);
+        let mut earlier = vec![Item::new("folder").open(true)];
+        earlier.extend((0..12).map(|row| Item::new(&format!("child {row}")).depth(1)));
+        let built = Rows { first: 2, items: &earlier, ..rows };
+        assert_eq!(built.ancestor(12, 1), Some(2));
+        let top = Rows { first: 0, items: &children, ..rows };
+        assert_eq!(top.action(3, Key::ArrowLeft, false, 5), None);
+    }
+
+    #[test]
+    fn alt_up_on_a_split_selection_focuses_the_row_where_it_lands() {
+        assert_eq!([landing(&[1, 3], 3, 0), landing(&[1, 3], 1, 0), landing(&[1, 2], 2, 0), landing(&[1, 3], 3, 5)], [1, 0, 1, 4]);
+    }
+
+    #[test]
+    fn a_shift_range_holds_at_most_max_selected_rows_and_ends_on_the_row_it_was_extended_to() {
+        let edit = ListEdit::default();
+        let rows = Rows { columns: &[], count: 3_000_000, first: 0, items: &[], selected: &[0], multi: true, rows: 0, edit: &edit };
+        let cursor = Cursor { anchor: Some(0), ..Default::default() };
+        let picked = rows.picked(&cursor, 2_999_999, true, false);
+        assert_eq!((picked.len() as u32, picked.last().copied()), (craft_plugin::MAX_SELECTED, Some(2_999_999)));
+        let back = rows.picked(&Cursor { anchor: Some(2_999_999), ..Default::default() }, 0, true, false);
+        assert_eq!((back.len() as u32, back.first().copied()), (craft_plugin::MAX_SELECTED, Some(0)));
     }
 
     #[test]

@@ -1887,6 +1887,7 @@ pub enum ListEvent {
 
 pub const MAX_LIST_ITEMS: u32 = 1024;
 pub const LIST_WINDOW: u32 = 128;
+pub const MAX_SELECTED: u32 = 1 << 20;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Key {

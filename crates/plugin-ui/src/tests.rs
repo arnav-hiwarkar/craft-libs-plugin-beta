@@ -440,6 +440,39 @@ fn focus_is_taken_once_per_call_so_tab_can_leave_until_the_plugin_asks_again() {
     *harness.state_mut() = tree(4);
     harness.run();
     assert!(focused(&harness), "a new call asks again");
+    harness.key_press(egui::Key::Tab);
+    *harness.state_mut() = tree(4)[..2].to_vec();
+    harness.run();
+    *harness.state_mut() = tree(4);
+    harness.run();
+    assert!(
+        focused(&harness),
+        "a reloaded plugin numbers its calls from the start again, and a Focus that comes back after a tree without one asks again"
+    );
+}
+
+#[test]
+fn a_scroll_area_sized_in_rows_shows_that_many_rows_of_controls() {
+    let top_of_after = |rows: u32| {
+        let buttons = (0..40).map(|row| Widget::Button { id: 10 + row, text: format!("row {row}"), enabled: true }).collect();
+        let mut harness = harness(vec![
+            Widget::Scroll { id: 1, height: 0.0, rows: Some(rows), children: buttons },
+            Widget::Button { id: 2, text: "After".into(), enabled: true },
+        ]);
+        harness.run();
+        let (first, after) = (harness.get_by_label("row 0").rect(), harness.get_by_label("After").rect());
+        (after.top() - first.top(), harness.get_by_label(&format!("row {}", rows - 1)).rect().bottom() <= after.top())
+    };
+    let ((six, six_fit), (twelve, twelve_fit)) = (top_of_after(6), top_of_after(12));
+    assert!(six_fit && twelve_fit, "each area holds its rows above the next widget");
+    assert!(six > 100.0 && twelve > six * 1.8, "six rows take {six} points and twelve {twelve}");
+}
+
+#[test]
+fn a_text_field_is_named_by_its_hint() {
+    let mut harness = harness(vec![Widget::TextEdit { id: 3, value: String::new(), hint: "Search".into() }]);
+    harness.run();
+    assert_eq!(harness.get_by_label("Search").accesskit_node().role(), egui::accesskit::Role::TextInput);
 }
 
 #[test]
