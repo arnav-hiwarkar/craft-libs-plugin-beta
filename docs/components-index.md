@@ -108,7 +108,7 @@ Grouped by gallery level, then shape, then name.
 | `Tile` | Leaf | `craft_ui_widgets::tile_grid::tile` | One tile of a tile grid |
 | `TitleFace` | Leaf | `craft_ui_widgets::menu::bar` | The face of a menu title: lit while its menu is open or the keyboard is on it, its mnemonic underlined while Alt is held or the bar has focus |
 | `TitleRow` | Leaf | `craft_ui_panels::sections::title_row` | An optional icon, a title with an optional note run on after it ("· note", muted body text) and an optional subtitle at the band's end (faint caption text: the target's kind), a lead (a disclosure bound to the container's open state, or a check box bound to its gate) and action parts |
-| `DragSource` | Body | `craft_ui_panels::sections::drag_source` | A container that is as large as its one child and starts a drag of its payload when a press on it moves past slop |
+| `DragSource` | Body | `craft_ui_panels::sections::drag_source` | A container that is as large as its one child and starts a drag of `payload` when a press on it moves past slop; the drop targets of type `P` take it |
 | `DropAction` | Body | `craft_ui_panels::sections::footer` | A container that is as large as its one child and takes drops of payload type `P` over that child |
 | `Field` | Body | `craft_ui_widgets::form::field` | One control with a side label: beside it, above it, as a caption or after it (`Field::layout`) |
 | `FieldGroup` | Body | `craft_ui_widgets::form::group` | A stack of `Field`s (and `LinkedFields`) named `label`, filling the width offered |
