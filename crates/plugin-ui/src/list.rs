@@ -503,7 +503,7 @@ impl<H: Host> Renderer<'_, H> {
 
     fn disclosure(&mut self, ui: &mut egui::Ui, toggle_id: egui::Id, rect: Rect, open: bool, text: &str) {
         let toggle = ui.interact(rect, toggle_id, Sense::CLICK);
-        let name = format!("{} {text}", self.host.tr(if open { "Close" } else { "Open" }));
+        let name = format!("{} {text}", self.host.tr(if open { "Collapse" } else { "Expand" }));
         toggle.widget_info(|| egui::WidgetInfo::labeled(egui::Role::DisclosureTriangle, true, &name));
         ui.ctx().accesskit_node_builder(toggle.id, |node| node.set_expanded(open));
         let c = rect.center();

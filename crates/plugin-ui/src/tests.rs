@@ -371,7 +371,7 @@ fn a_table_is_a_grid_of_rows_under_column_headings_and_tree_rows_say_whether_the
     assert_eq!((open.role(), open.is_selected(), open.data().is_expanded()), (egui::accesskit::Role::Row, Some(true), Some(true)));
     let child = harness.get_by_label("shot 1  1").accesskit_node();
     assert_eq!((child.is_selected(), child.data().is_expanded()), (Some(false), None));
-    harness.get_by_label("Close Shots").click();
+    harness.get_by_label("Collapse Shots").click();
     harness.run();
     assert_eq!(harness.state(), &vec![UiEvent { id: 4, kind: UiEventKind::List(craft_plugin::ListEvent::Toggle { row: 0, open: false }) }]);
 }

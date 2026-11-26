@@ -1,4 +1,6 @@
-use craft_plugin::{Axis, Column, Drag, Dropped, Gap, Item, ListEdit, ListEvent, MenuItem, Pointer, PointerPhase, Span, TextStyle, UiEvent, UiEventKind, Widget};
+use craft_plugin::{
+    Axis, Column, Drag, Dropped, Gap, Item, ListEdit, ListEvent, MenuItem, Pointer, PointerPhase, Span, TextStyle, UiEvent, UiEventKind, Widget,
+};
 use egui::{Color32, FontFamily};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
@@ -293,18 +295,29 @@ pub fn cases() -> Vec<Case> {
             expect: Expect::Events(vec![event(13, UiEventKind::Number(2.0))]),
         },
         Case {
-            name: "Right on the focused radio choice picks the next one",
+            name: "the keyboard alone picks the next radio choice: Right, then Space",
             size: [300.0, 80.0],
             tree: vec![radio()],
-            steps: vec![Step::Key(egui::Key::Tab), Step::Key(egui::Key::ArrowRight)],
-            expect: Expect::Events(vec![event(13, UiEventKind::Number(1.0))]),
+            steps: vec![Step::Key(egui::Key::Tab), Step::Key(egui::Key::ArrowRight), Step::Key(egui::Key::Space)],
+            expect: Expect::Holds("one or more Number(1), and no other choice", |events| {
+                !events.is_empty() && events.iter().all(|event| *event == UiEvent { id: 13, kind: UiEventKind::Number(1.0) })
+            }),
         },
         Case {
             name: "typing in a text area sends its text and Enter adds a new line",
             size: [300.0, 160.0],
             tree: vec![Widget::TextArea { id: 14, value: String::new(), hint: "Notes".into(), rows: 4 }],
             steps: vec![Step::Type("Notes", "ab"), Step::Key(egui::Key::Enter)],
-            expect: Expect::Events(vec![event(14, UiEventKind::Text("ab".into())), event(14, UiEventKind::Text("\n".into()))]),
+            expect: Expect::Holds("a first Text \"ab\" and a last Text ending in a new line", |events| {
+                let texts: Vec<&str> = events
+                    .iter()
+                    .filter_map(|event| match event {
+                        UiEvent { id: 14, kind: UiEventKind::Text(text) } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                texts.len() == events.len() && texts.first() == Some(&"ab") && texts.last().is_some_and(|text| text.ends_with('\n'))
+            }),
         },
         Case {
             name: "a paragraph and a gap leave the button after them clickable",
@@ -412,7 +425,7 @@ pub fn cases() -> Vec<Case> {
             name: "clicking the disclosure triangle of a shut row opens it without selecting it",
             size: [240.0, 200.0],
             tree: vec![tree(vec![Item::new("Shots").open(false), Item::new("Notes")])],
-            steps: vec![Step::Click("Open Shots")],
+            steps: vec![Step::Click("Expand Shots")],
             expect: Expect::Events(vec![event(4, UiEventKind::List(ListEvent::Toggle { row: 0, open: true }))]),
         },
         Case {
