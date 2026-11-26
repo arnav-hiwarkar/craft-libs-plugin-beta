@@ -91,6 +91,10 @@ pub const UI_LEVEL: u32 = 2;
 pub const PANEL_MENU: u64 = u64::MAX;
 
 impl Contributions {
+    pub fn event_level(&self) -> u32 {
+        self.ui_level.max(1)
+    }
+
     pub fn check(&self) -> Result<(), String> {
         self.effects.iter().try_for_each(|effect| effect.check_bounded(self.bounded))
     }
