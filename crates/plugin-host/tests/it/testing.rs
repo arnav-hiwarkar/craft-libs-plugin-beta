@@ -379,3 +379,26 @@ fn the_controls_panel_takes_toggle_radio_text_area_menu_curve_and_gradient_event
     assert!(texts.contains(&"3 points".to_string()) && texts.contains(&"3 stops".to_string()), "{texts:?}");
     assert!(texts.contains(&"Probe controls".to_string()), "{texts:?}");
 }
+
+#[test]
+fn a_pad_right_click_reaches_a_plugin_at_ui_level_two_and_never_one_at_the_old_level() {
+    use craft_plugin::{Pointer, PointerPhase, UiEvent, Widget};
+    use craft_plugin_host::Retained;
+    let (_bundle, plugin) = probe();
+    let level = plugin.plugin().contributions().ui_level;
+    let said = |mut retained: Retained, kind: fn(Pointer) -> UiEventKind| {
+        let mut panel = plugin.panel("pad").unwrap();
+        let pad = panel.widgets().iter().find_map(|widget| if let Widget::Canvas { id, .. } = widget { Some(*id) } else { None }).unwrap();
+        retained.push(vec![UiEvent { id: pad, kind: kind(Pointer::new([10.0, 20.0], PointerPhase::Down)) }], "");
+        panel.input(retained.start([320.0, 480.0], std::time::Duration::ZERO).unwrap()).unwrap();
+        panel.texts().into_iter().find(|text| text.starts_with("pad")).unwrap_or_default()
+    };
+    let new = || Retained::with_level(level);
+    assert_eq!(
+        [said(Retained::new(), UiEventKind::Context), said(new(), UiEventKind::Context), said(new(), UiEventKind::Open)],
+        ["pad  ink [0.0, 0.0, 0.0, 1.0]", "pad context 10 20 ink [0.0, 0.0, 0.0, 1.0]", "pad open 10 20 ink [0.0, 0.0, 0.0, 1.0]"]
+    );
+    let mut panel = plugin.panel("pad").unwrap();
+    panel.send("Ink", UiEventKind::Color([1.0, 0.0, 0.0, 1.0])).unwrap();
+    assert_eq!(panel.texts().last().map(String::as_str), Some("pad open 10 20 ink [1.0, 0.0, 0.0, 1.0]"));
+}

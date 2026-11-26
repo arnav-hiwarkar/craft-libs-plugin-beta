@@ -1484,6 +1484,7 @@ fn make() -> Plugin {
         .place(PanelPlace::Bottom)
         .panel("controls", "Controls", Controls::default())
         .icon("sliders")
+        .panel("pad", "Pad", Pad::default())
         .effect(Peek)
         .tool("census", "Census", Census)
         .panel("shared", "Shared", Shared)
@@ -1794,5 +1795,27 @@ impl Panel for Notes {
     fn ui(&mut self, ui: &mut Ui) {
         ui.text_edit("note", &mut self.text, "Note");
         ui.label(&format!("note {}: {}", ui.instance().unwrap_or("-"), self.text));
+    }
+}
+
+#[derive(Default)]
+struct Pad {
+    said: String,
+    ink: Option<[f32; 4]>,
+}
+
+impl Panel for Pad {
+    fn ui(&mut self, ui: &mut Ui) {
+        ui.canvas("pad", [120.0, 80.0], |canvas| {
+            if let Some(at) = canvas.context {
+                self.said = format!("context {} {}", at.pos[0], at.pos[1]);
+            }
+            if let Some(at) = canvas.opened {
+                self.said = format!("open {} {}", at.pos[0], at.pos[1]);
+            }
+        });
+        let ink = self.ink.get_or_insert([0.0, 0.0, 0.0, 1.0]);
+        ui.color("Ink", ink);
+        ui.label(&format!("pad {} ink {ink:?}", self.said));
     }
 }
