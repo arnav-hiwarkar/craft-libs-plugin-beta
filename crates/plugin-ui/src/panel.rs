@@ -229,6 +229,13 @@ impl<H: Host> Renderer<'_, H> {
         }
     }
 
+    pub(crate) fn paint_icon(&mut self, painter: &egui::Painter, rect: Rect, name: &str, title: &str, color: Color32) {
+        if !self.host.icon(painter, rect, name, color) {
+            let initial: String = title.chars().find(|c| c.is_alphanumeric()).map(|c| c.to_uppercase().collect()).unwrap_or_default();
+            painter.text(rect.center(), Align2::CENTER_CENTER, initial, FontId::proportional(font_size(rect.height() * 0.75)), color);
+        }
+    }
+
     fn not_drawn_yet(&mut self, ui: &mut egui::Ui, widget: &Widget) {
         let name = format!("{widget:?}").split([' ', '{', '(']).next().unwrap_or_default().to_string();
         let text = self.host.tr("This app does not draw this plug-in widget yet:");

@@ -79,6 +79,10 @@ impl<H: Host> Renderer<'_, H> {
         let response = ui
             .horizontal(|ui| {
                 ui.add_space(f32::from(item.depth) * ui.spacing().indent);
+                if let Some(icon) = &item.icon {
+                    let (rect, _) = ui.allocate_exact_size(vec2(row_height, row_height), Sense::hover());
+                    self.paint_icon(ui.painter(), rect.shrink(2.0), icon, &text, self.theme.text);
+                }
                 let style = if item.weak { TextStyle::Weak } else { TextStyle::Body };
                 ui.add_sized(vec2(ui.available_width(), row_height), egui::Button::selectable(selected, self.text(&text, style)))
             })
