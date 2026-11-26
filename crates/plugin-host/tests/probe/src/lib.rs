@@ -1354,6 +1354,10 @@ fn wait_while_held() {
 
 fn relayed() -> Result<String> {
     let request: serde_json::Value = serde_json::from_slice(&host::read_file(Root::Bundle, "relay.json")?)?;
+    if let Some(panel) = request["close_panel"].as_str() {
+        host::close_panel(panel, None)?;
+        return Ok("closed".into());
+    }
     if request["frame"].is_object() {
         let image = host::frame(craft_plugin::FrameRequest { time: 0.0, scale: 1.0, ..Default::default() })?;
         return Ok(format!("{}x{}", image.width, image.height));
