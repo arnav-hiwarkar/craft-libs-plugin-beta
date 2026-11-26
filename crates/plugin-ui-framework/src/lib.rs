@@ -1,5 +1,6 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+mod canvas;
 pub mod dock;
 mod icons;
 mod list;
@@ -255,7 +256,8 @@ impl Painter<'_> {
             Widget::DropTarget { children, .. } | Widget::DragSource { children, .. } => {
                 Stack::new().show(ui, |ui, _| self.all(ui, children));
             }
-            Widget::Canvas { .. } | Widget::Menu { .. } => {
+            Widget::Canvas { id, size, shapes } => self.canvas(ui, *id, *size, shapes, extras.label("Plug-in drawing")),
+            Widget::Menu { .. } => {
                 text("This app does not draw this plug-in widget yet", TextStyle::Weak).show(ui);
             }
             Widget::Space { .. } | Widget::Gap { .. } | Widget::Tooltip { .. } | Widget::Name { .. } | Widget::Focus { .. } => {}

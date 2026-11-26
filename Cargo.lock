@@ -3647,6 +3647,7 @@ dependencies = [
  "craft-behavior",
  "craft-color-ui",
  "craft-imaging",
+ "craft-keymap",
  "craft-plugin",
  "craft-plugin-host",
  "craft-plugin-ui",

@@ -21,6 +21,7 @@ craft-plugin = { workspace = true }
 craft-behavior = { workspace = true }
 craft-color-ui = { workspace = true, features = ["ui"] }
 craft-imaging = { workspace = true, features = ["ui"] }
+craft-keymap = { workspace = true, features = ["egui"] }
 craft-theme = { workspace = true }
 craft-ui = { workspace = true }
 egui = { workspace = true }
