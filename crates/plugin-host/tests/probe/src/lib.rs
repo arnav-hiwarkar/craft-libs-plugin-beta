@@ -1214,6 +1214,10 @@ impl Tool for Stamp {
                     host::command("prop.set", json!({"layer": layer, "path": "transform/position", "value": [x, y]}))?;
                 }
             }
+            ToolEventKind::Open => {
+                self.seen.push(line);
+                host::command("layer.newNull", json!({"name": "Opened"}))?;
+            }
             _ => self.seen.push(line),
         }
         for (row, line) in self.seen.iter().enumerate() {
