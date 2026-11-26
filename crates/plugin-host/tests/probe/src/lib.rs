@@ -1927,10 +1927,11 @@ impl Panel for AppPanel {
         if fit || reset {
             self.said = if fit { "zoomed to fit" } else { "view reset" }.into();
         }
-        if ui.slider("Opacity", &mut self.opacity, 0.0..=100.0)
-            && let Err(error) = host::command("prop.set", json!({"layer": "#1", "path": "transform/opacity", "value": self.opacity}))
-        {
-            self.said = error.0;
+        if ui.slider("Opacity", &mut self.opacity, 0.0..=100.0) {
+            wait_while_held();
+            if let Err(error) = host::command("prop.set", json!({"layer": "#1", "path": "transform/opacity", "value": self.opacity})) {
+                self.said = error.0;
+            }
         }
         if ui.checkbox("Disable Probe Action", &mut self.disabled)
             && let Err(error) = host::command_state("app-act", !self.disabled, Some(!self.disabled))
