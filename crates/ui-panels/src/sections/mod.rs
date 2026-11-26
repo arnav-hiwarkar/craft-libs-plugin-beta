@@ -1,5 +1,7 @@
-//! Sections and title rows: `TitleRow`, `FooterBar`, `Section`, `GroupBox` and `Panel`.
+//! Sections and title rows: `TitleRow`, `FooterBar`, `Section`, `GroupBox` and `Panel`; `DragSource`, a child a drag starts
+//! from.
 
+mod drag_source;
 pub(crate) mod footer;
 mod group_box;
 #[cfg(feature = "testing")]
@@ -12,6 +14,7 @@ mod words;
 // Panel.
 mod panel;
 
+pub use drag_source::{DragSource, DragSourceOutput, DragSourceStyle};
 pub use footer::{DialogRole, DropAction, DropActionOutput, DropActionStyle, FooterAction, FooterBar, FooterButton, FooterDrop, FooterOutput};
 pub use group_box::{GroupBox, GroupBoxStyle};
 pub use section::{Section, SectionOutput, SectionStyle};
