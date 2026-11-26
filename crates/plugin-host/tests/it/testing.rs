@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
-use craft_plugin::{Channel, Place, Value};
+use craft_plugin::{Channel, Overlay, Place, Shape, ToolEventKind, Value};
 use craft_plugin_host::AuxPlanes;
-use craft_plugin_host::testing::{Pattern, Picture, RENDER_LAYER, TestPlugin, check_frame, json, updating_frames};
+use craft_plugin_host::testing::{Pattern, Picture, RENDER_LAYER, TestPlugin, check_frame, json, pointer, updating_frames};
 
 use super::{Kind, bundle};
 
@@ -272,4 +272,26 @@ fn a_button_press_runs_the_effects_host_commands_and_the_button_sends_no_value_t
     assert_eq!(error, "parameter `reset` takes no value, as it is a button, not true");
     let error = plugin.press("plain", "go").unwrap_err();
     assert!(error.contains("no `Effect::button`"), "{error}");
+}
+
+fn written(overlay: Overlay) -> Vec<String> {
+    overlay
+        .marks
+        .into_iter()
+        .filter_map(|mark| match mark.shape {
+            Shape::Text { text, .. } => Some(text),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_sandboxed_panel_sees_a_static_its_command_set_while_its_tool_and_overlay_run_on_instances_of_their_own() {
+    let (_bundle, plugin) = probe();
+    plugin.command("bump").unwrap();
+    plugin.command("bump").unwrap();
+    let panel = plugin.panel("shared").unwrap().texts();
+    let tool = written(plugin.tool("census", pointer(ToolEventKind::Move, [0.0; 2])).unwrap());
+    let overlay = written(plugin.render("peek").overlay().unwrap());
+    assert_eq!((panel, tool, overlay), (vec!["shared 2".to_string()], vec!["shared 0".to_string()], vec!["shared 0".to_string()]));
 }

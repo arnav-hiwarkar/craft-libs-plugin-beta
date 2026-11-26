@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use craft_plugin::math;
 use craft_plugin::prelude::*;
@@ -1187,6 +1188,10 @@ struct Stamp {
 
 impl Tool for Stamp {
     fn event(&mut self, event: &ToolEvent, overlay: &mut Overlay) -> Result<()> {
+        if event.key == "hold" {
+            wait_while_held();
+            return Ok(());
+        }
         let [x, y] = event.comp;
         self.seen.push(format!("{:?} {x:.1} {y:.1}", event.kind));
         match event.kind {
@@ -1206,6 +1211,41 @@ impl Tool for Stamp {
             overlay.text([x, y + 12.0 * row as f64], line);
         }
         Ok(())
+    }
+}
+
+static SHARED: AtomicU32 = AtomicU32::new(0);
+
+fn shared() -> String {
+    format!("shared {}", SHARED.load(Ordering::Relaxed))
+}
+
+struct Peek;
+
+impl Effect for Peek {
+    fn spec(&self) -> EffectSpec {
+        EffectSpec::new("peek", "Peek", "Probe")
+    }
+
+    fn overlay(&self, _cx: &Cx, overlay: &mut Overlay) {
+        overlay.text([0.0, 0.0], &shared());
+    }
+}
+
+struct Census;
+
+impl Tool for Census {
+    fn event(&mut self, _event: &ToolEvent, overlay: &mut Overlay) -> Result<()> {
+        overlay.text([0.0, 0.0], &shared());
+        Ok(())
+    }
+}
+
+struct Shared;
+
+impl Panel for Shared {
+    fn ui(&mut self, ui: &mut Ui) {
+        ui.label(&shared());
     }
 }
 
@@ -1375,6 +1415,13 @@ fn make() -> Plugin {
         .effect(Lookout::default())
         .effect(AuxDepth)
         .effect(AuxUndeclared)
+        .effect(Peek)
+        .tool("census", "Census", Census)
+        .panel("shared", "Shared", Shared)
+        .command("bump", "Bump", || {
+            SHARED.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        })
         .tool("stamp", "Stamp", Stamp::default())
         .panel("counter", "Counter", Counter::default())
         .panel("watch", "Watch", Watch::default())

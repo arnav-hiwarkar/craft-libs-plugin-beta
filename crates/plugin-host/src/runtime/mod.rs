@@ -20,7 +20,7 @@ pub(crate) use crate::cache::Staged;
 use crate::cache::{BUDGET, Cache};
 use crate::host::{Host, Origin};
 use crate::images::{IMAGE_BUDGET, Images, PluginImage};
-use crate::plugin::{Io, PluginError, Scope};
+use crate::plugin::{Instance, Io, PluginError, Scope};
 use crate::registry::Bundle;
 
 const COMPILED_DIR: &str = ".compiled";
@@ -72,7 +72,7 @@ impl LazyModule {
 }
 
 enum Kind {
-    Wasm { module: Box<LazyModule>, main: Mutex<Option<Box<WasmGuest>>>, pool: Mutex<Vec<WasmGuest>> },
+    Wasm { module: Box<LazyModule>, main: Mutex<Option<Box<WasmGuest>>>, tool: Mutex<Option<Box<WasmGuest>>>, pool: Mutex<Vec<WasmGuest>> },
     Native(NativeGuest),
 }
 
@@ -88,7 +88,7 @@ impl Engine {
             let (record, cache) = (wasm::name_of(digest.as_bytes())?, data_dir.parent().unwrap_or(&data_dir).join(COMPILED_DIR));
             let kept = wasm::described(&cache, &record);
             let module = LazyModule { bundle: bundle.clone(), digest: digest.to_string(), record, cache, kept, module: OnceLock::new() };
-            Kind::Wasm { module: Box::new(module), main: Mutex::new(None), pool: Mutex::new(Vec::new()) }
+            Kind::Wasm { module: Box::new(module), main: Mutex::new(None), tool: Mutex::new(None), pool: Mutex::new(Vec::new()) }
         } else {
             Kind::Native(NativeGuest::load(&entry)?)
         };
@@ -189,11 +189,10 @@ impl Engine {
         request: &[u8],
         io: Io,
         host: &mut dyn Host,
-        origin: Origin,
+        (origin, instance): (Origin, Instance),
         budget: Duration,
         Scope { cancel, memo }: Scope,
     ) -> Result<Vec<u8>, PluginError> {
-        let stateful = origin == Origin::Interactive;
         let mut cx = HostCx { host, plugin: &self.identity, engine: self, origin, task: None, on_task_thread: false, paused: Duration::ZERO, memo };
         match &self.kind {
             Kind::Native(guest) => match io {
@@ -204,8 +203,9 @@ impl Engine {
                     Err(PluginError::Protocol("native plugins read their images through their addresses".into()))
                 }
             },
-            Kind::Wasm { module, main, .. } if stateful => {
-                let mut slot = main.lock().map_err(|_| PluginError::Trap("an earlier call panicked".into()))?;
+            Kind::Wasm { module, main, tool, .. } if instance != Instance::Pooled => {
+                let kept = if instance == Instance::Tool { tool } else { main };
+                let mut slot = kept.lock().map_err(|_| PluginError::Trap("an earlier call panicked".into()))?;
                 let mut guest = match slot.take() {
                     Some(guest) => guest,
                     None => Box::new(module.instantiate()?),

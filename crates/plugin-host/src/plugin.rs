@@ -97,6 +97,13 @@ pub(crate) struct Scope<'a> {
     pub memo: Option<&'a Staged>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Instance {
+    Main,
+    Tool,
+    Pooled,
+}
+
 pub(crate) enum Io<'a> {
     None,
     InPlace(&'a mut [Pixel]),
@@ -749,19 +756,15 @@ fn what(call: &Call) -> String {
     }
 }
 
-fn origin(call: &Call) -> Origin {
+fn origin(call: &Call) -> (Origin, Instance) {
     match call {
-        Call::Describe
-        | Call::Panel { .. }
-        | Call::Controls { .. }
-        | Call::Command { .. }
-        | Call::Button { .. }
-        | Call::Overlay { .. }
-        | Call::Drag { .. }
-        | Call::Migrate { .. }
-        | Call::Tool { .. } => Origin::Interactive,
-        Call::Layout { .. } | Call::Input { .. } | Call::Render { .. } | Call::Pass { .. } => Origin::Render,
-        Call::Task { .. } => Origin::Task,
+        Call::Describe | Call::Panel { .. } | Call::Controls { .. } | Call::Command { .. } | Call::Button { .. } | Call::Migrate { .. } => {
+            (Origin::Interactive, Instance::Main)
+        }
+        Call::Tool { .. } => (Origin::Interactive, Instance::Tool),
+        Call::Overlay { .. } | Call::Drag { .. } => (Origin::Interactive, Instance::Pooled),
+        Call::Layout { .. } | Call::Input { .. } | Call::Render { .. } | Call::Pass { .. } => (Origin::Render, Instance::Pooled),
+        Call::Task { .. } => (Origin::Task, Instance::Pooled),
     }
 }
 
