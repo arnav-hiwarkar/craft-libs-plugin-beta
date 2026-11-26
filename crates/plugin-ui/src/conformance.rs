@@ -1,4 +1,4 @@
-use craft_plugin::{Drag, Dropped, Item, ListEvent, UiEvent, UiEventKind, Widget};
+use craft_plugin::{Axis, Drag, Dropped, Gap, Item, ListEvent, MenuItem, Span, TextStyle, UiEvent, UiEventKind, Widget};
 use egui::{Color32, FontFamily};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
@@ -151,8 +151,122 @@ fn shows_a_later_window(events: &[UiEvent]) -> bool {
         && shows.last().is_some_and(|(first, count)| *first > 100 && *count >= 6 && first + count <= 100_000)
 }
 
+fn button(id: u64, text: &str) -> Widget {
+    Widget::Button { id, text: text.into(), enabled: true }
+}
+
+fn item(text: &str) -> MenuItem {
+    MenuItem { text: text.into(), ..Default::default() }
+}
+
+fn menu(id: u64, text: Option<&str>) -> Widget {
+    let items = vec![
+        item("Rename"),
+        MenuItem { checked: Some(false), ..item("Pinned") },
+        MenuItem { separator: true, ..Default::default() },
+        MenuItem { items: vec![item("By name"), item("By date")], ..item("Sort") },
+        MenuItem { disabled: true, ..item("Delete") },
+        item("Close"),
+    ];
+    Widget::Menu { id, text: text.map(str::to_string), items }
+}
+
+fn radio() -> Widget {
+    Widget::Radio { id: 13, text: "Mode".into(), options: vec!["Plain".into(), "Soft".into(), "Hard".into()], selected: 0 }
+}
+
 pub fn cases() -> Vec<Case> {
     vec![
+        Case {
+            name: "an icon button is clicked by its tooltip text and sends one Click",
+            size: [200.0, 80.0],
+            tree: vec![Widget::IconButton { id: 11, icon: "trash".into(), text: "Delete".into(), enabled: true }],
+            steps: vec![Step::Click("Delete")],
+            expect: Expect::Events(vec![event(11, UiEventKind::Click)]),
+        },
+        Case {
+            name: "clicking an off toggle sends Bool(true)",
+            size: [200.0, 80.0],
+            tree: vec![Widget::Toggle { id: 12, text: "Live".into(), value: false }],
+            steps: vec![Step::Click("Live")],
+            expect: Expect::Events(vec![event(12, UiEventKind::Bool(true))]),
+        },
+        Case {
+            name: "clicking a radio choice sends its index",
+            size: [300.0, 80.0],
+            tree: vec![radio()],
+            steps: vec![Step::Click("Hard")],
+            expect: Expect::Events(vec![event(13, UiEventKind::Number(2.0))]),
+        },
+        Case {
+            name: "Right on the focused radio choice picks the next one",
+            size: [300.0, 80.0],
+            tree: vec![radio()],
+            steps: vec![Step::Key(egui::Key::Tab), Step::Key(egui::Key::ArrowRight)],
+            expect: Expect::Events(vec![event(13, UiEventKind::Number(1.0))]),
+        },
+        Case {
+            name: "typing in a text area sends its text and Enter adds a new line",
+            size: [300.0, 160.0],
+            tree: vec![Widget::TextArea { id: 14, value: String::new(), hint: "Notes".into(), rows: 4 }],
+            steps: vec![Step::Type("Notes", "ab"), Step::Key(egui::Key::Enter)],
+            expect: Expect::Events(vec![event(14, UiEventKind::Text("ab".into())), event(14, UiEventKind::Text("\n".into()))]),
+        },
+        Case {
+            name: "a paragraph and a gap leave the button after them clickable",
+            size: [300.0, 160.0],
+            tree: vec![
+                Widget::Text {
+                    spans: vec![Span { text: "Two ".into(), style: TextStyle::Body }, Span { text: "styles".into(), style: TextStyle::Strong }],
+                },
+                Widget::Gap { gap: Gap::Large },
+                button(15, "Apply"),
+            ],
+            steps: vec![Step::Click("Apply")],
+            expect: Expect::Events(vec![event(15, UiEventKind::Click)]),
+        },
+        Case {
+            name: "Name gives the widget before it the accessible name it is clicked by",
+            size: [200.0, 80.0],
+            tree: vec![Widget::IconButton { id: 16, icon: "x".into(), text: "X".into(), enabled: true }, Widget::Name { text: "Remove clip".into() }],
+            steps: vec![Step::Click("Remove clip")],
+            expect: Expect::Events(vec![event(16, UiEventKind::Click)]),
+        },
+        Case {
+            name: "Focus puts the keyboard on the widget before it, so Enter clicks that one",
+            size: [200.0, 120.0],
+            tree: vec![button(17, "First"), button(18, "Second"), Widget::Focus { call: 3 }],
+            steps: vec![Step::Key(egui::Key::Enter)],
+            expect: Expect::Events(vec![event(18, UiEventKind::Click)]),
+        },
+        Case {
+            name: "a submenu item sends its depth-first index, counting separators and submenus",
+            size: [400.0, 300.0],
+            tree: vec![menu(19, Some("More"))],
+            steps: vec![Step::Click("More"), Step::Click("Sort"), Step::Click("By date")],
+            expect: Expect::Events(vec![event(19, UiEventKind::Number(5.0))]),
+        },
+        Case {
+            name: "right-clicking a widget opens its context menu and an item after a submenu keeps its index",
+            size: [400.0, 300.0],
+            tree: vec![button(20, "Clip"), menu(21, None)],
+            steps: vec![Step::RightClick("Clip"), Step::Click("Close")],
+            expect: Expect::Events(vec![event(21, UiEventKind::Number(7.0))]),
+        },
+        Case {
+            name: "the Menu key opens the context menu of the focused widget",
+            size: [400.0, 300.0],
+            tree: vec![button(20, "Clip"), menu(21, None)],
+            steps: vec![Step::Key(egui::Key::Tab), Step::Key(egui::Key::Menu), Step::Click("Rename")],
+            expect: Expect::Events(vec![event(21, UiEventKind::Number(0.0))]),
+        },
+        Case {
+            name: "both panes of a split take clicks",
+            size: [300.0, 120.0],
+            tree: vec![Widget::Split { id: 22, axis: Axis::Horizontal, first: vec![button(1, "Left")], second: vec![button(2, "Right")] }],
+            steps: vec![Step::Click("Left"), Step::Click("Right")],
+            expect: Expect::Events(vec![event(1, UiEventKind::Click), event(2, UiEventKind::Click)]),
+        },
         Case {
             name: "a button click is one Click on its id",
             size: [200.0, 80.0],

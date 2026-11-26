@@ -319,3 +319,141 @@ fn every_conformance_case_passes_on_the_egui_painter() {
     let failures = crate::conformance::run_all(|| Box::new(|ui, widgets| draw(ui, widgets, &theme(), "plugin.test.panel", &mut Bare)));
     assert!(failures.is_empty(), "{failures:#?}");
 }
+
+fn x_of(harness: &Harness<'static, Vec<UiEvent>>, label: &str) -> f32 {
+    harness.get_by_label(label).rect().min.x
+}
+
+#[test]
+fn the_split_divider_moves_the_second_pane_by_keyboard_and_by_drag_and_stays_inside_the_split() {
+    let split = Widget::Split {
+        id: 4,
+        axis: craft_plugin::Axis::Horizontal,
+        first: vec![Widget::Button { id: 1, text: "Left".into(), enabled: true }],
+        second: vec![Widget::Button { id: 2, text: "Right".into(), enabled: true }],
+    };
+    let mut harness = harness(vec![split]);
+    harness.run();
+    let start = x_of(&harness, "Right");
+    harness.get_by_label("Divider").focus();
+    harness.run();
+    harness.key_press(egui::Key::ArrowRight);
+    harness.run();
+    let stepped = x_of(&harness, "Right");
+    assert!(stepped > start, "Right moved the divider right: {start} -> {stepped}");
+    let divider = harness.get_by_label("Divider").rect().center();
+    harness.drag_at(divider);
+    harness.run();
+    harness.hover_at(divider - vec2(2_000.0, 0.0));
+    harness.run();
+    harness.drop_at(divider - vec2(2_000.0, 0.0));
+    harness.run();
+    let dragged = x_of(&harness, "Right");
+    assert!(dragged < start && dragged > x_of(&harness, "Left"), "a drag far left stops at the limit: {dragged}");
+    assert!(harness.state().is_empty(), "the divider is the painter's own state: {:?}", harness.state());
+}
+
+#[test]
+fn focus_is_taken_once_per_call_so_tab_can_leave_until_the_plugin_asks_again() {
+    let tree = |call| {
+        vec![
+            Widget::Button { id: 1, text: "First".into(), enabled: true },
+            Widget::Button { id: 2, text: "Second".into(), enabled: true },
+            Widget::Focus { call },
+        ]
+    };
+    let mut harness = Harness::new_ui_state(
+        |ui, widgets: &mut Vec<Widget>| {
+            draw(ui, widgets, &theme(), "plugin.test.panel", &mut Bare);
+        },
+        tree(3),
+    );
+    harness.run();
+    let focused = |harness: &Harness<'static, Vec<Widget>>| harness.get_by_label("Second").accesskit_node().is_focused();
+    assert!(focused(&harness));
+    harness.key_press(egui::Key::Tab);
+    harness.run();
+    assert!(!focused(&harness), "Tab left the asked widget and a redraw with the same call keeps it away");
+    *harness.state_mut() = tree(4);
+    harness.run();
+    assert!(focused(&harness), "a new call asks again");
+}
+
+#[test]
+fn a_host_that_cannot_edit_curves_or_gradients_says_so_in_place() {
+    let mut harness = harness(vec![
+        Widget::Curve { id: 1, text: "Shape".into(), points: vec![[0.0, 0.0], [1.0, 1.0]] },
+        Widget::Gradient { id: 2, text: "Ramp".into(), value: craft_plugin::Gradient::new(&[(0.0, [0.0; 4]), (1.0, [1.0; 4])]) },
+    ]);
+    harness.run();
+    let shown: Vec<String> = harness.query_all(egui_kittest::kittest::by()).filter_map(|node| node.accesskit_node().value()).collect();
+    assert!(
+        shown.contains(&"This app cannot edit curves here".to_string()) && shown.contains(&"This app cannot edit gradients here".to_string()),
+        "{shown:?}"
+    );
+}
+
+#[derive(Default)]
+struct Curves {
+    given: Vec<Vec<[f64; 2]>>,
+}
+
+impl crate::Host for Curves {
+    type Payload = ();
+
+    fn tr(&self, english: &str) -> String {
+        english.to_string()
+    }
+    fn register(&mut self, _: &str, _: &egui::Response, _: &str) {}
+    fn texture(&mut self, _: &egui::Context, _: &str) -> Option<egui::TextureId> {
+        None
+    }
+    fn triangulate(&self) -> crate::Triangulate {
+        |_| Vec::new()
+    }
+    fn drag(&self, _: &craft_plugin::Drag) -> Option<()> {
+        None
+    }
+    fn dropped(&self, _: &()) -> Option<craft_plugin::Dropped> {
+        None
+    }
+    fn accept_files(&mut self, _: &[String]) {}
+
+    fn curve(&mut self, ui: &mut egui::Ui, id: egui::Id, points: &[[f64; 2]]) -> Option<(egui::Response, Option<Vec<[f64; 2]>>)> {
+        self.given.push(points.to_vec());
+        let (rect, _) = ui.allocate_exact_size(vec2(100.0, 100.0), egui::Sense::hover());
+        let response = ui.interact(rect, id, egui::Sense::drag());
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Canvas, true, "Curve"));
+        let edited = response.interact_pointer_pos().filter(|_| response.dragged()).map(|at| {
+            let y = f64::from((rect.bottom() - at.y) / rect.height()).clamp(0.0, 1.0);
+            vec![[0.0, 0.0], [0.5, (y * 100.0).round() / 100.0], [1.0, 1.0]]
+        });
+        Some((response, edited))
+    }
+}
+
+#[test]
+fn a_curve_drag_sends_points_and_the_host_keeps_drawing_what_was_sent_until_the_pointer_lets_go() {
+    let tree = vec![Widget::Curve { id: 6, text: "Shape".into(), points: vec![[0.0, 0.0], [1.0, 1.0]] }];
+    let mut harness = Harness::new_ui_state(
+        move |ui, state: &mut (Curves, Vec<UiEvent>)| {
+            let events = draw(ui, &tree, &theme(), "plugin.test.panel", &mut state.0);
+            state.1.extend(events);
+        },
+        (Curves::default(), Vec::new()),
+    );
+    harness.run();
+    let rect = harness.get_by_role(egui::Role::Canvas).rect();
+    harness.drag_at(rect.center());
+    harness.run();
+    harness.hover_at(rect.center_top() + vec2(0.0, 25.0));
+    harness.run();
+    let sent = vec![[0.0, 0.0], [0.5, 0.75], [1.0, 1.0]];
+    assert_eq!(harness.state().1.last(), Some(&UiEvent { id: 6, kind: UiEventKind::Points(sent.clone()) }));
+    harness.state_mut().0.given.clear();
+    harness.run();
+    assert_eq!(harness.state().0.given.last(), Some(&sent), "while held the host draws the sent points, not the stale tree");
+    harness.drop_at(rect.center_top() + vec2(0.0, 25.0));
+    harness.run();
+    assert_eq!(harness.state().0.given.last(), Some(&vec![[0.0, 0.0], [1.0, 1.0]]), "after release it draws the plugin's points again");
+}

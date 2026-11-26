@@ -939,6 +939,8 @@ impl PanelTest<'_> {
                 out.push(text.to_string());
             } else if let Widget::Label { text, .. } | Widget::Progress { text, .. } = widget {
                 out.push(text.clone());
+            } else if let Widget::Text { spans } = widget {
+                out.push(spans.iter().map(|span| span.text.as_str()).collect());
             }
         });
         out
@@ -974,6 +976,26 @@ impl PanelTest<'_> {
         self.call(UiInput::default())
     }
 
+    pub fn pick(&mut self, menu: &str, item: &str) -> Result<(), String> {
+        let mut found = None;
+        walk(&self.reply.widgets, &mut |widget| {
+            if let Widget::Menu { id, text, items } = widget
+                && found.is_none()
+                && text.as_deref().unwrap_or_default() == menu
+            {
+                found = Some((*id, menu_index(items, item, &mut 0)));
+            }
+        });
+        let shown = if menu.is_empty() { "a context menu".to_string() } else { format!("a menu `{menu}`") };
+        match found {
+            None => Err(format!("panel `{}` shows no {shown}", self.id)),
+            Some((_, None)) => Err(format!("{shown} of panel `{}` has no item `{item}`", self.id)),
+            Some((id, Some(index))) => {
+                self.call(UiInput { events: vec![UiEvent { id, kind: UiEventKind::Number(f64::from(index)) }], ..Default::default() })
+            }
+        }
+    }
+
     fn nth_list(&self, list: usize) -> Result<(u64, u32, Vec<String>), String> {
         let mut lists = Vec::new();
         walk(&self.reply.widgets, &mut |widget| {
@@ -1000,6 +1022,20 @@ impl PanelTest<'_> {
     }
 }
 
+fn menu_index(items: &[craft_plugin::MenuItem], text: &str, next: &mut u32) -> Option<u32> {
+    for item in items {
+        let index = *next;
+        *next += 1;
+        if !item.separator && item.text == text {
+            return Some(index);
+        }
+        if let Some(found) = menu_index(&item.items, text, next) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 fn labelled(widget: &Widget) -> Option<(u64, &str)> {
     match widget {
         Widget::Button { id, text, .. }
@@ -1007,8 +1043,14 @@ fn labelled(widget: &Widget) -> Option<(u64, &str)> {
         | Widget::Slider { id, text, .. }
         | Widget::Number { id, text, .. }
         | Widget::Popup { id, text, .. }
-        | Widget::Color { id, text, .. } => Some((*id, text)),
-        Widget::TextEdit { id, hint, .. } => Some((*id, hint)),
+        | Widget::Color { id, text, .. }
+        | Widget::IconButton { id, text, .. }
+        | Widget::Toggle { id, text, .. }
+        | Widget::Radio { id, text, .. }
+        | Widget::Curve { id, text, .. }
+        | Widget::Gradient { id, text, .. }
+        | Widget::Menu { id, text: Some(text), .. } => Some((*id, text)),
+        Widget::TextEdit { id, hint, .. } | Widget::TextArea { id, hint, .. } => Some((*id, hint)),
         _ => None,
     }
 }
