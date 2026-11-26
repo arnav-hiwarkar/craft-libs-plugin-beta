@@ -62,6 +62,7 @@ pub enum Step {
     DoubleClick(&'static str),
     RightClick(&'static str),
     Type(&'static str, &'static str),
+    TypeFocused(&'static str),
     Key(egui::Key),
     Chord(egui::Modifiers, egui::Key),
     Scroll(&'static str, f32),
@@ -117,6 +118,7 @@ pub fn run(case: &Case, mut paint: Painter) -> Vec<UiEvent> {
                 harness.run();
                 harness.get_by_label(name).type_text(text);
             }
+            Step::TypeFocused(text) => harness.event(egui::Event::Text(text.to_string())),
             Step::Key(key) => harness.key_press(*key),
             Step::Chord(modifiers, key) => harness.key_press_modifiers(*modifiers, *key),
             Step::Scroll(name, delta) => {
@@ -462,14 +464,14 @@ pub fn cases() -> Vec<Case> {
             name: "F2 on the focused row opens its name for editing, and typing and Enter rename it",
             size: [240.0, 200.0],
             tree: vec![renamable()],
-            steps: vec![Step::Key(egui::Key::Tab), Step::Key(egui::Key::F2), Step::Type("Rename", "New"), Step::Key(egui::Key::Enter)],
+            steps: vec![Step::Key(egui::Key::Tab), Step::Key(egui::Key::F2), Step::TypeFocused("New"), Step::Key(egui::Key::Enter)],
             expect: Expect::Events(vec![list_event(ListEvent::Rename { row: 0, text: "New".into() })]),
         },
         Case {
             name: "Escape in the name field cancels the rename and sends nothing",
             size: [240.0, 200.0],
             tree: vec![renamable()],
-            steps: vec![Step::Key(egui::Key::Tab), Step::Key(egui::Key::F2), Step::Type("Rename", "New"), Step::Key(egui::Key::Escape)],
+            steps: vec![Step::Key(egui::Key::Tab), Step::Key(egui::Key::F2), Step::TypeFocused("New"), Step::Key(egui::Key::Escape)],
             expect: Expect::Events(vec![]),
         },
         Case {
