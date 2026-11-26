@@ -969,6 +969,10 @@ impl PanelTest<'_> {
         self.call(UiInput { events: vec![UiEvent { id, kind }], ..Default::default() })
     }
 
+    pub fn input(&mut self, input: UiInput) -> Result<(), String> {
+        self.call(input)
+    }
+
     pub fn click(&mut self, label: &str) -> Result<(), String> {
         self.send(label, UiEventKind::Click)
     }

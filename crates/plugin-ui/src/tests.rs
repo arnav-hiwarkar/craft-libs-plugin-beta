@@ -451,6 +451,7 @@ fn a_host_that_cannot_edit_curves_or_gradients_says_so_in_place() {
 #[derive(Default)]
 struct Curves {
     given: Vec<Vec<[f64; 2]>>,
+    colors: Vec<(String, [f32; 4])>,
 }
 
 impl crate::Host for Curves {
@@ -485,6 +486,13 @@ impl crate::Host for Curves {
         });
         Some((response, edited))
     }
+
+    fn color(&mut self, ui: &mut egui::Ui, key: &str, value: [f32; 4]) -> Option<(egui::Response, Option<[f32; 4]>)> {
+        self.colors.push((key.to_string(), value));
+        let response = ui.add(egui::Button::new("Pick red"));
+        let picked = response.clicked().then_some([1.0, 0.0, 0.0, 1.0]);
+        Some((response, picked))
+    }
 }
 
 #[test]
@@ -511,4 +519,21 @@ fn a_curve_drag_sends_points_and_the_host_keeps_drawing_what_was_sent_until_the_
     harness.drop_at(rect.center_top() + vec2(0.0, 25.0));
     harness.run();
     assert_eq!(harness.state().0.given.last(), Some(&vec![[0.0, 0.0], [1.0, 1.0]]), "after release it draws the plugin's points again");
+}
+
+#[test]
+fn an_app_colour_picker_draws_a_plugin_colour_under_its_key_and_its_pick_reaches_the_plugin() {
+    let tree = vec![Widget::Color { id: 6, text: "Ink".into(), value: [0.0, 0.0, 0.0, 1.0] }];
+    let mut harness = Harness::new_ui_state(
+        move |ui, state: &mut (Curves, Vec<UiEvent>)| {
+            let events = draw(ui, &tree, &theme(), "plugin.test.panel", &mut state.0);
+            state.1.extend(events);
+        },
+        (Curves::default(), Vec::new()),
+    );
+    harness.run();
+    assert_eq!(harness.state().0.colors.last(), Some(&("plugin.test.panel.6".to_string(), [0.0, 0.0, 0.0, 1.0])));
+    harness.get_by_label("Ink").click();
+    harness.run();
+    assert_eq!(harness.state().1, vec![UiEvent { id: 6, kind: UiEventKind::Color([1.0, 0.0, 0.0, 1.0]) }]);
 }
