@@ -60,7 +60,8 @@ fn plugin_id(widget: &Widget) -> Option<u64> {
         | Widget::Menu { id, .. }
         | Widget::Split { id, .. }
         | Widget::Curve { id, .. }
-        | Widget::Gradient { id, .. } => Some(*id),
+        | Widget::Gradient { id, .. }
+        | Widget::Frame { id, .. } => Some(*id),
         _ => None,
     }
 }
@@ -176,13 +177,7 @@ impl<H: Host> Renderer<'_, H> {
                 }
             }
             Widget::TextEdit { id, value, hint } => {
-                let mut text = value.clone();
-                let response = ui.add(egui::TextEdit::singleline(&mut text).hint_text(hint.as_str()));
-                ui.ctx().accesskit_node_builder(response.id, |node| node.set_label(hint.as_str()));
-                self.register(*id, &response, hint);
-                if response.changed() {
-                    self.emit(*id, UiEventKind::Text(text));
-                }
+                self.text_field(ui, *id, value, hint, |text| egui::TextEdit::singleline(text).hint_text(hint.as_str()))
             }
             Widget::Popup { id, text, options, selected } => self.popup(ui, *id, text, options, *selected as usize),
             Widget::Color { id, text, value } => {
