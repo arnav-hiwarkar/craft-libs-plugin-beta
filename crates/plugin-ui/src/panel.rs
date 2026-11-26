@@ -8,6 +8,13 @@ pub(crate) const MAX_EXTENT: f32 = 16_384.0;
 const MAX_FONT: f32 = 512.0;
 pub(crate) const MAX_LINE_POINTS: usize = 65_536;
 
+pub fn paint_icon<H: Host>(host: &mut H, painter: &egui::Painter, rect: Rect, name: &str, title: &str, color: Color32) {
+    if !host.icon(painter, rect, name, color) {
+        let initial: String = title.chars().find(|c| c.is_alphanumeric()).map(|c| c.to_uppercase().collect()).unwrap_or_default();
+        painter.text(rect.center(), Align2::CENTER_CENTER, initial, FontId::proportional(font_size(rect.height() * 0.75)), color);
+    }
+}
+
 pub fn draw<H: Host>(ui: &mut egui::Ui, widgets: &[Widget], theme: &Theme, scope: &str, host: &mut H) -> Vec<UiEvent> {
     let mut renderer = Renderer { theme, host, scope, events: Vec::new(), last: None, labels: 0 };
     renderer.all(ui, widgets);
@@ -230,10 +237,7 @@ impl<H: Host> Renderer<'_, H> {
     }
 
     pub(crate) fn paint_icon(&mut self, painter: &egui::Painter, rect: Rect, name: &str, title: &str, color: Color32) {
-        if !self.host.icon(painter, rect, name, color) {
-            let initial: String = title.chars().find(|c| c.is_alphanumeric()).map(|c| c.to_uppercase().collect()).unwrap_or_default();
-            painter.text(rect.center(), Align2::CENTER_CENTER, initial, FontId::proportional(font_size(rect.height() * 0.75)), color);
-        }
+        paint_icon(self.host, painter, rect, name, title, color);
     }
 
     fn not_drawn_yet(&mut self, ui: &mut egui::Ui, widget: &Widget) {

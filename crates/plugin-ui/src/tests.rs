@@ -319,3 +319,22 @@ fn every_conformance_case_passes_on_the_egui_painter() {
     let failures = crate::conformance::run_all(|| Box::new(|ui, widgets| draw(ui, widgets, &theme(), "plugin.test.panel", &mut Bare)));
     assert!(failures.is_empty(), "{failures:#?}");
 }
+
+#[test]
+fn a_panel_icon_the_app_cannot_draw_is_the_first_letter_of_its_title() {
+    let ctx = egui::Context::default();
+    let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), vec2(16.0, 16.0));
+        crate::paint_icon(&mut Bare, ui.painter(), rect, "nonesuch", "notes", egui::Color32::WHITE);
+    });
+    output.textures_delta.clear();
+    let texts: Vec<String> = output
+        .shapes
+        .iter()
+        .filter_map(|clipped| match &clipped.shape {
+            egui::Shape::Text(text) => Some(text.galley.text().to_string()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(texts, ["N"]);
+}
