@@ -69,11 +69,11 @@ pub trait Host {
         false
     }
 
-    fn curve(&mut self, _ui: &mut egui::Ui, _id: egui::Id, _points: &[[f64; 2]]) -> Option<(egui::Response, Option<Vec<[f64; 2]>>)> {
+    fn curve(&mut self, _ui: &mut egui::Ui, _key: &str, _points: &[[f64; 2]]) -> Option<(egui::Response, Option<Vec<[f64; 2]>>)> {
         None
     }
 
-    fn gradient(&mut self, _ui: &mut egui::Ui, _id: egui::Id, _value: &Gradient) -> Option<(egui::Response, Option<Gradient>)> {
+    fn gradient(&mut self, _ui: &mut egui::Ui, _key: &str, _value: &Gradient) -> Option<(egui::Response, Option<Gradient>)> {
         None
     }
 

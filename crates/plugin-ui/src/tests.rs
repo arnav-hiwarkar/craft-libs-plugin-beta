@@ -419,10 +419,10 @@ impl crate::Host for Curves {
     }
     fn accept_files(&mut self, _: &[String]) {}
 
-    fn curve(&mut self, ui: &mut egui::Ui, id: egui::Id, points: &[[f64; 2]]) -> Option<(egui::Response, Option<Vec<[f64; 2]>>)> {
+    fn curve(&mut self, ui: &mut egui::Ui, key: &str, points: &[[f64; 2]]) -> Option<(egui::Response, Option<Vec<[f64; 2]>>)> {
         self.given.push(points.to_vec());
         let (rect, _) = ui.allocate_exact_size(vec2(100.0, 100.0), egui::Sense::hover());
-        let response = ui.interact(rect, id, egui::Sense::drag());
+        let response = ui.interact(rect, egui::Id::unique(key), egui::Sense::drag());
         response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Canvas, true, "Curve"));
         let edited = response.interact_pointer_pos().filter(|_| response.dragged()).map(|at| {
             let y = f64::from((rect.bottom() - at.y) / rect.height()).clamp(0.0, 1.0);

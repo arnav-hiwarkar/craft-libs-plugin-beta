@@ -291,7 +291,7 @@ impl<H: Host> Renderer<'_, H> {
         let sent = egui::Id::unique(("plugin-curve-sent", self.scope, id));
         let shown = pending(ui, sent, &points.to_vec());
         let label = ui.label(self.text(text, TextStyle::Body));
-        let Some((response, edited)) = self.host.curve(ui, egui::Id::unique(("plugin-curve", self.scope, id)), &shown) else {
+        let Some((response, edited)) = self.host.curve(ui, &format!("{}.{id}", self.scope), &shown) else {
             return self.cannot_edit(ui, id, "This app cannot edit curves here", text);
         };
         let response = response.labelled_by(label.id);
@@ -306,7 +306,7 @@ impl<H: Host> Renderer<'_, H> {
         let sent = egui::Id::unique(("plugin-gradient-sent", self.scope, id));
         let shown = pending(ui, sent, value);
         let label = ui.label(self.text(text, TextStyle::Body));
-        let Some((response, edited)) = self.host.gradient(ui, egui::Id::unique(("plugin-gradient", self.scope, id)), &shown) else {
+        let Some((response, edited)) = self.host.gradient(ui, &format!("{}.{id}", self.scope), &shown) else {
             return self.cannot_edit(ui, id, "This app cannot edit gradients here", text);
         };
         let response = response.labelled_by(label.id);
