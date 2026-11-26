@@ -13,7 +13,7 @@ use craft_ui::choice::{Checkbox, Radio, RadioGroup, Switch};
 use craft_ui::contract::{Bind, Entry, Props, Show as _, ShowContainer as _};
 use craft_ui::display::{Divider, Progress, Shade, Text};
 use craft_ui::form::SliderField;
-use craft_ui::layout_components::{Row, Stack};
+use craft_ui::layout_components::{Grid, Row, Stack};
 use craft_ui::pickers::Select;
 use craft_ui::runtime::env::Label;
 use craft_ui::sections::Section;
@@ -233,8 +233,9 @@ impl Painter<'_> {
             Widget::Curve { id, text, points } => self.curve(ui, *id, text, points),
             Widget::Gradient { id, text, value } => self.gradient(ui, *id, text, value),
             Widget::Image { id, key, .. } => self.image(ui, *id, key),
-            Widget::Grid { children, .. } => {
-                Stack::new().show(ui, |ui, _| self.all(ui, children));
+            Widget::Grid { id, columns, children } => {
+                let widths = vec![craft_behavior::ColumnWidth::fill(1.0); (*columns).clamp(1, values::MAX_COLUMNS) as usize];
+                Grid::new(widths).id_salt(self.salt(*id)).show(ui, |ui, _| self.all(ui, children));
             }
             Widget::Split { first, second, axis, .. } => match axis {
                 craft_plugin::Axis::Horizontal => {

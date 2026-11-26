@@ -7,6 +7,7 @@ use craft_ui::contract::EditResponse;
 use craft_ui::runtime::env::Env;
 
 pub(crate) const CURVE_LEVELS: u32 = 255;
+pub(crate) const MAX_COLUMNS: u32 = 64;
 const MAX_ROOM: f32 = 16_384.0;
 
 pub fn changed<T: Clone + PartialEq>(out: &EditResponse<T>, given: &T) -> Option<T> {

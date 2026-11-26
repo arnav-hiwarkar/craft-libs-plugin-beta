@@ -6,6 +6,7 @@ use craft_ui::testing::{Fixture, Target};
 use egui::{Event, Key, Modifiers, MouseWheelSource, MouseWheelUnit, TouchPhase, Vec2};
 
 mod host;
+mod painter;
 
 use host::App;
 
