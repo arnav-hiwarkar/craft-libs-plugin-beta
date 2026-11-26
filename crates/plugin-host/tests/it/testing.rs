@@ -353,3 +353,29 @@ fn a_status_item_and_a_stamp_option_bar_take_their_places_and_each_notes_panel_k
     one.redraw().unwrap();
     assert_eq!((one.texts(), two.texts()), (vec!["Note".to_string(), "note 1: milk".into()], vec!["Note".to_string(), "note 2: eggs".into()]));
 }
+
+#[test]
+fn the_controls_panel_takes_toggle_radio_text_area_menu_curve_and_gradient_events_by_label() {
+    let (_bundle, plugin) = probe();
+    let mut panel = plugin.panel("controls").unwrap();
+    let status = |panel: &craft_plugin_host::testing::PanelTest| panel.texts().into_iter().find(|text| text.starts_with("live ")).unwrap_or_default();
+    assert!(panel.widgets().iter().any(|widget| matches!(widget, craft_plugin::Widget::Focus { .. })), "the first call asks for the focus");
+    panel.send("Live", craft_plugin::UiEventKind::Bool(true)).unwrap();
+    panel.send("Mode", craft_plugin::UiEventKind::Number(1.0)).unwrap();
+    panel.send("Notes", craft_plugin::UiEventKind::Text("one\ntwo".into())).unwrap();
+    assert_eq!(status(&panel), r#"live true mode 1 pinned false notes "one\ntwo" said "#);
+    assert!(!panel.widgets().iter().any(|widget| matches!(widget, craft_plugin::Widget::Focus { .. })), "later calls leave the focus alone");
+    panel.click("Clear notes").unwrap();
+    panel.pick("More", "Pinned").unwrap();
+    panel.pick("More", "Hard").unwrap();
+    panel.pick("", "Say hello").unwrap();
+    assert_eq!(status(&panel), r#"live true mode 2 pinned true notes "" said hello"#);
+    let error = panel.pick("More", "Sort").unwrap_err();
+    assert_eq!(error, "a menu `More` of panel `controls` has no item `Sort`");
+    panel.send("Shape", craft_plugin::UiEventKind::Points(vec![[0.0, 0.0], [0.5, 0.7], [1.0, 1.0]])).unwrap();
+    let ramp = craft_plugin::Gradient::new(&[(0.0, [0.0; 4]), (0.5, [1.0; 4]), (1.0, [0.0; 4])]);
+    panel.send("Ramp", craft_plugin::UiEventKind::Gradient(ramp)).unwrap();
+    let texts = panel.texts();
+    assert!(texts.contains(&"3 points".to_string()) && texts.contains(&"3 stops".to_string()), "{texts:?}");
+    assert!(texts.contains(&"Probe controls".to_string()), "{texts:?}");
+}

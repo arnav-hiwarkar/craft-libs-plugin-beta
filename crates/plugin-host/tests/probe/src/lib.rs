@@ -1482,6 +1482,8 @@ fn make() -> Plugin {
         .panel_each("notes", "Notes", Notes::default)
         .icon("text")
         .place(PanelPlace::Bottom)
+        .panel("controls", "Controls", Controls::default())
+        .icon("sliders")
         .effect(Peek)
         .tool("census", "Census", Census)
         .panel("shared", "Shared", Shared)
@@ -1627,6 +1629,60 @@ fn make() -> Plugin {
             Ok(json!({"channels": audio.channels, "rate": audio.rate, "len": audio.samples.len(), "peak": peak}))
         })
         .task("edit", "Edit From A Task", |_task: &Task| host::command("layer.newNull", json!({"name": "From Task"})))
+}
+
+#[derive(Default)]
+struct Controls {
+    live: bool,
+    mode: usize,
+    notes: String,
+    shape: Option<Vec<[f64; 2]>>,
+    ramp: Option<Gradient>,
+    pinned: bool,
+    said: String,
+    focused: bool,
+}
+
+impl Panel for Controls {
+    fn ui(&mut self, ui: &mut Ui) {
+        ui.text(&[("Probe ", TextStyle::Body), ("controls", TextStyle::Strong)]);
+        ui.toggle("Live", &mut self.live);
+        ui.context_menu(|menu| {
+            if menu.item("Say hello") {
+                self.said = "hello".into();
+            }
+        });
+        ui.radio("Mode", &mut self.mode, &["Plain", "Soft", "Hard"]);
+        ui.text_area("notes", &mut self.notes, "Notes", 3);
+        if !std::mem::replace(&mut self.focused, true) {
+            ui.focus();
+        }
+        ui.gap(Gap::Medium);
+        if ui.icon_button("trash", "Clear notes") {
+            self.notes.clear();
+        }
+        ui.name("Clear the notes");
+        ui.menu("More", |menu| {
+            if menu.item("Reset") {
+                self.said = "reset".into();
+            }
+            menu.check("Pinned", &mut self.pinned);
+            menu.separator();
+            menu.submenu("Mode", |menu| {
+                if menu.item("Hard") {
+                    self.mode = 2;
+                }
+            });
+        });
+        let shape = self.shape.get_or_insert_with(|| vec![[0.0, 0.0], [1.0, 1.0]]);
+        ui.curve("Shape", shape);
+        let points = shape.len();
+        let ramp = self.ramp.get_or_insert_with(|| Gradient::new(&[(0.0, [0.0, 0.0, 0.0, 1.0]), (1.0, [1.0, 1.0, 1.0, 1.0])]));
+        ui.gradient("Ramp", ramp);
+        let stops = ramp.colors.len();
+        ui.split("summary", Axis::Horizontal, |ui| ui.label(&format!("{points} points")), |ui| ui.label(&format!("{stops} stops")));
+        ui.label(&format!("live {} mode {} pinned {} notes {:?} said {}", self.live, self.mode, self.pinned, self.notes, self.said));
+    }
 }
 
 craft_plugin::export!(make);
