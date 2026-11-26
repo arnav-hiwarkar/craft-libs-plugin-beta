@@ -330,6 +330,9 @@ impl Plugin {
                 let mut ui = Ui::new(&input);
                 match state {
                     Panels::One(one) => one.lock().map_err(|_| panicked())?.ui(&mut ui),
+                    Panels::Each(_, each) if input.closed => {
+                        each.lock().map_err(|_| panicked())?.remove(input.instance.as_deref().unwrap_or_default());
+                    }
                     Panels::Each(make, each) => {
                         let mut each = each.lock().map_err(|_| panicked())?;
                         each.entry(input.instance.clone().unwrap_or_default()).or_insert_with(make).ui(&mut ui);
@@ -678,6 +681,10 @@ mod tests {
         assert!(plugin.contributions().panels[0].multiple);
         let texts = [panel_text(&plugin, Some("a")), panel_text(&plugin, Some("a")), panel_text(&plugin, Some("b")), panel_text(&plugin, None)];
         assert_eq!(texts, ["a 1", "a 2", "b 1", "- 1"]);
+        let call = Call::Panel { panel: "view".into(), input: UiInput { instance: Some("a".into()), closed: true, ..Default::default() } };
+        let reply = plugin.dispatch(&serde_json::to_vec(&call).unwrap_or_default(), &mut []);
+        assert!(matches!(serde_json::from_slice::<Outcome<PanelReply>>(&reply), Ok(Outcome::Ok(PanelReply { widgets, .. })) if widgets.is_empty()));
+        assert_eq!([panel_text(&plugin, Some("a")), panel_text(&plugin, Some("b"))], ["a 1", "b 2"], "a closed instance starts again");
     }
 
     #[test]

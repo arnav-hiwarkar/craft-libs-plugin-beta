@@ -223,7 +223,7 @@ impl Retained {
         self.calls += 1;
         let (keys, app, views) = (std::mem::take(&mut self.keys), std::mem::take(&mut self.app), self.views.clone());
         let pressed = std::mem::take(&mut self.pressed);
-        let input = UiInput { events, size, keys, app, timers, views, instance: None, call: self.calls, pressed };
+        let input = UiInput { events, size, keys, app, timers, views, instance: None, call: self.calls, pressed, closed: false };
         (self.size, self.stale, self.in_flight) = (size, false, true);
         Some(input)
     }

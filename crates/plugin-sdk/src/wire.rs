@@ -1739,6 +1739,8 @@ pub struct UiInput {
     pub call: u64,
     #[serde(default)]
     pub pressed: Vec<String>,
+    #[serde(default)]
+    pub closed: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
