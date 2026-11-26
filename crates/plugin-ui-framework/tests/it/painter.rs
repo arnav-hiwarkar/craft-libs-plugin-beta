@@ -215,3 +215,23 @@ fn a_panel_key_pressed_while_a_panel_control_holds_the_key_focus_reaches_the_hos
     fixture.key(egui::Key::Delete, egui::Modifiers::NONE).settle();
     assert_eq!(pressed.take(), Vec::<String>::new(), "a text field keeps Delete for its text");
 }
+
+#[test]
+fn the_split_divider_moves_by_drag_and_by_arrow_keys_and_keeps_the_share() {
+    let button = |id, text: &str| Widget::Button { id, text: text.into(), enabled: true };
+    let split = Widget::Split { id: 40, axis: craft_plugin::Axis::Horizontal, first: vec![button(1, "Left")], second: vec![button(2, "Right")] };
+    let (mut fixture, events) = shown(vec![split]);
+    let right = |fixture: &Fixture| fixture.by_label("Right").expect("the second pane's button").rect.left();
+    let start = right(&fixture);
+    let divider = fixture.by_label("Divider").expect("the split's divider");
+    fixture.drag(&divider, Vec2::new(60.0, 0.0)).settle();
+    let dragged = right(&fixture);
+    assert!((dragged - start - 60.0).abs() < 2.0, "the second pane follows the divider: {start} then {dragged}");
+    fixture.idle(3);
+    assert!((right(&fixture) - dragged).abs() < 0.5, "the share stays where the drag left it");
+    let divider = fixture.by_label("Divider").expect("the split's divider");
+    fixture.access(craft_ui::testing::focus::AccessActionKind::Focus, &divider).settle();
+    fixture.key(egui::Key::ArrowLeft, egui::Modifiers::NONE).settle();
+    assert!(right(&fixture) < dragged - 1.0, "Left moves the divider back: {dragged} then {}", right(&fixture));
+    assert_eq!(*events.borrow(), vec![], "moving the divider sends the plugin nothing");
+}
