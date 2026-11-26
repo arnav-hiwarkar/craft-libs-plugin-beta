@@ -195,6 +195,23 @@ pub fn fill_polygon(points: &[Pos2], color: Color32, feather: f32) -> Mesh {
     mesh
 }
 
+/// The triangles that cover the closed polygon through `points`, as indices into `points`: the ear clipping
+/// [`fill_polygon`] fills with, for a caller that builds its own mesh from the points. Either winding; the edges must
+/// not cross. Fewer than three points, or one that is not finite, give none.
+pub fn polygon_triangles(points: &[Pos2]) -> Vec<[usize; 3]> {
+    let n = points.len();
+    if n < 3 || points.iter().any(|p| !p.is_finite()) {
+        return Vec::new();
+    }
+    let doubled_area: f32 = (0..n).map(|i| points[i].x * points[(i + 1) % n].y - points[(i + 1) % n].x * points[i].y).sum();
+    if doubled_area < 0.0 {
+        let ring: Vec<Pos2> = points.iter().rev().copied().collect();
+        ear_clip(&ring).into_iter().map(|triangle| triangle.map(|i| n - 1 - i as usize)).collect()
+    } else {
+        ear_clip(points).into_iter().map(|triangle| triangle.map(|i| i as usize)).collect()
+    }
+}
+
 /// The triangles that cover the clockwise (on screen) polygon `ring`, as indices into it: each turn is cut off as an
 /// ear when no reflex vertex lies inside it. Only reflex vertices can lie inside an ear, so a convex polygon takes
 /// one pass. A polygon whose edges cross still ends: when a whole round finds no ear, the next turn is cut anyway.

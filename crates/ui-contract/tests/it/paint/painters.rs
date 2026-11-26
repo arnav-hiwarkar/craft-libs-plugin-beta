@@ -61,6 +61,21 @@ fn a_concave_polygon_fills_its_area_once_in_either_winding() {
 }
 
 #[trial]
+fn polygon_triangles_cover_a_concave_polygon_with_indices_into_its_own_points_in_either_winding() {
+    let ell = [pos2(0.0, 0.0), pos2(40.0, 0.0), pos2(40.0, 10.0), pos2(10.0, 10.0), pos2(10.0, 30.0), pos2(0.0, 30.0)];
+    for ring in [ell.to_vec(), ell.iter().rev().copied().collect()] {
+        let triangles = craft_ui::primitives::polygon_triangles(&ring);
+        assert_eq!(triangles.len(), 4, "a hexagon is four triangles");
+        let covered: f32 = triangles
+            .iter()
+            .map(|&[a, b, c]| ((ring[b].x - ring[a].x) * (ring[c].y - ring[a].y) - (ring[b].y - ring[a].y) * (ring[c].x - ring[a].x)).abs() / 2.0)
+            .sum();
+        assert!((covered - 600.0).abs() < EPS, "the triangles over the given points cover the L's 600 square points, not {covered}");
+    }
+    assert!(craft_ui::primitives::polygon_triangles(&[pos2(0.0, 0.0), pos2(1.0, 0.0)]).is_empty(), "two points are no polygon");
+}
+
+#[trial]
 fn a_rounded_ramp_keeps_inside_its_corners_and_a_square_one_fills_its_rect() {
     use craft_behavior::Axis;
     use craft_ui::style::DataColor;
