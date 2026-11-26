@@ -201,17 +201,18 @@ pub struct ToolSpec {
     pub options: Option<String>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolEventKind {
     Down,
+    #[default]
     Move,
     Up,
     Scroll,
     Key,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct ToolEvent {
     pub kind: ToolEventKind,
     pub comp: [f64; 2],
