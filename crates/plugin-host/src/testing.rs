@@ -300,6 +300,14 @@ struct Recorder {
     frames: Option<Frames>,
     data: Vec<(Place, crate::data::Data)>,
     panels: Vec<PanelRequest>,
+    command_states: Vec<CommandState>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommandState {
+    pub command: String,
+    pub enabled: bool,
+    pub checked: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -358,6 +366,11 @@ impl Host for TestHost<'_> {
     fn panel(&mut self, panel: &str, instance: Option<&str>, open: bool) -> Result<(), String> {
         let request = PanelRequest { panel: panel.into(), instance: instance.map(str::to_string), open };
         self.recorder.lock().map(|mut recorder| recorder.panels.push(request)).map_err(|_| "the test host panicked earlier".into())
+    }
+
+    fn command_state(&mut self, command: &str, enabled: bool, checked: Option<bool>) -> Result<(), String> {
+        let state = CommandState { command: command.into(), enabled, checked };
+        self.recorder.lock().map(|mut recorder| recorder.command_states.push(state)).map_err(|_| "the test host panicked earlier".into())
     }
 
     fn layer(&mut self, param: &str, _comp_time: Option<f64>) -> Option<Pixels> {
@@ -544,6 +557,10 @@ impl TestPlugin {
 
     pub fn panel_requests(&self) -> Vec<PanelRequest> {
         self.recorder.lock().map(|recorder| recorder.panels.clone()).unwrap_or_default()
+    }
+
+    pub fn command_states(&self) -> Vec<CommandState> {
+        self.recorder.lock().map(|recorder| recorder.command_states.clone()).unwrap_or_default()
     }
 
     pub fn logs(&self) -> Vec<String> {
@@ -1001,6 +1018,30 @@ impl PanelTest<'_> {
         self.call(UiInput::default())
     }
 
+    pub fn press(&mut self, chord: &str) -> Result<(), String> {
+        let panels = &self.plugin.plugin.contributions().panels;
+        let keys = panels.iter().find(|spec| spec.id == self.id).map(|spec| spec.keys.as_slice()).unwrap_or_default();
+        if !keys.iter().any(|key| key.eq_ignore_ascii_case(chord)) {
+            return Err(format!("panel `{}` does not take `{chord}`; it takes {keys:?}. Add the chord with .keys(&[..]) after .panel(..)", self.id));
+        }
+        self.call(UiInput { pressed: vec![chord.to_string()], ..Default::default() })
+    }
+
+    pub fn panel_menu(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        menu_texts(&self.reply.menu, &mut out);
+        out
+    }
+
+    pub fn pick_panel_menu(&mut self, item: &str) -> Result<(), String> {
+        let index = menu_index(&self.reply.menu, item, &mut 0)
+            .ok_or_else(|| format!("the panel menu of `{}` has no item `{item}`; it has {:?}", self.id, self.panel_menu()))?;
+        self.call(UiInput {
+            events: vec![UiEvent { id: craft_plugin::PANEL_MENU, kind: UiEventKind::Number(f64::from(index)) }],
+            ..Default::default()
+        })
+    }
+
     pub fn pick(&mut self, menu: &str, item: &str) -> Result<(), String> {
         let mut found = None;
         walk(&self.reply.widgets, &mut |widget| {
@@ -1059,6 +1100,13 @@ fn menu_index(items: &[craft_plugin::MenuItem], text: &str, next: &mut u32) -> O
         }
     }
     None
+}
+
+fn menu_texts(items: &[craft_plugin::MenuItem], out: &mut Vec<String>) {
+    for item in items.iter().filter(|item| !item.separator) {
+        out.push(item.text.clone());
+        menu_texts(&item.items, out);
+    }
 }
 
 fn labelled(widget: &Widget) -> Option<(u64, &str)> {

@@ -1488,6 +1488,16 @@ fn make() -> Plugin {
         .panel("preview", "Preview", Preview::default())
         .icon("image")
         .panel("pad", "Pad", Pad::default())
+        .panel("app", "App", AppPanel::default())
+        .keys(&["Delete", "Cmd+D"])
+        .help("https://example.org/probe-app")
+        .command("app-act", "Probe Action", || {
+            host::notify("Probe Action ran");
+            Ok(())
+        })
+        .menu("Layer/Probe Tools")
+        .context(Context::Layers)
+        .toolbar()
         .effect(Peek)
         .tool("census", "Census", Census)
         .panel("shared", "Shared", Shared)
@@ -1880,5 +1890,40 @@ impl Panel for Pad {
         let ink = self.ink.get_or_insert([0.0, 0.0, 0.0, 1.0]);
         ui.color("Ink", ink);
         ui.label(&format!("pad {} ink {ink:?}", self.said));
+    }
+}
+
+#[derive(Default)]
+struct AppPanel {
+    opacity: f64,
+    disabled: bool,
+    said: String,
+}
+
+impl Panel for AppPanel {
+    fn ui(&mut self, ui: &mut Ui) {
+        if let Some(chord) = ["Delete", "Cmd+D"].into_iter().find(|chord| ui.key(chord)) {
+            self.said = format!("pressed {chord}");
+        }
+        let (mut fit, mut reset) = (false, false);
+        ui.panel_menu(|menu| {
+            fit = menu.item("Zoom to Fit");
+            menu.separator();
+            reset = menu.item("Reset View");
+        });
+        if fit || reset {
+            self.said = if fit { "zoomed to fit" } else { "view reset" }.into();
+        }
+        if ui.slider("Opacity", &mut self.opacity, 0.0..=100.0)
+            && let Err(error) = host::command("prop.set", json!({"layer": "#1", "path": "transform/opacity", "value": self.opacity}))
+        {
+            self.said = error.0;
+        }
+        if ui.checkbox("Disable Probe Action", &mut self.disabled)
+            && let Err(error) = host::command_state("app-act", !self.disabled, Some(!self.disabled))
+        {
+            self.said = error.0;
+        }
+        ui.label(&self.said);
     }
 }

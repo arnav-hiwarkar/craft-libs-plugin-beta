@@ -187,7 +187,7 @@ impl<H: Host> Renderer<'_, H> {
         }
     }
 
-    fn menu_items(&mut self, ui: &mut egui::Ui, id: u64, items: &[MenuItem], first: u32, picked: &mut Option<u32>) {
+    pub(crate) fn menu_items(&mut self, ui: &mut egui::Ui, id: u64, items: &[MenuItem], first: u32, picked: &mut Option<u32>) {
         let mut index = first;
         for item in items {
             let at = index;
