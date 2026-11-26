@@ -138,6 +138,7 @@ impl Painter<'_> {
                 &mut |row, _| rows.row(*row),
             )
         };
+        self.last = Some(out.response.clone());
         let before = sorted(kept.selection.items.clone());
         let after = sorted(selection.items.clone());
         if after != before {

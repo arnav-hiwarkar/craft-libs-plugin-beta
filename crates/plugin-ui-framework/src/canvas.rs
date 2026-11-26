@@ -121,6 +121,7 @@ impl Painter<'_> {
         .aspect(aspect)
         .id_salt(self.salt(id))
         .show(ui);
+        self.last = Some(out.response.clone());
         let space = Space::of(out.rect, size);
         for sample in &out.pointers {
             let phase = match sample.phase {

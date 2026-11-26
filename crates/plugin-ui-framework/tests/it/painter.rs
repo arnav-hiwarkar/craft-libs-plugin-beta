@@ -81,3 +81,25 @@ fn a_key_pressed_while_the_canvas_has_the_focus_reaches_the_plugin_with_its_modi
     let shift = craft_plugin::Modifiers { shift: true, ..Default::default() };
     assert_eq!(keys, vec![craft_plugin::Key { name: "A".into(), modifiers: shift }]);
 }
+
+fn item(text: &str) -> craft_plugin::MenuItem {
+    craft_plugin::MenuItem { text: text.into(), ..Default::default() }
+}
+
+#[test]
+fn picking_a_submenu_row_sends_its_depth_first_index() {
+    let more = craft_plugin::MenuItem { items: vec![item("Inner A"), item("Inner B")], ..item("More") };
+    let separator = craft_plugin::MenuItem { separator: true, ..Default::default() };
+    let menu = Widget::Menu { id: 8, text: Some("Actions".into()), items: vec![item("First"), separator, more, item("Last")] };
+    let (mut fixture, events) = shown(vec![menu]);
+    let opener = fixture.by_label("Actions").expect("the menu button");
+    fixture.click(&opener);
+    fixture.settle();
+    let head = fixture.by_label("More").expect("the open menu shows its submenu row");
+    fixture.click(&head);
+    fixture.settle();
+    let inner = fixture.by_label("Inner B").expect("the submenu opens");
+    fixture.click(&inner);
+    fixture.settle();
+    assert_eq!(*events.borrow(), vec![UiEvent { id: 8, kind: craft_plugin::UiEventKind::Number(4.0) }]);
+}

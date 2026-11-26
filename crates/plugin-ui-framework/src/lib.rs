@@ -4,6 +4,7 @@ mod canvas;
 pub mod dock;
 mod icons;
 mod list;
+mod menu;
 mod values;
 
 use craft_plugin::{TextStyle, UiEvent, UiEventKind, Widget};
@@ -31,7 +32,7 @@ pub trait Host {
 impl Host for () {}
 
 pub fn draw(ui: &mut egui::Ui, widgets: &[Widget], scope: &str, host: &mut dyn Host) -> Vec<UiEvent> {
-    let mut painter = Painter { scope, host, events: Vec::new() };
+    let mut painter = Painter { scope, host, events: Vec::new(), last: None };
     painter.all(ui, widgets);
     painter.events
 }
@@ -40,6 +41,7 @@ pub(crate) struct Painter<'a> {
     pub(crate) scope: &'a str,
     host: &'a mut dyn Host,
     events: Vec<UiEvent>,
+    pub(crate) last: Option<egui::Response>,
 }
 
 #[derive(Default)]
@@ -119,7 +121,7 @@ impl Painter<'_> {
     fn widget(&mut self, ui: &mut egui::Ui, widget: &Widget, extras: &Extras) {
         match widget {
             Widget::Label { text: shown, style } => {
-                text(shown, *style).label(extras.label(shown)).tip(extras).show(ui);
+                self.last = Some(text(shown, *style).label(extras.label(shown)).tip(extras).show(ui));
             }
             Widget::Text { spans } => {
                 Row::new().wrap(true).show(ui, |ui, _| {
@@ -130,6 +132,7 @@ impl Painter<'_> {
             }
             Widget::Button { id, text, enabled } => {
                 let out = Button::new(extras.label(text)).id_salt(self.salt(*id)).enabled(*enabled).tip(extras).show(ui);
+                self.last = Some(out.response.clone());
                 if out.clicked() {
                     self.emit(*id, UiEventKind::Click);
                 }
@@ -257,9 +260,7 @@ impl Painter<'_> {
                 Stack::new().show(ui, |ui, _| self.all(ui, children));
             }
             Widget::Canvas { id, size, shapes } => self.canvas(ui, *id, *size, shapes, extras.label("Plug-in drawing")),
-            Widget::Menu { .. } => {
-                text("This app does not draw this plug-in widget yet", TextStyle::Weak).show(ui);
-            }
+            Widget::Menu { id, text, items } => self.menu(ui, *id, text.as_deref(), items),
             Widget::Space { .. } | Widget::Gap { .. } | Widget::Tooltip { .. } | Widget::Name { .. } | Widget::Focus { .. } => {}
         }
     }
