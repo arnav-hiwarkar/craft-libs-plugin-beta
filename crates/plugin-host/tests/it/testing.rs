@@ -307,3 +307,23 @@ fn a_tool_reads_the_pen_pressure_tilt_and_end_of_a_move_and_a_mouse_move_has_no_
     let drawn = written(plugin.tool("stamp", pointer(ToolEventKind::Move, [50.0, 35.0])).unwrap());
     assert_eq!(drawn, ["Move 40.0 30.0 pen 0.50 0.25 -0.50 eraser at 0.50", "Move 50.0 35.0"]);
 }
+
+#[test]
+fn a_tree_panel_opens_folders_from_toggles_and_its_ten_thousand_row_table_builds_only_its_view() {
+    use craft_plugin::ListEvent::{Activate, Show, Toggle};
+    let (_bundle, plugin) = probe();
+    let mut panel = plugin.panel("tree").unwrap();
+    assert_eq!(panel.rows(0).unwrap(), (0, vec!["Folder 0".to_string(), "Folder 1".into(), "Folder 2".into()]));
+    panel.list_event(0, Toggle { row: 0, open: true }).unwrap();
+    panel.list_event(0, Toggle { row: 1, open: true }).unwrap();
+    let shown = ["Folder 0", "Shot 0.0", "Take 0.0.0", "Take 0.0.1", "Shot 0.1", "Folder 1", "Folder 2"];
+    assert_eq!(panel.rows(0).unwrap(), (0, shown.map(String::from).to_vec()));
+    assert!(panel.texts().contains(&"opened Shot 0.0".to_string()), "{:?}", panel.texts());
+    panel.list_event(0, Toggle { row: 0, open: false }).unwrap();
+    assert_eq!(panel.rows(0).unwrap().1.len(), 3);
+    panel.list_event(1, Show { first: 9_990, count: 10 }).unwrap();
+    let (first, rows) = panel.rows(1).unwrap();
+    assert_eq!((first, rows.len(), rows[5].as_str()), (9_990, 10, "take 9995\t35.5 s\t*"));
+    panel.list_event(1, Activate(9_995)).unwrap();
+    assert!(panel.texts().contains(&"activated take 9995".to_string()), "{:?}", panel.texts());
+}

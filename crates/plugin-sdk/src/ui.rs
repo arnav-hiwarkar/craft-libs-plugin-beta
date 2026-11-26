@@ -335,6 +335,15 @@ impl<'a> Ui<'a> {
         self.widgets.push(Widget::DragSource { id, drag, children });
     }
 
+    pub fn toggled(&self, key: &str) -> Option<(usize, bool)> {
+        let base = hash(self.scope, key.as_bytes());
+        let nth = self.seen.get(&base).copied().unwrap_or(0) + 1;
+        self.events_of(hash(base, &nth.to_le_bytes())).rev().find_map(|kind| match kind {
+            UiEventKind::List(ListEvent::Toggle { row, open }) => Some((*row as usize, *open)),
+            _ => None,
+        })
+    }
+
     pub fn list<S: Selection>(&mut self, key: &str, count: usize, selected: &mut S, item: impl FnMut(usize) -> Item) -> Picked {
         self.rows_of(key, Vec::new(), count, selected, item)
     }
@@ -936,6 +945,25 @@ mod tests {
         assert_eq!(built, (99_990..100_000).collect::<Vec<_>>());
         let Widget::List { first, selected, multi, items, .. } = widget else { panic!("list expected") };
         assert_eq!((first, selected, multi, items[0].cells[0].as_str()), (99_990, vec![99_995], false, "file 99990"));
+    }
+
+    #[test]
+    fn toggled_reads_the_toggle_of_the_next_list_with_that_key_before_its_rows_are_built() {
+        let ids = {
+            let input = UiInput::default();
+            let mut ui = Ui::new(&input);
+            ui.list("tree", 2, &mut None, |_| Item::new("a"));
+            ui.list("tree", 2, &mut None, |_| Item::new("a"));
+            ui.finish().iter().filter_map(|widget| if let Widget::List { id, .. } = widget { Some(*id) } else { None }).collect::<Vec<_>>()
+        };
+        let input =
+            UiInput { events: vec![UiEvent { id: ids[1], kind: UiEventKind::List(ListEvent::Toggle { row: 1, open: true }) }], ..Default::default() };
+        let mut ui = Ui::new(&input);
+        assert_eq!(ui.toggled("tree"), None);
+        ui.list("tree", 2, &mut None, |_| Item::new("a"));
+        let before = ui.toggled("tree");
+        let picked = ui.list("tree", 2, &mut None, |_| Item::new("a"));
+        assert_eq!((before, picked.toggled), (Some((1, true)), Some((1, true))));
     }
 
     #[test]
