@@ -537,3 +537,59 @@ fn an_app_colour_picker_draws_a_plugin_colour_under_its_key_and_its_pick_reaches
     harness.run();
     assert_eq!(harness.state().1, vec![UiEvent { id: 6, kind: UiEventKind::Color([1.0, 0.0, 0.0, 1.0]) }]);
 }
+
+fn renamable_list(selected: Vec<u32>) -> Widget {
+    let items = (0..3).map(|row| craft_plugin::Item::new(&format!("file {row}"))).collect();
+    let edit = craft_plugin::ListEdit { rename: true, ..Default::default() };
+    Widget::List { id: 4, columns: vec![], count: 3, first: 0, items, selected, multi: false, rows: 3, edit }
+}
+
+fn click_name(harness: &mut Harness<'static, Vec<UiEvent>>, row: &str, times: usize) {
+    let rect = harness.get_by_label(row).rect();
+    let pos = egui::pos2(rect.left() + 12.0, rect.center().y);
+    harness.event(egui::Event::PointerMoved(pos));
+    for _ in 0..times {
+        for pressed in [true, false] {
+            harness.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() });
+        }
+        harness.run_steps(3);
+    }
+    harness.run();
+}
+
+#[test]
+fn a_click_on_the_selected_rows_name_opens_it_for_renaming_after_the_double_click_time_and_a_double_click_activates_instead() {
+    let widgets = vec![renamable_list(vec![1])];
+    let mut harness = Harness::builder()
+        .with_step_dt(1.0 / 60.0)
+        .with_max_steps(64)
+        .build_ui_state(move |ui, events: &mut Vec<UiEvent>| events.extend(draw(ui, &widgets, &theme(), "plugin.test.panel", &mut Bare)), Vec::new());
+    harness.run();
+    click_name(&mut harness, "file 1", 1);
+    assert_eq!(harness.get_by_label("Rename").value().as_deref(), Some("file 1"));
+    harness.get_by_label("Rename").type_text("B");
+    harness.run();
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+    let select = UiEvent { id: 4, kind: UiEventKind::List(craft_plugin::ListEvent::Select(vec![1])) };
+    let renamed = UiEvent { id: 4, kind: UiEventKind::List(craft_plugin::ListEvent::Rename { row: 1, text: "B".into() }) };
+    assert_eq!(std::mem::take(harness.state_mut()), vec![select.clone(), renamed]);
+    assert!(harness.query_by_label("Rename").is_none());
+    click_name(&mut harness, "file 1", 2);
+    let activated = UiEvent { id: 4, kind: UiEventKind::List(craft_plugin::ListEvent::Activate(1)) };
+    assert_eq!(std::mem::take(harness.state_mut()), vec![select.clone(), select, activated]);
+    assert!(harness.query_by_label("Rename").is_none());
+    click_name(&mut harness, "file 2", 1);
+    assert!(harness.query_by_label("Rename").is_none());
+}
+
+#[test]
+fn the_sorted_column_heading_tells_assistive_tools_its_order() {
+    let columns = ["Name", "Size"].map(|title| craft_plugin::Column { title: title.into(), ..Default::default() }).to_vec();
+    let edit = craft_plugin::ListEdit { sortable: true, sorted: Some((1, true)), ..Default::default() };
+    let items = vec![craft_plugin::Item::cells(&["a", "1"])];
+    let mut harness = harness(vec![Widget::List { id: 4, columns, count: 1, first: 0, items, selected: vec![], multi: false, rows: 2, edit }]);
+    harness.run();
+    let order = |label: &str| harness.get_by_label(label).accesskit_node().sort_direction();
+    assert_eq!((order("Name"), order("Size")), (None, Some(egui::accesskit::SortDirection::Descending)));
+}

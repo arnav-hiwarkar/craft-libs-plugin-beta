@@ -353,10 +353,17 @@ impl<'a> Ui<'a> {
     }
 
     pub fn toggled(&self, key: &str) -> Option<(usize, bool)> {
+        self.list_events(key).rev().find_map(|event| match event {
+            ListEvent::Toggle { row, open } => Some((*row as usize, *open)),
+            _ => None,
+        })
+    }
+
+    pub fn list_events(&self, key: &str) -> impl DoubleEndedIterator<Item = &'a ListEvent> + use<'a> {
         let base = hash(self.scope, key.as_bytes());
         let nth = self.seen.get(&base).copied().unwrap_or(0) + 1;
-        self.events_of(hash(base, &nth.to_le_bytes())).rev().find_map(|kind| match kind {
-            UiEventKind::List(ListEvent::Toggle { row, open }) => Some((*row as usize, *open)),
+        self.events_of(hash(base, &nth.to_le_bytes())).filter_map(|kind| match kind {
+            UiEventKind::List(event) => Some(event),
             _ => None,
         })
     }
@@ -1017,6 +1024,27 @@ mod tests {
         let before = ui.toggled("tree");
         let picked = ui.list("tree", 2, &mut None, |_| Item::new("a"));
         assert_eq!((before, picked.toggled), (Some((1, true)), Some((1, true))));
+    }
+
+    #[test]
+    fn list_events_read_a_lists_sort_and_rename_in_order_before_its_rows_are_built() {
+        let id = id_of_list(&frame(vec![], |ui| {
+            ui.list("names", 3, &mut None, |_| Item::new("a"));
+        }));
+        let sort = ListEvent::Sort { column: 1, descending: true };
+        let rename = ListEvent::Rename { row: 0, text: "New".into() };
+        let events = vec![
+            UiEvent { id, kind: UiEventKind::List(sort.clone()) },
+            UiEvent { id, kind: UiEventKind::Click },
+            UiEvent { id, kind: UiEventKind::List(rename.clone()) },
+        ];
+        let mut read = Vec::new();
+        frame(events, |ui| {
+            read = ui.list_events("names").cloned().collect();
+            ui.list("names", 3, &mut None, |_| Item::new("a"));
+            read.extend(ui.list_events("names").cloned());
+        });
+        assert_eq!(read, vec![sort, rename]);
     }
 
     #[test]

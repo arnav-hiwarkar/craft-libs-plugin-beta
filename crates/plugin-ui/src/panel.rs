@@ -228,8 +228,8 @@ impl<H: Host> Renderer<'_, H> {
             Widget::Grid { id, columns, children } => self.grid(ui, *id, (*columns).max(1) as usize, children),
             Widget::DropTarget { id, children } => self.drop_target(ui, *id, children),
             Widget::DragSource { id, drag, children } => self.drag_source(ui, *id, drag, children),
-            Widget::List { id, columns, count, first, items, selected, multi, rows, .. } => {
-                self.list(ui, *id, crate::list::Rows { columns, count: *count, first: *first, items, selected, multi: *multi, rows: *rows })
+            Widget::List { id, columns, count, first, items, selected, multi, rows, edit } => {
+                self.list(ui, *id, crate::list::Rows { columns, count: *count, first: *first, items, selected, multi: *multi, rows: *rows, edit })
             }
             Widget::IconButton { id, icon, text, enabled } => self.icon_button(ui, *id, icon, text, *enabled),
             Widget::Toggle { id, text, value } => self.toggle(ui, *id, text, *value),
