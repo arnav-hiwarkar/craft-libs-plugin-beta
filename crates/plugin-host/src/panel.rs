@@ -67,7 +67,7 @@ fn discrete(kind: &UiEventKind) -> bool {
     !motion(kind) && !matches!(kind, UiEventKind::Number(_) | UiEventKind::Text(_) | UiEventKind::Color(_))
 }
 
-pub(crate) fn walk(widgets: &[Widget], visit: &mut impl FnMut(&Widget)) {
+pub(crate) fn walk<'w>(widgets: &'w [Widget], visit: &mut impl FnMut(&'w Widget)) {
     for widget in widgets {
         visit(widget);
         match widget {
@@ -96,6 +96,43 @@ fn menu_ids(widgets: &[Widget]) -> Vec<u64> {
         }
     });
     menus
+}
+
+type Shown<'a> = (u32, &'a [craft_plugin::Item]);
+
+fn lists(widgets: &[Widget]) -> Vec<(u64, Shown<'_>)> {
+    let mut found = Vec::new();
+    walk(widgets, &mut |widget| {
+        if let Widget::List { id, first, items, .. } = widget {
+            found.push((*id, (*first, items.as_slice())));
+        }
+    });
+    found
+}
+
+fn moved_row(row: u32, (old_first, old): Shown, (new_first, new): Shown) -> Option<u32> {
+    let Some(item) = row.checked_sub(old_first).and_then(|at| old.get(at as usize)) else { return Some(row) };
+    let mut same = new.iter().enumerate().filter(|(_, other)| *other == item);
+    match (same.next(), same.next()) {
+        (Some((at, _)), None) => Some(new_first + at as u32),
+        _ => None,
+    }
+}
+
+fn moved(event: &UiEvent, old: Shown, new: Shown) -> Option<UiEvent> {
+    let row = |row: u32| moved_row(row, old, new);
+    let kind = match &event.kind {
+        UiEventKind::List(ListEvent::Activate(at)) => ListEvent::Activate(row(*at)?),
+        UiEventKind::List(ListEvent::Toggle { row: at, open }) => ListEvent::Toggle { row: row(*at)?, open: *open },
+        UiEventKind::List(ListEvent::Rename { row: at, text }) => ListEvent::Rename { row: row(*at)?, text: text.clone() },
+        UiEventKind::List(ListEvent::Select(rows)) => ListEvent::Select(rows.iter().filter_map(|at| row(*at)).collect()),
+        UiEventKind::List(ListEvent::Move { rows, to }) => {
+            let to = if *to == old.0 + old.1.len() as u32 { new.0 + new.1.len() as u32 } else { row(*to)? };
+            ListEvent::Move { rows: rows.iter().map(|at| row(*at)).collect::<Option<_>>()?, to }
+        }
+        _ => return Some(event.clone()),
+    };
+    Some(UiEvent { id: event.id, kind: UiEventKind::List(kind) })
 }
 
 fn picked(event: &UiEvent, menus: &[u64]) -> bool {
@@ -306,6 +343,31 @@ impl Retained {
         Some(input)
     }
 
+    fn follow_rows(&mut self, widgets: &[Widget]) {
+        let (before, after) = (lists(&self.widgets), lists(widgets));
+        let changed = |id: u64| {
+            let old = before.iter().find(|(list, _)| *list == id).map(|(_, shown)| *shown)?;
+            let new = after.iter().find(|(list, _)| *list == id).map(|(_, shown)| *shown);
+            (Some(old) != new).then_some((old, new))
+        };
+        let mut kept = 0;
+        for at in 0..self.events.len() {
+            let event = &self.events[at];
+            let followed = match changed(event.id) {
+                Some((old, Some(new))) => moved(event, old, new),
+                Some((_, None)) if matches!(event.kind, UiEventKind::List(_)) => None,
+                _ => Some(event.clone()),
+            };
+            if let Some(event) = followed {
+                self.events[kept] = event;
+                self.gestures[kept] = self.gestures[at];
+                kept += 1;
+            }
+        }
+        self.events.truncate(kept);
+        self.gestures.truncate(kept);
+    }
+
     pub fn abandon(&mut self) {
         (self.in_flight, self.stale) = (false, true);
     }
@@ -324,6 +386,7 @@ impl Retained {
             }
         };
         self.error = None;
+        self.follow_rows(&reply.widgets);
         self.widgets = reply.widgets;
         self.menu = reply.menu;
         self.topics = reply.topics;
@@ -593,6 +656,37 @@ mod tests {
             (input.events, input.keys, input.pressed, input.views, input.app),
             (vec![], String::new(), Vec::<String>::new(), vec![], vec![AppEvent::Project { path: None }])
         );
+    }
+
+    #[test]
+    fn a_row_action_queued_behind_a_reply_that_inserts_rows_follows_its_item_or_is_dropped_when_the_item_is_gone() {
+        let item = |text: &str| craft_plugin::Item { cells: vec![text.into()], ..Default::default() };
+        let list = |texts: &[&str]| Widget::List {
+            id: 5,
+            columns: Vec::new(),
+            count: texts.len() as u32,
+            first: 0,
+            items: texts.iter().map(|text| item(text)).collect(),
+            selected: Vec::new(),
+            multi: false,
+            rows: 8,
+            edit: Default::default(),
+        };
+        let answered = |texts: &[&str]| Ok(PanelReply { widgets: vec![list(texts)], ..Default::default() });
+        let rename = |row| UiEvent { id: 5, kind: UiEventKind::List(ListEvent::Rename { row, text: "Bee".into() }) };
+        let mut panel = Retained::new();
+        panel.start(SIZE, ms(0));
+        panel.finish(answered(&["a", "b", "c"]), ms(0));
+        slow_call(&mut panel);
+        panel.push(vec![rename(1), UiEvent { id: 5, kind: UiEventKind::List(ListEvent::Activate(2)) }], "");
+        panel.finish(answered(&["new", "a", "b", "c"]), ms(20));
+        let input = panel.start(SIZE, ms(30)).unwrap_or_default();
+        assert_eq!(input.events, vec![rename(2), UiEvent { id: 5, kind: UiEventKind::List(ListEvent::Activate(3)) }]);
+        panel.finish(answered(&["new", "a", "b", "c"]), ms(30));
+        slow_call(&mut panel);
+        panel.push(vec![rename(2)], "");
+        panel.finish(answered(&["new", "a", "c"]), ms(40));
+        assert_eq!((panel.pending(), panel.start(SIZE, ms(50))), (false, None), "the renamed item is gone, so the rename is dropped");
     }
 
     #[test]
