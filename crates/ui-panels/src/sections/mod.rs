@@ -1,9 +1,10 @@
 //! Sections and title rows: `TitleRow`, `FooterBar`, `Section`, `GroupBox` and `Panel`; `DragSource`, a child a drag starts
-//! from.
+//! from; `KeyArea`, a region a click focuses that takes its keys.
 
 mod drag_source;
 pub(crate) mod footer;
 mod group_box;
+mod key_area;
 #[cfg(feature = "testing")]
 mod sample;
 mod section;
@@ -17,6 +18,7 @@ mod panel;
 pub use drag_source::{DragSource, DragSourceOutput, DragSourceStyle};
 pub use footer::{DialogRole, DropAction, DropActionOutput, DropActionStyle, FooterAction, FooterBar, FooterButton, FooterDrop, FooterOutput};
 pub use group_box::{GroupBox, GroupBoxStyle};
+pub use key_area::{KeyArea, KeyAreaOutput, KeyAreaStyle};
 pub use section::{Section, SectionOutput, SectionStyle};
 pub use stack::{SectionStack, SectionStackOutput, SectionStackStyle, StackRows, StackSlot};
 #[doc(hidden)]

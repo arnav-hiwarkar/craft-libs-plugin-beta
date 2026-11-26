@@ -114,6 +114,7 @@ Grouped by gallery level, then shape, then name.
 | `FieldGroup` | Body | `craft_ui_widgets::form::group` | A stack of `Field`s (and `LinkedFields`) named `label`, filling the width offered |
 | `FooterBar` | Body | `craft_ui_panels::sections::footer` | A footer region's content: its body is the caller's closure, and each member is its own Tab stop, in display order |
 | `GroupBox` | Body | `craft_ui_panels::sections::group_box` | A frame around a body, titled by the container's label |
+| `KeyArea` | Body | `craft_ui_panels::sections::key_area` | A container as wide as the room it is offered that takes key focus from a press inside it that no control inside takes focus for (a button's click, a press on its empty room), as a click anywhere in a panel focuses the panel, and that is a Tab stop before its children |
 | `Menu` | Body | `craft_ui_widgets::menu::popup` | A menu: a popup of [`MenuItem`]s and [`Divider`]s the arrow keys move through, one roving group |
 | `Section` | Body | `craft_ui_panels::sections::section` | An inline section of a panel that fills the width offered: a rule over a section-strength title row over a body |
 | `SectionStack` | Body | `craft_ui_panels::sections::stack` | Sections in the order of `order`, each shown by the caller's closure as a `Section::in_stack` |
