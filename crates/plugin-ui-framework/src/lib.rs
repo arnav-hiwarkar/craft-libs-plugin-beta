@@ -57,8 +57,21 @@ pub trait Host {
 impl Host for () {}
 
 pub fn draw(ui: &mut egui::Ui, widgets: &[Widget], scope: &str, host: &mut dyn Host) -> Vec<UiEvent> {
+    let keys: Vec<(String, craft_keymap::Chord)> =
+        host.keys().iter().filter_map(|key| craft_keymap::Chord::parse(key).ok().map(|chord| (key.clone(), chord))).collect();
     let mut painter = Painter { scope, host, events: Vec::new(), last: None };
-    painter.all(ui, widgets);
+    if keys.is_empty() {
+        painter.all(ui, widgets);
+        return painter.events;
+    }
+    let area = craft_ui::sections::KeyArea::new(keys.iter().map(|(_, chord)| *chord).collect())
+        .id_salt(("craft-plugin-ui-framework.keys", scope))
+        .show(ui, |ui, _| painter.all(ui, widgets));
+    for chord in area.output.pressed {
+        if let Some((key, _)) = keys.iter().find(|(_, claimed)| *claimed == chord) {
+            painter.host.pressed(key);
+        }
+    }
     painter.events
 }
 

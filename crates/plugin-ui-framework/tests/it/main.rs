@@ -224,6 +224,16 @@ fn a_panel_key_reaches_the_plugin_while_a_control_of_its_panel_holds_the_key_foc
 }
 
 #[test]
+fn a_panel_key_reaches_the_plugin_after_a_click_on_a_button_of_its_panel() {
+    let mut dock = Dock::new();
+    dock.click("Count");
+    assert!(dock.find("1 clicks at speed 0").is_some(), "the click reached the plugin");
+    dock.fixture.key(Key::Delete, Modifiers::NONE);
+    dock.settle();
+    assert!(dock.find("1 deletes").is_some(), "the click gave the counter panel key focus, so its Delete reached the plugin");
+}
+
+#[test]
 fn a_command_the_plugin_disables_shows_disabled_on_the_toolbar_and_does_not_run() {
     let mut dock = Dock::new();
     dock.click("Probe Action");
