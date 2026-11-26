@@ -9,6 +9,7 @@ use craft_plugin::{
 };
 pub use serde_json::json;
 
+use crate::panel::walk;
 use crate::{Access, AuxPlanes, Bundle, Host, Limits, Pixels, Plugin};
 
 pub const MAX_PADDING: u32 = 4096;
@@ -1125,27 +1126,6 @@ fn labelled(widget: &Widget) -> Option<(u64, &str)> {
         | Widget::Menu { id, text: Some(text), .. } => Some((*id, text)),
         Widget::TextEdit { id, hint, .. } | Widget::TextArea { id, hint, .. } => Some((*id, hint)),
         _ => None,
-    }
-}
-
-fn walk(widgets: &[Widget], visit: &mut impl FnMut(&Widget)) {
-    for widget in widgets {
-        visit(widget);
-        match widget {
-            Widget::Row { children }
-            | Widget::Column { children }
-            | Widget::Group { children, .. }
-            | Widget::Scroll { children, .. }
-            | Widget::Collapsing { children, .. }
-            | Widget::Grid { children, .. }
-            | Widget::DropTarget { children, .. }
-            | Widget::DragSource { children, .. } => walk(children, visit),
-            Widget::Split { first, second, .. } => {
-                walk(first, visit);
-                walk(second, visit);
-            }
-            _ => {}
-        }
     }
 }
 

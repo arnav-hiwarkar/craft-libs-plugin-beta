@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use craft_plugin::{
-    AppEvent, ListEvent, MIN_TIMER_MS, MenuItem, PanelReply, Pointer, PointerPhase, Topic, UiEvent, UiEventKind, UiInput, View, Widget,
+    AppEvent, ListEvent, MIN_TIMER_MS, MenuItem, PANEL_MENU, PanelReply, Pointer, PointerPhase, Topic, UiEvent, UiEventKind, UiInput, View, Widget,
 };
 
 const LEGACY_TIMER: &str = "";
@@ -28,6 +28,7 @@ pub struct Retained {
     views: Vec<View>,
     pressed: Vec<String>,
     menu: Vec<MenuItem>,
+    menus: Vec<u64>,
     level: u32,
     size: [f32; 2],
     drawn: bool,
@@ -63,9 +64,44 @@ fn discrete(kind: &UiEventKind) -> bool {
     !motion(kind) && !matches!(kind, UiEventKind::Number(_) | UiEventKind::Text(_) | UiEventKind::Color(_))
 }
 
-fn one_call(events: &mut Vec<UiEvent>) -> Vec<UiEvent> {
+pub(crate) fn walk(widgets: &[Widget], visit: &mut impl FnMut(&Widget)) {
+    for widget in widgets {
+        visit(widget);
+        match widget {
+            Widget::Row { children }
+            | Widget::Column { children }
+            | Widget::Group { children, .. }
+            | Widget::Scroll { children, .. }
+            | Widget::Collapsing { children, .. }
+            | Widget::Grid { children, .. }
+            | Widget::DropTarget { children, .. }
+            | Widget::DragSource { children, .. } => walk(children, visit),
+            Widget::Split { first, second, .. } => {
+                walk(first, visit);
+                walk(second, visit);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn menu_ids(widgets: &[Widget]) -> Vec<u64> {
+    let mut menus = vec![PANEL_MENU];
+    walk(widgets, &mut |widget| {
+        if let Widget::Menu { id, .. } = widget {
+            menus.push(*id);
+        }
+    });
+    menus
+}
+
+fn picked(event: &UiEvent, menus: &[u64]) -> bool {
+    matches!(event.kind, UiEventKind::Number(_)) && menus.contains(&event.id)
+}
+
+fn one_call(events: &mut Vec<UiEvent>, menus: &[u64]) -> Vec<UiEvent> {
     let mut acted = Vec::new();
-    let collapses = |event: &UiEvent| matches!(event.kind, UiEventKind::Click | UiEventKind::Bool(_) | UiEventKind::Drop(_));
+    let collapses = |event: &UiEvent| matches!(event.kind, UiEventKind::Click | UiEventKind::Bool(_) | UiEventKind::Drop(_)) || picked(event, menus);
     let end = events
         .iter()
         .position(|event| {
@@ -121,7 +157,12 @@ impl Retained {
     }
 
     pub fn push(&mut self, events: Vec<UiEvent>, keys: &str) {
-        let (in_flight, level) = (self.in_flight, self.level);
+        for id in menu_ids(&self.widgets) {
+            if !self.menus.contains(&id) {
+                self.menus.push(id);
+            }
+        }
+        let (in_flight, level, menus) = (self.in_flight, self.level, self.menus.clone());
         for event in events.into_iter().filter(|event| event.kind.ui_level() <= level) {
             if let UiEventKind::List(ListEvent::Show { first, count }) = event.kind {
                 self.show(View { id: event.id, first, count });
@@ -131,8 +172,8 @@ impl Retained {
                 .events
                 .iter_mut()
                 .rev()
-                .find(|pending| pending.id == event.id || discrete(&pending.kind))
-                .filter(|pending| pending.id == event.id);
+                .find(|pending| pending.id == event.id || discrete(&pending.kind) || picked(pending, &menus))
+                .filter(|pending| pending.id == event.id && !picked(&event, &menus));
             match last.filter(|_| in_flight).and_then(|last| merged(&last.kind, &event.kind).map(|kind| (last, kind))) {
                 Some((last, kind)) => last.kind = kind,
                 None => self.events.push(event),
@@ -177,6 +218,7 @@ impl Retained {
     pub fn hide(&mut self) {
         self.hidden = true;
         self.events.clear();
+        self.menus.clear();
         self.keys.clear();
         self.pressed.clear();
     }
@@ -215,7 +257,10 @@ impl Retained {
             }
             timer.repeat
         });
-        let mut events = one_call(&mut self.events);
+        let mut events = one_call(&mut self.events, &self.menus);
+        if self.events.is_empty() {
+            self.menus.clear();
+        }
         if self.legacy {
             events.retain(|event| event.kind.known_to_every_sdk());
         }
@@ -464,6 +509,23 @@ mod tests {
         panel.finish(reply(vec![], vec![]), ms(40));
         assert_eq!(events(&mut panel, 48), Some(vec![click(7), number(2.0)]));
         assert_eq!(events(&mut panel, 64), Some(vec![click(7), number(3.0)]));
+    }
+
+    #[test]
+    fn menu_picks_made_during_a_slow_call_are_kept_apart_and_reach_one_call_each_in_order() {
+        let mut panel = Retained::new();
+        panel.start(SIZE, ms(0));
+        let menu = Widget::Column { children: vec![Widget::Menu { id: 5, text: Some("Actions".into()), items: Vec::new() }] };
+        panel.finish(Ok(PanelReply { widgets: vec![menu], ..Default::default() }), ms(0));
+        slow_call(&mut panel);
+        let pick = |id, index| UiEvent { id, kind: UiEventKind::Number(index) };
+        for events in [vec![pick(5, 1.0)], vec![pick(5, 3.0)], vec![pick(PANEL_MENU, 0.0)], vec![pick(PANEL_MENU, 2.0)]] {
+            panel.push(events, "");
+        }
+        panel.finish(reply(vec![], vec![]), ms(40));
+        assert_eq!(events(&mut panel, 48), Some(vec![pick(5, 1.0)]));
+        assert_eq!(events(&mut panel, 64), Some(vec![pick(5, 3.0), pick(PANEL_MENU, 0.0)]));
+        assert_eq!(events(&mut panel, 80), Some(vec![pick(PANEL_MENU, 2.0)]));
     }
 
     #[test]
