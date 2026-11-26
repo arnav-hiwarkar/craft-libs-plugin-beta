@@ -329,6 +329,22 @@ fn a_tree_panel_opens_folders_from_toggles_and_its_ten_thousand_row_table_builds
 }
 
 #[test]
+fn the_probe_take_table_sorts_by_the_clicked_column_flips_on_a_second_click_and_renames_a_take_in_its_sorted_place() {
+    use craft_plugin::ListEvent::{Rename, Sort};
+    let (_bundle, plugin) = probe();
+    let mut panel = plugin.panel("tree").unwrap();
+    let top = |panel: &craft_plugin_host::testing::PanelTest, n: usize| panel.rows(1).unwrap().1[..n].to_vec();
+    panel.list_event(1, Sort { column: 2, descending: false }).unwrap();
+    assert_eq!(top(&panel, 2), ["take 0\t0.0 s\t*", "take 5\t5.5 s\t*"]);
+    panel.list_event(1, Sort { column: 2, descending: true }).unwrap();
+    assert_eq!(top(&panel, 2), ["take 9999\t39.9 s\t*****", "take 9994\t34.4 s\t*****"]);
+    panel.list_event(1, Sort { column: 0, descending: false }).unwrap();
+    assert_eq!(top(&panel, 3), ["take 0\t0.0 s\t*", "take 1\t1.1 s\t**", "take 10\t10.0 s\t*"]);
+    panel.list_event(1, Rename { row: 1, text: "Opening".into() }).unwrap();
+    assert_eq!(top(&panel, 2), ["take 0\t0.0 s\t*", "Opening\t1.1 s\t**"]);
+}
+
+#[test]
 fn a_status_item_and_a_stamp_option_bar_take_their_places_and_each_notes_panel_keeps_its_own_text() {
     let (_bundle, plugin) = probe();
     let found = plugin.plugin().contributions();
