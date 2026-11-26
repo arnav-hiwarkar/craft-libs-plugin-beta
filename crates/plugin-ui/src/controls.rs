@@ -126,13 +126,29 @@ impl<H: Host> Renderer<'_, H> {
     }
 
     pub(crate) fn text_area(&mut self, ui: &mut egui::Ui, id: u64, value: &str, hint: &str, rows: u32) {
-        let mut text = value.to_string();
-        let edit = egui::TextEdit::multiline(&mut text).hint_text(hint).desired_rows(rows.clamp(1, 64) as usize).desired_width(f32::INFINITY);
-        let response = ui.add(edit);
+        let rows = rows.clamp(1, 64) as usize;
+        self.text_field(ui, id, value, hint, |text| egui::TextEdit::multiline(text).hint_text(hint).desired_rows(rows).desired_width(f32::INFINITY));
+    }
+
+    pub(crate) fn text_field(
+        &mut self,
+        ui: &mut egui::Ui,
+        id: u64,
+        value: &str,
+        hint: &str,
+        edit: impl for<'t> FnOnce(&'t mut String) -> egui::TextEdit<'t>,
+    ) {
+        let typed = egui::Id::unique(("plugin-typed", self.scope, id));
+        let awaiting = ui.data(|data| data.get_temp::<(String, String)>(typed)).filter(|(sent_over, _)| sent_over == value);
+        let mut text = awaiting.map_or_else(|| value.to_string(), |(_, local)| local);
+        let response = ui.add(edit(&mut text));
         ui.ctx().accesskit_node_builder(response.id, |node| node.set_label(hint));
         self.register(id, &response, hint);
         if response.changed() {
+            ui.data_mut(|data| data.insert_temp(typed, (value.to_string(), text.clone())));
             self.emit(id, UiEventKind::Text(text));
+        } else if ui.data(|data| data.get_temp::<(String, String)>(typed)).is_some_and(|(sent_over, _)| sent_over != value) {
+            ui.data_mut(|data| data.remove::<(String, String)>(typed));
         }
     }
 

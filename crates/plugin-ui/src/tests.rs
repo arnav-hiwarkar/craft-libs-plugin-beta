@@ -634,3 +634,25 @@ fn the_sorted_column_heading_tells_assistive_tools_its_order() {
     let order = |label: &str| harness.get_by_label(label).accesskit_node().sort_direction();
     assert_eq!((order("Name"), order("Size")), (None, Some(egui::accesskit::SortDirection::Descending)));
 }
+
+#[test]
+fn text_typed_in_two_passes_before_the_plugin_replies_keeps_both_letters_and_a_reply_that_clears_the_field_is_shown() {
+    type Typing = (Vec<Widget>, Vec<UiEvent>);
+    let notes = |value: &str| vec![Widget::TextArea { id: 3, value: value.into(), hint: "Notes".into(), rows: 3 }];
+    let mut harness = Harness::new_ui_state(
+        move |ui, (widgets, events): &mut Typing| events.extend(draw(ui, widgets, &theme(), "plugin.test.panel", &mut Bare)),
+        (notes(""), Vec::new()),
+    );
+    harness.get_by_role(egui::Role::MultilineTextInput).click();
+    harness.run();
+    for letter in ["a", "b"] {
+        harness.get_by_role(egui::Role::MultilineTextInput).type_text(letter);
+        harness.run();
+    }
+    assert_eq!(harness.state().1.last(), Some(&UiEvent { id: 3, kind: UiEventKind::Text("ab".into()) }));
+    harness.state_mut().0 = notes("ab");
+    harness.run();
+    harness.state_mut().0 = notes("");
+    harness.run();
+    assert_eq!(harness.get_by_role(egui::Role::MultilineTextInput).accesskit_node().value().as_deref(), Some(""));
+}

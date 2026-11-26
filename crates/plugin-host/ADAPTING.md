@@ -66,7 +66,9 @@ SDK (EffectCraft keeps `crates/plugin/tests/it/legacy/legacy.wasm`).
    each started on first use: UI (panels, controls, buttons, migrations), viewer (overlays, drags, tools)
    and commands, so a slow panel call holds back no overlay, tool or command. The kit runs a sandboxed
    overlay or drag on a pooled instance and a tool on an instance of its own; only commands share the
-   panels' instance. The UI thread posts requests, answers host calls that need the document, and applies
+   panels' instance. A plugin whose `event_level()` is below 2 (built before lanes) keeps one instance for
+   panels, tools, overlays and drags, so statics its panel sets still reach its tool and overlay; the
+   threads stay, and its viewer calls wait while a panel call runs. The UI thread posts requests, answers host calls that need the document, and applies
    replies, with a time budget per UI frame. Give each request the plugin's load, the project's token and the surface's
    token, and drop it when any is stale. Feed `Retained` with the app's events (`Topic`: selection, time,
    comp, project, edit, mapped to the app's nearest equivalents). Give each custom parameter row its own
@@ -75,7 +77,12 @@ SDK (EffectCraft keeps `crates/plugin/tests/it/legacy/legacy.wasm`).
    and compare tool events with `event_level()` too: a plugin built before UI levels reports 0, which means 1,
    and comparing with the raw `ui_level` drops all of its events. When the user closes a tab of a
    `panel_each` instance, drop its `Retained` and send one more `Call::Panel` with `UiInput { closed: true,
-   instance, .. }` so the SDK forgets that instance. Test: zero plugin calls over idle frames;
+   instance, .. }` on the same UI worker, so the SDK forgets that instance. Key each `Retained` and the
+   painter scope on the structured identity (plugin, panel, instance); escape `.`, `#` and `%` in the scope's
+   panel and instance parts. When the project a `Retained` was drawn for is replaced, call
+   `Retained::reset` and drop the surface's token, so queued input never reaches the new project. Call
+   `Retained::split` when a drag starts on the panel and give each call the undo gesture of
+   `started_gesture()`, so two drags behind a slow call stay two undo steps. Test: zero plugin calls over idle frames;
    each event kind calls once; a reply after the project closed is dropped; a panel click and a tool press of
    the stored pre-programme probe (`tests/it/fixtures/probe-before-regions.wasm`) reach it; kittests with real
    pointer and key events.

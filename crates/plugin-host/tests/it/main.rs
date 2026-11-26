@@ -532,6 +532,32 @@ fn a_plugin_built_before_ui_levels_still_gets_the_clicks_on_its_panel() {
 }
 
 #[test]
+fn a_plugin_built_before_ui_levels_keeps_one_instance_so_its_tool_and_overlay_see_what_its_panel_set() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/it/fixtures/shared-before-levels.wasm"), dir.path().join("shared.wasm")).unwrap();
+    let manifest = json!({"id": "test.shared-before-levels", "name": "Shared", "version": "1.0.0", "entry": {"wasm": "shared.wasm"}});
+    std::fs::write(dir.path().join("plugin.json"), manifest.to_string()).unwrap();
+    let bundle = Bundle::open(dir.path()).unwrap();
+    let before = open(dir, bundle);
+    assert_eq!(before.plugin.contributions().ui_level, 0);
+    let mut bump = Retained::with_level(before.plugin.contributions().event_level());
+    assert!(panel_frame(&before, "bump", &mut bump, Duration::ZERO));
+    let Widget::Button { id, .. } = bump.widgets()[0] else { panic!("button expected") };
+    bump.push(vec![UiEvent { id, kind: UiEventKind::Click }], "");
+    assert!(panel_frame(&before, "bump", &mut bump, Duration::from_millis(20)));
+    let written = |overlay: craft_plugin::Overlay| -> Vec<String> {
+        overlay.marks.into_iter().filter_map(|mark| if let craft_plugin::Shape::Text { text, .. } = mark.shape { Some(text) } else { None }).collect()
+    };
+    let event = craft_plugin::ToolEvent { kind: craft_plugin::ToolEventKind::Move, zoom: 1.0, ..Default::default() };
+    let tool = before.plugin.call(&Call::Tool { tool: "census".into(), event }, None, &mut Recorder::default()).map(written);
+    let overlay = before.plugin.call(&Call::Overlay { effect: "peek".into(), cx: cx(4, 4) }, None, &mut Recorder::default()).map(written);
+    assert_eq!(
+        (texts(bump.widgets()), tool, overlay),
+        (vec!["shared 1".to_string()], Ok(vec!["shared 1".to_string()]), Ok(vec!["shared 1".to_string()]))
+    );
+}
+
+#[test]
 fn two_clicks_on_one_button_made_during_a_call_are_counted_twice() {
     each_kind(|kind| {
         let loaded = load(kind, &[]);
