@@ -129,13 +129,7 @@ impl Component for Picture<'_> {
             return;
         }
         match &self.source {
-            Source::Image { key, image } => {
-                let store = TextureStore::<(Id, u64)>::in_context(&cx.ctx, "picture", TextureStoreOptions::thumbnails());
-                let texture = store.get_or_put(&cx.ctx, (cx.resolved.id, *key), self.revision, *image);
-                let target = fit_rect(cx.content_rect, texture.size_vec2());
-                let whole = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
-                ui.content_painter(cx).picture(texture.id, target, whole, 0.0);
-            }
+            Source::Image { key, image } => paint_image(&ui.content_painter(cx), cx.resolved.id, *key, self.revision, *image, cx.content_rect),
             Source::Painter(paint) => paint(&ui.content_painter(cx), cx.content_rect),
         }
     }
@@ -143,4 +137,14 @@ impl Component for Picture<'_> {
     fn finish(self, cx: Cx<'_, Self>) -> Response {
         cx.response.clone()
     }
+}
+
+/// Paints the image `image` makes, stored under `owner` and `key` at `revision`, fitted inside `rect` at its own aspect.
+pub(crate) fn paint_image(painter: &ContentPainterCx<'_>, owner: Id, key: u64, revision: Revision, image: &dyn Fn() -> ColorImage, rect: Rect) {
+    let ctx = painter.painter.ctx();
+    let store = TextureStore::<(Id, u64)>::in_context(ctx, "picture", TextureStoreOptions::thumbnails());
+    let texture = store.get_or_put(ctx, (owner, key), revision, image);
+    let target = fit_rect(rect, texture.size_vec2());
+    let whole = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
+    painter.picture(texture.id, target, whole, 0.0);
 }
