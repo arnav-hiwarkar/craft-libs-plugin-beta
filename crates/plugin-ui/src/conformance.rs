@@ -27,6 +27,12 @@ impl Host for Bare {
         None
     }
     fn accept_files(&mut self, _: &[String]) {}
+    fn frame(&mut self, ui: &mut egui::Ui, _: &craft_plugin::FrameRequest, size: egui::Vec2) -> Option<egui::Response> {
+        let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, "Frame"));
+        ui.painter().rect_filled(rect, 0.0, Color32::DARK_GRAY);
+        Some(response)
+    }
 }
 
 pub fn theme() -> Theme {
@@ -409,6 +415,17 @@ pub fn cases() -> Vec<Case> {
             }],
             steps: vec![Step::Click("Soft")],
             expect: Expect::Events(vec![event(6, UiEventKind::Bool(true))]),
+        },
+        Case {
+            name: "an app-drawn frame is clicked by its accessible name and sends one Click",
+            size: [240.0, 140.0],
+            tree: vec![Widget::Frame {
+                id: 7,
+                request: craft_plugin::FrameRequest { time: 1.0, scale: 0.5, ..Default::default() },
+                size: [160.0, 90.0],
+            }],
+            steps: vec![Step::Click("Frame")],
+            expect: Expect::Events(vec![event(7, UiEventKind::Click)]),
         },
     ]
 }

@@ -31,6 +31,10 @@ impl Engine {
         match *self {}
     }
 
+    pub fn granted(&self, _: Permission) -> bool {
+        match *self {}
+    }
+
     pub fn failure(&self) -> Option<String> {
         match *self {}
     }
