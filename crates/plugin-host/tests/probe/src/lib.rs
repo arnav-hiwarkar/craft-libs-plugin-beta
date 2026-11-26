@@ -1808,10 +1808,10 @@ impl Panel for Pad {
     fn ui(&mut self, ui: &mut Ui) {
         ui.canvas("pad", [120.0, 80.0], |canvas| {
             if let Some(at) = canvas.context {
-                self.said = format!("context {} {}", at.pos[0], at.pos[1]);
+                self.said = format!("context {:.0} {:.0}", at.pos[0], at.pos[1]);
             }
             if let Some(at) = canvas.opened {
-                self.said = format!("open {} {}", at.pos[0], at.pos[1]);
+                self.said = format!("open {:.0} {:.0}", at.pos[0], at.pos[1]);
             }
         });
         let ink = self.ink.get_or_insert([0.0, 0.0, 0.0, 1.0]);
