@@ -1908,13 +1908,13 @@ fn a_list_of_a_hundred_thousand_rows_builds_only_its_view_and_activating_a_row_o
         let inspector = panels.iter().find(|panel| panel.id == "inspector").map(|panel| (panel.place, panel.size, panel.icon.clone()));
         assert_eq!(inspector, Some((craft_plugin::PanelPlace::Float, craft_plugin::PanelSize::Large, Some("sliders".into()))));
         let (mut files, mut host) = (Retained::new(), Recorder::default());
-        let mut frame = |files: &mut Retained, host: &mut Recorder, now: u64| {
+        let frame = |files: &mut Retained, host: &mut Recorder, now: u64| {
             let input = files.start([300.0, 200.0], Duration::from_millis(now))?;
             let reply = loaded.plugin.call::<craft_plugin::PanelReply>(&Call::Panel { panel: "files".into(), input }, None, host);
             files.finish(reply.map_err(|e| e.to_string()), Duration::from_millis(now));
             Some(())
         };
-        let list = |files: &Retained| match &files.widgets()[..] {
+        let list = |files: &Retained| match files.widgets() {
             [Widget::List { id, count, first, items, .. }, Widget::Label { text, .. }] => (*id, *count, *first, items.len(), text.clone()),
             other => panic!("{kind:?}: a list and a label expected, got {other:?}"),
         };

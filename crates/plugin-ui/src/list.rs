@@ -46,7 +46,7 @@ impl<H: Host> Renderer<'_, H> {
             0 => ui.available_height().max(row_height),
             shown => row_height * shown as f32,
         };
-        let asked = egui::Id::new(("plugin-list-window", self.scope, id));
+        let asked = egui::Id::unique(("plugin-list-window", self.scope, id));
         let mut shown_rows = 0..0;
         let area = egui::ScrollArea::vertical().id_salt(("plugin-list", id)).max_height(height).auto_shrink([false, true]);
         let response = area.show_rows(ui, row_height, rows.count as usize, |ui, range| {
@@ -56,7 +56,7 @@ impl<H: Host> Renderer<'_, H> {
             }
         });
         let name = self.host.tr("List");
-        let list = ui.interact(response.inner_rect, egui::Id::new(("plugin-list-area", self.scope, id)), Sense::hover());
+        let list = ui.interact(response.inner_rect, egui::Id::unique(("plugin-list-area", self.scope, id)), Sense::hover());
         list.widget_info(|| egui::WidgetInfo::labeled(egui::Role::List, true, &name));
         self.register(id, &list, "List");
         let waiting = ui.data(|data| data.get_temp::<(u32, u32)>(asked)).is_some_and(|(first, count)| {
