@@ -261,7 +261,17 @@ impl Painter<'_> {
             }
             Widget::Canvas { id, size, shapes } => self.canvas(ui, *id, *size, shapes, extras.label("Plug-in drawing")),
             Widget::Menu { id, text, items } => self.menu(ui, *id, text.as_deref(), items),
-            Widget::Space { .. } | Widget::Gap { .. } | Widget::Tooltip { .. } | Widget::Name { .. } | Widget::Focus { .. } => {}
+            Widget::Focus { call } => self.focus(ui, *call),
+            Widget::Space { .. } | Widget::Gap { .. } | Widget::Tooltip { .. } | Widget::Name { .. } => {}
+        }
+    }
+
+    fn focus(&mut self, ui: &egui::Ui, call: u64) {
+        let Some(last) = &self.last else { return };
+        let memory = egui::Id::unique(("craft-plugin-ui-framework.focus", self.scope));
+        let asked = craft_ui::runtime::memory::with_session(ui.ctx(), memory, |asked: &mut Option<u64>| asked.replace(call));
+        if asked != Some(call) && !craft_ui::runtime::focus::request(ui.ctx(), craft_ui::runtime::focus::FocusTarget::Id(last.id)) {
+            craft_ui::runtime::memory::with_session(ui.ctx(), memory, |stored: &mut Option<u64>| *stored = asked);
         }
     }
 

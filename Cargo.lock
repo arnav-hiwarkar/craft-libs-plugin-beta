@@ -3646,6 +3646,7 @@ version = "0.1.0"
 dependencies = [
  "craft-behavior",
  "craft-color-ui",
+ "craft-host",
  "craft-imaging",
  "craft-keymap",
  "craft-plugin",

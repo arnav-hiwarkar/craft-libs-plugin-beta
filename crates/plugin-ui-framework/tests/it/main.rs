@@ -17,6 +17,7 @@ fn framework() -> Painter {
             installed = true;
             ui.ctx().set_fonts(craft_ui::fonts::deflated_default_definitions());
             assert!(craft_ui::install(ui.ctx(), craft_ui::testing::install_spec()).is_ok(), "the runtime installs once per context");
+            craft_ui::testing::windows::set_os(ui.ctx(), craft_host::target::Os::Linux);
         }
         craft_plugin_ui_framework::draw(ui, tree, "conformance", &mut ())
     })
@@ -24,8 +25,14 @@ fn framework() -> Painter {
 
 #[test]
 fn every_conformance_case_passes_on_the_framework_painter() {
-    let failures = conformance::run_all(framework);
-    assert!(failures.is_empty(), "{failures:#?}");
+    let failures: Vec<String> = conformance::cases()
+        .iter()
+        .filter_map(|case| match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| conformance::run(case, framework()))) {
+            Ok(events) => case.check(&events).err(),
+            Err(_) => Some(format!("{}: a step found no node by its accessible name", case.name)),
+        })
+        .collect();
+    assert!(failures.is_empty(), "{} of {} cases fail: {failures:#?}", failures.len(), conformance::cases().len());
 }
 
 struct Dock {

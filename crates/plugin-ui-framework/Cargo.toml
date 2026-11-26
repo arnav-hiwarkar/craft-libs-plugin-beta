@@ -32,6 +32,7 @@ craft-plugin-host = { workspace = true, features = ["testing"] }
 egui_kittest = "0.37"
 serde_json = { workspace = true }
 tempfile = "3.27"
+craft-host = { workspace = true }
 craft-ui = { workspace = true, features = ["testing"] }
 
 [[test]]

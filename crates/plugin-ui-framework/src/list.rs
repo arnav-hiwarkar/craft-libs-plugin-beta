@@ -23,9 +23,10 @@ const KEYS: [&str; 16] = ["c0", "c1", "c2", "c3", "c4", "c5", "c6", "c7", "c8", 
 
 #[derive(Clone, Default)]
 struct Kept {
-    given: Vec<u32>,
-    selection: Selection<u32>,
+    lead: Option<u32>,
+    anchor: Option<u32>,
     asked: Option<Range<u32>>,
+    sent: Option<(Vec<u32>, Vec<u32>)>,
 }
 
 impl Rows<'_> {
@@ -112,13 +113,12 @@ impl Painter<'_> {
         let memory = egui::Id::unique(("craft-plugin-ui-framework.list", self.scope, id));
         let given = sorted(rows.selected.to_vec());
         let mut kept: Kept = with_session(ui.ctx(), memory, |kept: &mut Kept| kept.clone());
-        if kept.given != given {
-            let lead = given.last().copied();
-            kept.selection = Selection::new(given.clone(), lead, given.first().copied());
-            kept.given = given.clone();
-        }
+        let held = |key: Option<u32>| key.filter(|row| *row < rows.count && (given.is_empty() || given.contains(row)));
+        let lead = held(kept.lead).or_else(|| given.last().copied());
+        let anchor = held(kept.anchor).or_else(|| given.first().copied());
+        let before = Selection::new(given.clone(), lead, anchor);
         let mode = if rows.multi { SelectMode::Multi } else { SelectMode::Single };
-        let mut selection = kept.selection.clone();
+        let mut selection = before.clone();
         let out = if rows.columns.is_empty() {
             List::new(String::new()).id_salt(self.salt(id)).select(mode).tree(true).selection(Bind::bound(&mut selection)).show_items(
                 ui,
@@ -139,10 +139,11 @@ impl Painter<'_> {
             )
         };
         self.last = Some(out.response.clone());
-        let before = sorted(kept.selection.items.clone());
         let after = sorted(selection.items.clone());
-        if after != before {
+        let change = (given.clone(), after.clone());
+        if after != given && kept.sent.as_ref() != Some(&change) {
             self.emit(id, UiEventKind::List(ListEvent::Select(after)));
+            kept.sent = Some(change);
         }
         for event in &out.events {
             match event {
@@ -161,7 +162,7 @@ impl Painter<'_> {
         if rows.holds(&shown) {
             kept.asked = None;
         }
-        kept.selection = selection;
+        (kept.lead, kept.anchor) = (selection.lead, selection.anchor);
         with_session(ui.ctx(), memory, |stored: &mut Kept| *stored = kept);
     }
 }
