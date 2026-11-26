@@ -1415,6 +1415,11 @@ fn make() -> Plugin {
         .effect(Lookout::default())
         .effect(AuxDepth)
         .effect(AuxUndeclared)
+        .tool("stamp", "Stamp", Stamp::default())
+        .panel("counter", "Counter", Counter::default())
+        .panel("watch", "Watch", Watch::default())
+        .panel("ticker", "Ticker", Ticker::default())
+        .panel("relay", "Relay", Relay::default())
         .effect(Peek)
         .tool("census", "Census", Census)
         .panel("shared", "Shared", Shared)
@@ -1422,11 +1427,6 @@ fn make() -> Plugin {
             SHARED.fetch_add(1, Ordering::Relaxed);
             Ok(())
         })
-        .tool("stamp", "Stamp", Stamp::default())
-        .panel("counter", "Counter", Counter::default())
-        .panel("watch", "Watch", Watch::default())
-        .panel("ticker", "Ticker", Ticker::default())
-        .panel("relay", "Relay", Relay::default())
         .command("edit", "Edit Document", || {
             let reply = host::command("layer.newNull", json!({"name": "From Plugin"}))?;
             host::write_file(Root::Data, "last-reply.json", reply.to_string().as_bytes())
