@@ -1214,6 +1214,10 @@ impl Tool for Stamp {
                     host::command("prop.set", json!({"layer": layer, "path": "transform/position", "value": [x, y]}))?;
                 }
             }
+            ToolEventKind::Open => {
+                self.seen.push(line);
+                host::command("layer.newNull", json!({"name": "Opened"}))?;
+            }
             _ => self.seen.push(line),
         }
         for (row, line) in self.seen.iter().enumerate() {
@@ -1350,6 +1354,10 @@ fn wait_while_held() {
 
 fn relayed() -> Result<String> {
     let request: serde_json::Value = serde_json::from_slice(&host::read_file(Root::Bundle, "relay.json")?)?;
+    if let Some(panel) = request["close_panel"].as_str() {
+        host::close_panel(panel, None)?;
+        return Ok("closed".into());
+    }
     if request["frame"].is_object() {
         let image = host::frame(craft_plugin::FrameRequest { time: 0.0, scale: 1.0, ..Default::default() })?;
         return Ok(format!("{}x{}", image.width, image.height));
@@ -1491,6 +1499,7 @@ fn make() -> Plugin {
         .panel_each("notes", "Notes", Notes::default)
         .icon("text")
         .place(PanelPlace::Bottom)
+        .panel("notes.1", "Dotted Notes", Notes::default())
         .panel("controls", "Controls", Controls::default())
         .icon("sliders")
         .panel("preview", "Preview", Preview::default())
@@ -1926,10 +1935,11 @@ impl Panel for AppPanel {
         if fit || reset {
             self.said = if fit { "zoomed to fit" } else { "view reset" }.into();
         }
-        if ui.slider("Opacity", &mut self.opacity, 0.0..=100.0)
-            && let Err(error) = host::command("prop.set", json!({"layer": "#1", "path": "transform/opacity", "value": self.opacity}))
-        {
-            self.said = error.0;
+        if ui.slider("Opacity", &mut self.opacity, 0.0..=100.0) {
+            wait_while_held();
+            if let Err(error) = host::command("prop.set", json!({"layer": "#1", "path": "transform/opacity", "value": self.opacity})) {
+                self.said = error.0;
+            }
         }
         if ui.checkbox("Disable Probe Action", &mut self.disabled)
             && let Err(error) = host::command_state("app-act", !self.disabled, Some(!self.disabled))

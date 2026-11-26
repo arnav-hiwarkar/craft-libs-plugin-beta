@@ -22,6 +22,7 @@ use crate::runtime::{Engine, Staged};
 
 const MIN_BAND_ROWS: usize = 64;
 const STAGED_BYTES: usize = 1 << 30;
+const SEPARATE_INSTANCES_LEVEL: u32 = 2;
 
 mod zeroed_pool {
     use super::Pixel;
@@ -676,7 +677,7 @@ impl Plugin {
     fn answer(&self, call: &Call, io: Io, host: &mut dyn Host, memo: Option<&Staged>) -> Result<Vec<u8>, PluginError> {
         let request = serde_json::to_vec(call).map_err(|e| PluginError::Protocol(e.to_string()))?;
         let cancel = if matches!(call, Call::Render { .. } | Call::Pass { .. }) { host.cancel() } else { None };
-        self.engine.call(&request, io, host, origin(call), self.budget(call), Scope { cancel, memo })
+        self.engine.call(&request, io, host, origin(call, self.contributions().event_level()), self.budget(call), Scope { cancel, memo })
     }
 }
 
@@ -761,8 +762,9 @@ fn what(call: &Call) -> String {
     }
 }
 
-fn origin(call: &Call) -> (Origin, Instance) {
+fn origin(call: &Call, level: u32) -> (Origin, Instance) {
     match call {
+        Call::Tool { .. } | Call::Overlay { .. } | Call::Drag { .. } if level < SEPARATE_INSTANCES_LEVEL => (Origin::Interactive, Instance::Main),
         Call::Describe | Call::Panel { .. } | Call::Controls { .. } | Call::Command { .. } | Call::Button { .. } | Call::Migrate { .. } => {
             (Origin::Interactive, Instance::Main)
         }

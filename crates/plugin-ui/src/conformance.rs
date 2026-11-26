@@ -205,6 +205,14 @@ fn sortable() -> Widget {
     widget
 }
 
+fn wide_table() -> Widget {
+    let mut widget = sortable();
+    if let Widget::List { columns, .. } = &mut widget {
+        *columns = (0..17).map(|at| Column { title: format!("Col {at}"), ..Default::default() }).collect();
+    }
+    widget
+}
+
 fn list_event(kind: ListEvent) -> UiEvent {
     event(4, UiEventKind::List(kind))
 }
@@ -531,6 +539,13 @@ pub fn cases() -> Vec<Case> {
             tree: vec![reorderable(vec![1])],
             steps: vec![Step::Key(egui::Key::Tab), Step::Chord(egui::Modifiers::ALT, egui::Key::ArrowDown)],
             expect: Expect::Events(vec![list_event(ListEvent::Move { rows: vec![1], to: 3 })]),
+        },
+        Case {
+            name: "the seventeenth column of a table has a heading that sorts by it",
+            size: [2400.0, 200.0],
+            tree: vec![wide_table()],
+            steps: vec![Step::Click("Col 16")],
+            expect: Expect::Events(vec![list_event(ListEvent::Sort { column: 16, descending: false })]),
         },
         Case {
             name: "clicking a column heading sorts by it, and clicking it again flips the order",

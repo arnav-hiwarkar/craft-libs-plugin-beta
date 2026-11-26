@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use craft_plugin::{
-    AppEvent, ListEvent, MIN_TIMER_MS, MenuItem, PanelReply, Pointer, PointerPhase, Topic, UiEvent, UiEventKind, UiInput, View, Widget,
+    AppEvent, ListEvent, MIN_TIMER_MS, MenuItem, PANEL_MENU, PanelReply, Pointer, PointerPhase, Topic, UiEvent, UiEventKind, UiInput, View, Widget,
 };
 
 const LEGACY_TIMER: &str = "";
@@ -21,6 +21,9 @@ pub struct Retained {
     widgets: Vec<Widget>,
     error: Option<String>,
     events: Vec<UiEvent>,
+    gestures: Vec<u64>,
+    gesture: u64,
+    started: u64,
     keys: String,
     app: Vec<AppEvent>,
     topics: Vec<Topic>,
@@ -28,6 +31,7 @@ pub struct Retained {
     views: Vec<View>,
     pressed: Vec<String>,
     menu: Vec<MenuItem>,
+    menus: Vec<u64>,
     level: u32,
     size: [f32; 2],
     drawn: bool,
@@ -63,20 +67,92 @@ fn discrete(kind: &UiEventKind) -> bool {
     !motion(kind) && !matches!(kind, UiEventKind::Number(_) | UiEventKind::Text(_) | UiEventKind::Color(_))
 }
 
-fn one_call(events: &mut Vec<UiEvent>) -> Vec<UiEvent> {
+pub(crate) fn walk<'w>(widgets: &'w [Widget], visit: &mut impl FnMut(&'w Widget)) {
+    for widget in widgets {
+        visit(widget);
+        match widget {
+            Widget::Row { children }
+            | Widget::Column { children }
+            | Widget::Group { children, .. }
+            | Widget::Scroll { children, .. }
+            | Widget::Collapsing { children, .. }
+            | Widget::Grid { children, .. }
+            | Widget::DropTarget { children, .. }
+            | Widget::DragSource { children, .. } => walk(children, visit),
+            Widget::Split { first, second, .. } => {
+                walk(first, visit);
+                walk(second, visit);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn menu_ids(widgets: &[Widget]) -> Vec<u64> {
+    let mut menus = vec![PANEL_MENU];
+    walk(widgets, &mut |widget| {
+        if let Widget::Menu { id, .. } = widget {
+            menus.push(*id);
+        }
+    });
+    menus
+}
+
+type Shown<'a> = (u32, &'a [craft_plugin::Item]);
+
+fn lists(widgets: &[Widget]) -> Vec<(u64, Shown<'_>)> {
+    let mut found = Vec::new();
+    walk(widgets, &mut |widget| {
+        if let Widget::List { id, first, items, .. } = widget {
+            found.push((*id, (*first, items.as_slice())));
+        }
+    });
+    found
+}
+
+fn moved_row(row: u32, (old_first, old): Shown, (new_first, new): Shown) -> Option<u32> {
+    let Some(item) = row.checked_sub(old_first).and_then(|at| old.get(at as usize)) else { return Some(row) };
+    let mut same = new.iter().enumerate().filter(|(_, other)| *other == item);
+    match (same.next(), same.next()) {
+        (Some((at, _)), None) => Some(new_first + at as u32),
+        _ => None,
+    }
+}
+
+fn moved(event: &UiEvent, old: Shown, new: Shown) -> Option<UiEvent> {
+    let row = |row: u32| moved_row(row, old, new);
+    let kind = match &event.kind {
+        UiEventKind::List(ListEvent::Activate(at)) => ListEvent::Activate(row(*at)?),
+        UiEventKind::List(ListEvent::Toggle { row: at, open }) => ListEvent::Toggle { row: row(*at)?, open: *open },
+        UiEventKind::List(ListEvent::Rename { row: at, text }) => ListEvent::Rename { row: row(*at)?, text: text.clone() },
+        UiEventKind::List(ListEvent::Select(rows)) => ListEvent::Select(rows.iter().filter_map(|at| row(*at)).collect()),
+        UiEventKind::List(ListEvent::Move { rows, to }) => {
+            let to = if *to == old.0 + old.1.len() as u32 { new.0 + new.1.len() as u32 } else { row(*to)? };
+            ListEvent::Move { rows: rows.iter().map(|at| row(*at)).collect::<Option<_>>()?, to }
+        }
+        _ => return Some(event.clone()),
+    };
+    Some(UiEvent { id: event.id, kind: UiEventKind::List(kind) })
+}
+
+fn picked(event: &UiEvent, menus: &[u64]) -> bool {
+    matches!(event.kind, UiEventKind::Number(_)) && menus.contains(&event.id)
+}
+
+fn one_call(events: &[UiEvent], gestures: &[u64], menus: &[u64]) -> usize {
     let mut acted = Vec::new();
-    let collapses = |event: &UiEvent| matches!(event.kind, UiEventKind::Click | UiEventKind::Bool(_) | UiEventKind::Drop(_));
-    let end = events
+    let collapses = |event: &UiEvent| matches!(event.kind, UiEventKind::Click | UiEventKind::Bool(_) | UiEventKind::Drop(_)) || picked(event, menus);
+    events
         .iter()
-        .position(|event| {
-            let again = collapses(event) && acted.contains(&event.id);
+        .zip(gestures)
+        .position(|(event, gesture)| {
+            let again = (collapses(event) && acted.contains(&event.id)) || Some(gesture) != gestures.first();
             if collapses(event) {
                 acted.push(event.id);
             }
             again
         })
-        .unwrap_or(events.len());
-    events.drain(..end).collect()
+        .unwrap_or(events.len())
 }
 
 impl Retained {
@@ -116,32 +192,58 @@ impl Retained {
         !self.events.is_empty()
     }
 
+    pub fn split(&mut self) {
+        self.gesture += 1;
+    }
+
+    pub fn gesture(&self) -> u64 {
+        self.gesture
+    }
+
+    pub fn started_gesture(&self) -> u64 {
+        self.started
+    }
+
+    pub fn pending_in(&self, gesture: u64) -> bool {
+        self.gestures.contains(&gesture)
+    }
+
     pub fn subscribed(&self, topic: Topic) -> bool {
         self.topics.contains(&topic)
     }
 
     pub fn push(&mut self, events: Vec<UiEvent>, keys: &str) {
-        let (in_flight, level) = (self.in_flight, self.level);
+        for id in menu_ids(&self.widgets) {
+            if !self.menus.contains(&id) {
+                self.menus.push(id);
+            }
+        }
+        let (in_flight, level, menus) = (self.in_flight, self.level, self.menus.clone());
         for event in events.into_iter().filter(|event| event.kind.ui_level() <= level) {
             if let UiEventKind::List(ListEvent::Show { first, count }) = event.kind {
                 self.show(View { id: event.id, first, count });
                 continue;
             }
+            let gesture = self.gesture;
             let last = self
                 .events
-                .iter_mut()
-                .rev()
-                .find(|pending| pending.id == event.id || discrete(&pending.kind))
-                .filter(|pending| pending.id == event.id);
-            match last.filter(|_| in_flight).and_then(|last| merged(&last.kind, &event.kind).map(|kind| (last, kind))) {
-                Some((last, kind)) => last.kind = kind,
-                None => self.events.push(event),
+                .iter()
+                .zip(&self.gestures)
+                .rposition(|(pending, made)| pending.id == event.id || discrete(&pending.kind) || picked(pending, &menus) || *made != gesture)
+                .filter(|at| self.events[*at].id == event.id && self.gestures[*at] == gesture && !picked(&event, &menus));
+            match last.filter(|_| in_flight).and_then(|at| merged(&self.events[at].kind, &event.kind).map(|kind| (at, kind))) {
+                Some((at, kind)) => self.events[at].kind = kind,
+                None => {
+                    self.events.push(event);
+                    self.gestures.push(gesture);
+                }
             }
         }
         while self.events.len() > MAX_BACKLOG
             && let Some(oldest) = self.events.iter().position(|event| motion(&event.kind))
         {
             self.events.remove(oldest);
+            self.gestures.remove(oldest);
         }
         self.keys.push_str(keys);
     }
@@ -149,7 +251,9 @@ impl Retained {
     fn show(&mut self, view: View) {
         self.views.retain(|shown| shown.id != view.id);
         if self.views.len() == MAX_VIEWS {
-            self.views.remove(0);
+            let drawn = lists(&self.widgets);
+            let gone = self.views.iter().position(|shown| !drawn.iter().any(|(list, _)| *list == shown.id));
+            self.views.remove(gone.unwrap_or(0));
         }
         self.views.push(view);
         self.stale = true;
@@ -170,6 +274,11 @@ impl Retained {
         }
     }
 
+    pub fn reset(&mut self) {
+        let (topics, app, timers) = (std::mem::take(&mut self.topics), std::mem::take(&mut self.app), std::mem::take(&mut self.timers));
+        *self = Retained { level: self.level, calls: self.calls, gesture: self.gesture + 1, topics, app, timers, ..Retained::default() };
+    }
+
     pub fn invalidate(&mut self) {
         self.stale = true;
     }
@@ -177,6 +286,8 @@ impl Retained {
     pub fn hide(&mut self) {
         self.hidden = true;
         self.events.clear();
+        self.gestures.clear();
+        self.menus.clear();
         self.keys.clear();
         self.pressed.clear();
     }
@@ -215,7 +326,13 @@ impl Retained {
             }
             timer.repeat
         });
-        let mut events = one_call(&mut self.events);
+        let end = one_call(&self.events, &self.gestures, &self.menus);
+        self.started = self.gestures.first().copied().unwrap_or(self.gesture);
+        self.gestures.drain(..end);
+        let mut events: Vec<UiEvent> = self.events.drain(..end).collect();
+        if self.events.is_empty() {
+            self.menus.clear();
+        }
         if self.legacy {
             events.retain(|event| event.kind.known_to_every_sdk());
         }
@@ -226,6 +343,31 @@ impl Retained {
         let input = UiInput { events, size, keys, app, timers, views, instance: None, call: self.calls, pressed, closed: false };
         (self.size, self.stale, self.in_flight) = (size, false, true);
         Some(input)
+    }
+
+    fn follow_rows(&mut self, widgets: &[Widget]) {
+        let (before, after) = (lists(&self.widgets), lists(widgets));
+        let changed = |id: u64| {
+            let old = before.iter().find(|(list, _)| *list == id).map(|(_, shown)| *shown)?;
+            let new = after.iter().find(|(list, _)| *list == id).map(|(_, shown)| *shown);
+            (Some(old) != new).then_some((old, new))
+        };
+        let mut kept = 0;
+        for at in 0..self.events.len() {
+            let event = &self.events[at];
+            let followed = match changed(event.id) {
+                Some((old, Some(new))) => moved(event, old, new),
+                Some((_, None)) if matches!(event.kind, UiEventKind::List(_)) => None,
+                _ => Some(event.clone()),
+            };
+            if let Some(event) = followed {
+                self.events[kept] = event;
+                self.gestures[kept] = self.gestures[at];
+                kept += 1;
+            }
+        }
+        self.events.truncate(kept);
+        self.gestures.truncate(kept);
     }
 
     pub fn abandon(&mut self) {
@@ -246,6 +388,7 @@ impl Retained {
             }
         };
         self.error = None;
+        self.follow_rows(&reply.widgets);
         self.widgets = reply.widgets;
         self.menu = reply.menu;
         self.topics = reply.topics;
@@ -464,6 +607,111 @@ mod tests {
         panel.finish(reply(vec![], vec![]), ms(40));
         assert_eq!(events(&mut panel, 48), Some(vec![click(7), number(2.0)]));
         assert_eq!(events(&mut panel, 64), Some(vec![click(7), number(3.0)]));
+    }
+
+    #[test]
+    fn menu_picks_made_during_a_slow_call_are_kept_apart_and_reach_one_call_each_in_order() {
+        let mut panel = Retained::new();
+        panel.start(SIZE, ms(0));
+        let menu = Widget::Column { children: vec![Widget::Menu { id: 5, text: Some("Actions".into()), items: Vec::new() }] };
+        panel.finish(Ok(PanelReply { widgets: vec![menu], ..Default::default() }), ms(0));
+        slow_call(&mut panel);
+        let pick = |id, index| UiEvent { id, kind: UiEventKind::Number(index) };
+        for events in [vec![pick(5, 1.0)], vec![pick(5, 3.0)], vec![pick(PANEL_MENU, 0.0)], vec![pick(PANEL_MENU, 2.0)]] {
+            panel.push(events, "");
+        }
+        panel.finish(reply(vec![], vec![]), ms(40));
+        assert_eq!(events(&mut panel, 48), Some(vec![pick(5, 1.0)]));
+        assert_eq!(events(&mut panel, 64), Some(vec![pick(5, 3.0), pick(PANEL_MENU, 0.0)]));
+        assert_eq!(events(&mut panel, 80), Some(vec![pick(PANEL_MENU, 2.0)]));
+    }
+
+    #[test]
+    fn values_of_two_gestures_made_during_a_slow_call_stay_apart_and_each_call_says_its_gesture() {
+        let mut panel = drawn(vec![], vec![]);
+        slow_call(&mut panel);
+        let number = |value| UiEvent { id: 9, kind: UiEventKind::Number(value) };
+        let first = panel.gesture();
+        panel.push(vec![number(1.0)], "");
+        panel.push(vec![number(2.0)], "");
+        panel.split();
+        panel.push(vec![number(6.0)], "");
+        panel.push(vec![number(7.0)], "");
+        panel.finish(reply(vec![], vec![]), ms(40));
+        assert_eq!((events(&mut panel, 48), panel.started_gesture()), (Some(vec![number(2.0)]), first));
+        assert!(!panel.pending_in(first));
+        assert_eq!((events(&mut panel, 64), panel.started_gesture()), (Some(vec![number(7.0)]), first + 1));
+    }
+
+    #[test]
+    fn a_reset_panel_forgets_its_tree_and_input_but_keeps_its_app_events_and_is_called_again() {
+        let mut panel = drawn(vec![], vec![Topic::Project]);
+        slow_call(&mut panel);
+        panel.push(vec![click(7)], "x");
+        panel.press("Delete");
+        panel.push(vec![UiEvent { id: 5, kind: UiEventKind::List(ListEvent::Show { first: 10, count: 5 }) }], "");
+        panel.notify(&AppEvent::Project { path: None });
+        panel.reset();
+        assert_eq!((panel.widgets(), panel.in_flight(), panel.pending()), (&[][..], false, false));
+        let input = panel.start(SIZE, ms(48)).unwrap_or_default();
+        assert_eq!(
+            (input.events, input.keys, input.pressed, input.views, input.app),
+            (vec![], String::new(), Vec::<String>::new(), vec![], vec![AppEvent::Project { path: None }])
+        );
+    }
+
+    #[test]
+    fn a_row_action_queued_behind_a_reply_that_inserts_rows_follows_its_item_or_is_dropped_when_the_item_is_gone() {
+        let item = |text: &str| craft_plugin::Item { cells: vec![text.into()], ..Default::default() };
+        let list = |texts: &[&str]| Widget::List {
+            id: 5,
+            columns: Vec::new(),
+            count: texts.len() as u32,
+            first: 0,
+            items: texts.iter().map(|text| item(text)).collect(),
+            selected: Vec::new(),
+            multi: false,
+            rows: 8,
+            edit: Default::default(),
+        };
+        let answered = |texts: &[&str]| Ok(PanelReply { widgets: vec![list(texts)], ..Default::default() });
+        let rename = |row| UiEvent { id: 5, kind: UiEventKind::List(ListEvent::Rename { row, text: "Bee".into() }) };
+        let mut panel = Retained::new();
+        panel.start(SIZE, ms(0));
+        panel.finish(answered(&["a", "b", "c"]), ms(0));
+        slow_call(&mut panel);
+        panel.push(vec![rename(1), UiEvent { id: 5, kind: UiEventKind::List(ListEvent::Activate(2)) }], "");
+        panel.finish(answered(&["new", "a", "b", "c"]), ms(20));
+        let input = panel.start(SIZE, ms(30)).unwrap_or_default();
+        assert_eq!(input.events, vec![rename(2), UiEvent { id: 5, kind: UiEventKind::List(ListEvent::Activate(3)) }]);
+        panel.finish(answered(&["new", "a", "b", "c"]), ms(30));
+        slow_call(&mut panel);
+        panel.push(vec![rename(2)], "");
+        panel.finish(answered(&["new", "a", "c"]), ms(40));
+        assert_eq!((panel.pending(), panel.start(SIZE, ms(50))), (false, None), "the renamed item is gone, so the rename is dropped");
+    }
+
+    #[test]
+    fn a_full_set_of_list_views_makes_room_by_forgetting_a_list_that_is_no_longer_drawn() {
+        let list = |id| Widget::List {
+            id,
+            columns: Vec::new(),
+            count: 100,
+            first: 0,
+            items: Vec::new(),
+            selected: Vec::new(),
+            multi: false,
+            rows: 8,
+            edit: Default::default(),
+        };
+        let mut panel = Retained::new();
+        panel.start(SIZE, ms(0));
+        panel.finish(Ok(PanelReply { widgets: vec![list(1), list(70)], ..Default::default() }), ms(0));
+        let show = |id| UiEvent { id, kind: UiEventKind::List(ListEvent::Show { first: 10, count: 8 }) };
+        panel.push((1..=MAX_VIEWS as u64).map(show).collect(), "");
+        panel.push(vec![show(70)], "");
+        let views = panel.start(SIZE, ms(1)).map(|input| input.views.iter().map(|view| view.id).collect::<Vec<_>>()).unwrap_or_default();
+        assert_eq!((views.len(), views.contains(&1), views.contains(&2), views.contains(&70)), (MAX_VIEWS, true, false, true));
     }
 
     #[test]
