@@ -86,7 +86,10 @@ SDK (EffectCraft keeps `crates/plugin/tests/it/legacy/legacy.wasm`).
    project saved with the plugin missing that keeps its values and renders again when it returns.
 6. **Viewer overlays and tools.** Map viewer coordinates to the plugin's spaces, turn a handle drag into
    one undoable parameter change, give tools pointer and key events. Overlays are capped by the SDK. Test
-   with kittests that drag a handle and undo it.
+   with kittests that drag a handle and undo it. For pen data, have the app's platform tablet hook write each
+   reading into a `craft_plugin_ui::PenSource` before the window handles the event (winit reports none), and
+   call `PenSource::pens(&events)` once per pass, before checking that a tool is active, to fill each
+   `ToolEvent.pen`; EffectCraft's AppKit hook is `apps/effectcraft/src/mac_tablet.rs`.
 7. **Conditional rows and buttons.** Before drawing a parameter row, call `Param::visible` and
    `Param::enabled` with a lookup of the instance's current values (no plugin call); keep hidden values.
    Store a `ParamKind::Button` as a placeholder with no value the effect receives, draw it with
