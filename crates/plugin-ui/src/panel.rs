@@ -178,15 +178,19 @@ impl<H: Host> Renderer<'_, H> {
             }
             Widget::Popup { id, text, options, selected } => self.popup(ui, *id, text, options, *selected as usize),
             Widget::Color { id, text, value } => {
-                let mut color = *value;
-                let response = ui
+                let (response, edited) = ui
                     .horizontal(|ui| {
                         let label = ui.label(self.text(text, TextStyle::Body));
-                        ui.color_edit_button_rgba_unmultiplied(&mut color).labelled_by(label.id)
+                        let (response, edited) = self.host.color(ui, &format!("{}.{id}", self.scope), *value).unwrap_or_else(|| {
+                            let mut color = *value;
+                            let response = ui.color_edit_button_rgba_unmultiplied(&mut color);
+                            (response, Some(color))
+                        });
+                        (response.labelled_by(label.id), edited)
                     })
                     .inner;
                 self.register(*id, &response, text);
-                if response.changed() {
+                if let Some(color) = edited.filter(|color| color != value) {
                     self.emit(*id, UiEventKind::Color(color));
                 }
             }
@@ -378,8 +382,8 @@ impl<H: Host> Renderer<'_, H> {
         for shape in shapes {
             self.shape(&painter, rect.min, shape);
         }
-        for pointer in pointers(ui, &response, rect) {
-            self.emit(id, UiEventKind::Pointer(pointer));
+        for kind in pointers(ui, &response, rect) {
+            self.emit(id, kind);
         }
         if response.clicked() || response.drag_started() {
             response.request_focus();
@@ -460,7 +464,7 @@ fn keys(ui: &egui::Ui) -> Vec<Key> {
     })
 }
 
-fn pointers(ui: &egui::Ui, response: &egui::Response, rect: Rect) -> Vec<Pointer> {
+fn pointers(ui: &egui::Ui, response: &egui::Response, rect: Rect) -> Vec<UiEventKind> {
     let held_id = response.id.with("held");
     let mut held = ui.data(|data| data.get_temp::<bool>(held_id)).unwrap_or(false);
     let visible = rect.intersect(ui.clip_rect());
@@ -473,26 +477,35 @@ fn pointers(ui: &egui::Ui, response: &egui::Response, rect: Rect) -> Vec<Pointer
             modifiers: modifiers(i.modifiers),
             scroll: [scroll.x, scroll.y],
         };
+        let mut released = None;
         for event in &i.events {
+            let on = |pos: &egui::Pos2| over && visible.contains(*pos);
             match event {
-                egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, .. } if over && visible.contains(*pos) => {
+                egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, .. } if on(pos) => {
                     held = true;
-                    out.push(make(*pos, PointerPhase::Down, egui::Vec2::ZERO));
+                    out.push(UiEventKind::Pointer(make(*pos, PointerPhase::Down, egui::Vec2::ZERO)));
                 }
                 egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, .. } if held => {
                     held = false;
-                    out.push(make(*pos, PointerPhase::Up, egui::Vec2::ZERO));
+                    released = Some(make(*pos, PointerPhase::Up, egui::Vec2::ZERO));
+                    out.extend(released.map(UiEventKind::Pointer));
                 }
-                egui::Event::PointerMoved(pos) if held => out.push(make(*pos, PointerPhase::Drag, egui::Vec2::ZERO)),
-                egui::Event::PointerMoved(pos) if over && visible.contains(*pos) => out.push(make(*pos, PointerPhase::Hover, egui::Vec2::ZERO)),
+                egui::Event::PointerButton { pos, button: egui::PointerButton::Secondary, pressed: true, .. } if on(pos) => {
+                    out.push(UiEventKind::Context(make(*pos, PointerPhase::Down, egui::Vec2::ZERO)));
+                }
+                egui::Event::PointerMoved(pos) if held => out.push(UiEventKind::Pointer(make(*pos, PointerPhase::Drag, egui::Vec2::ZERO))),
+                egui::Event::PointerMoved(pos) if on(pos) => out.push(UiEventKind::Pointer(make(*pos, PointerPhase::Hover, egui::Vec2::ZERO))),
                 _ => {}
             }
+        }
+        if let Some(up) = released.filter(|_| i.pointer.button_double_clicked(egui::PointerButton::Primary)) {
+            out.push(UiEventKind::Open(up));
         }
         if over
             && i.smooth_scroll_delta != egui::Vec2::ZERO
             && let Some(pos) = i.pointer.latest_pos()
         {
-            out.push(make(pos, PointerPhase::Hover, i.smooth_scroll_delta));
+            out.push(UiEventKind::Pointer(make(pos, PointerPhase::Hover, i.smooth_scroll_delta)));
         }
     });
     ui.data_mut(|data| data.insert_temp(held_id, held));

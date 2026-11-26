@@ -79,6 +79,10 @@ pub trait Host {
         None
     }
 
+    fn color(&mut self, _ui: &mut egui::Ui, _key: &str, _value: [f32; 4]) -> Option<(egui::Response, Option<[f32; 4]>)> {
+        None
+    }
+
     fn frame(&mut self, _ui: &mut egui::Ui, _request: &craft_plugin::FrameRequest, _size: egui::Vec2) -> Option<egui::Response> {
         None
     }

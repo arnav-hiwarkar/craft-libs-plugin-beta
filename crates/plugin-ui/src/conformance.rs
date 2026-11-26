@@ -1,4 +1,4 @@
-use craft_plugin::{Axis, Drag, Dropped, Gap, Item, ListEvent, MenuItem, Span, TextStyle, UiEvent, UiEventKind, Widget};
+use craft_plugin::{Axis, Drag, Dropped, Gap, Item, ListEvent, MenuItem, Pointer, PointerPhase, Span, TextStyle, UiEvent, UiEventKind, Widget};
 use egui::{Color32, FontFamily};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
@@ -97,9 +97,10 @@ pub fn run(case: &Case, mut paint: Painter) -> Vec<UiEvent> {
         match step {
             Step::Click(name) => harness.get_by_label(name).click(),
             Step::DoubleClick(name) => {
-                let node = harness.get_by_label(name);
-                node.click();
-                node.click();
+                let at = harness.get_by_label(name).rect().center();
+                let button =
+                    |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+                harness.input_mut().events.extend([egui::Event::PointerMoved(at), button(true), button(false), button(true), button(false)]);
             }
             Step::RightClick(name) => harness.get_by_label(name).click_secondary(),
             Step::Type(name, text) => {
@@ -204,6 +205,14 @@ fn menu(id: u64, text: Option<&str>) -> Widget {
         item("Close"),
     ];
     Widget::Menu { id, text: text.map(str::to_string), items }
+}
+
+fn pad() -> Vec<Widget> {
+    vec![Widget::Canvas { id: 9, size: [20.0, 40.0], shapes: vec![] }]
+}
+
+fn at(phase: PointerPhase) -> Pointer {
+    Pointer::new([10.0, 20.0], phase)
 }
 
 fn radio() -> Widget {
@@ -409,6 +418,29 @@ pub fn cases() -> Vec<Case> {
             }],
             steps: vec![Step::Click("Soft")],
             expect: Expect::Events(vec![event(6, UiEventKind::Bool(true))]),
+        },
+        Case {
+            name: "a right-click on a canvas sends Context at the pointer",
+            size: [200.0, 80.0],
+            tree: pad(),
+            steps: vec![Step::RightClick("Plug-in drawing")],
+            expect: Expect::Events(vec![
+                event(9, UiEventKind::Pointer(at(PointerPhase::Hover))),
+                event(9, UiEventKind::Context(at(PointerPhase::Down))),
+            ]),
+        },
+        Case {
+            name: "a double click on a canvas sends its downs and ups, then Open",
+            size: [200.0, 80.0],
+            tree: pad(),
+            steps: vec![Step::DoubleClick("Plug-in drawing")],
+            expect: Expect::Events(
+                [PointerPhase::Hover, PointerPhase::Down, PointerPhase::Up, PointerPhase::Down, PointerPhase::Up]
+                    .map(|phase| event(9, UiEventKind::Pointer(at(phase))))
+                    .into_iter()
+                    .chain([event(9, UiEventKind::Open(at(PointerPhase::Up)))])
+                    .collect(),
+            ),
         },
     ]
 }
