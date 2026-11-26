@@ -10,6 +10,15 @@ mod painter;
 
 use host::App;
 
+struct Bare;
+
+impl craft_plugin_ui_framework::Host for Bare {
+    fn frame(&mut self, ui: &mut egui::Ui, _: &craft_plugin::FrameRequest, _: Vec2) -> Option<egui::Response> {
+        use craft_ui::contract::Show as _;
+        Some(craft_ui::buttons::Button::new("Frame").show(ui).response)
+    }
+}
+
 fn framework() -> Painter {
     let mut installed = false;
     Box::new(move |ui, tree| {
@@ -19,7 +28,7 @@ fn framework() -> Painter {
             assert!(craft_ui::install(ui.ctx(), craft_ui::testing::install_spec()).is_ok(), "the runtime installs once per context");
             craft_ui::testing::windows::set_os(ui.ctx(), craft_host::target::Os::Linux);
         }
-        craft_plugin_ui_framework::draw(ui, tree, "conformance", &mut ())
+        craft_plugin_ui_framework::draw(ui, tree, "conformance", &mut Bare)
     })
 }
 
@@ -29,7 +38,10 @@ fn every_conformance_case_passes_on_the_framework_painter() {
         .iter()
         .filter_map(|case| match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| conformance::run(case, framework()))) {
             Ok(events) => case.check(&events).err(),
-            Err(_) => Some(format!("{}: a step found no node by its accessible name", case.name)),
+            Err(panic) => {
+                let message = panic.downcast_ref::<String>().map_or("a step panicked", |message| message.lines().next().unwrap_or_default());
+                Some(format!("{}: {message}", case.name))
+            }
         })
         .collect();
     assert!(failures.is_empty(), "{} of {} cases fail: {failures:#?}", failures.len(), conformance::cases().len());
@@ -53,10 +65,31 @@ impl Dock {
 
     fn settle(&mut self) {
         for _ in 0..4 {
+            self.commands();
             self.fixture.settle();
+            self.fired();
             self.app.borrow_mut().pump();
         }
+        self.commands();
         self.fixture.settle();
+        self.fired();
+    }
+
+    fn commands(&mut self) {
+        let (catalog, states) = {
+            let app = self.app.borrow();
+            (app.catalog(), app.command_states())
+        };
+        self.fixture.catalog(catalog);
+        for (command, state) in states {
+            self.fixture.command_state(command, state);
+        }
+    }
+
+    fn fired(&mut self) {
+        for fired in craft_ui::runtime::frame::take_output(self.fixture.ctx()).fired {
+            self.app.borrow_mut().run(&fired.command.id);
+        }
     }
 
     fn find(&self, label: &str) -> Option<Target> {
@@ -73,16 +106,15 @@ impl Dock {
         self.settle();
     }
 
+    fn bring(&mut self, panel: &str) {
+        self.app.borrow_mut().bring(panel);
+        self.settle();
+    }
+
     fn fire_chord(&mut self, key: Key, modifiers: Modifiers) {
-        let catalog = self.app.borrow().catalog();
-        self.fixture.catalog(catalog);
-        self.fixture.settle();
-        craft_ui::runtime::frame::take_output(self.fixture.ctx());
+        self.settle();
         self.fixture.key(key, modifiers);
-        let fired = craft_ui::runtime::frame::take_output(self.fixture.ctx()).fired;
-        for fired in fired {
-            self.app.borrow_mut().run(&fired.command.id);
-        }
+        self.fired();
         self.settle();
     }
 }
@@ -162,4 +194,53 @@ fn unloading_the_plugin_hides_its_panel_and_reloading_brings_it_back_where_it_wa
     dock.settle();
     assert_eq!(places(&dock), before, "every reloaded panel is back at its place, in its group's order, the counter in front");
     assert!(dock.find("Count").is_some(), "the reloaded counter draws again");
+}
+
+#[test]
+fn the_panel_menu_shows_the_plugin_rows_and_help_and_a_picked_row_reaches_the_plugin() {
+    let mut dock = Dock::new();
+    dock.bring("app");
+    dock.click("Panel Menu");
+    for row in ["Zoom to Fit", "Reset View", "Help"] {
+        assert!(dock.find(row).is_some(), "the App panel's menu shows `{row}`");
+    }
+    dock.click("Zoom to Fit");
+    assert!(dock.find("zoomed to fit").is_some(), "the picked row reached the plugin as its panel menu event");
+    dock.click("Panel Menu");
+    dock.click("Help");
+    assert_eq!(dock.app.borrow().opened, vec!["https://example.org/probe-app".to_string()], "Help opens the panel's help link");
+}
+
+#[test]
+fn a_panel_key_reaches_the_plugin_while_a_control_of_its_panel_holds_the_key_focus() {
+    let mut dock = Dock::new();
+    dock.bring("app");
+    let check = dock.get("Disable Probe Action");
+    dock.fixture.access(craft_ui::testing::focus::AccessActionKind::Focus, &check);
+    dock.settle();
+    dock.fixture.key(Key::Delete, Modifiers::NONE);
+    dock.settle();
+    assert!(dock.find("pressed Delete").is_some(), "Delete is one of the App panel's keys and reached the plugin");
+}
+
+#[test]
+fn a_command_the_plugin_disables_shows_disabled_on_the_toolbar_and_does_not_run() {
+    let mut dock = Dock::new();
+    dock.click("Probe Action");
+    assert_eq!(dock.app.borrow().posted(), ["Probe Action ran".to_string()], "the enabled toolbar button runs the command");
+    dock.bring("app");
+    dock.click("Disable Probe Action");
+    assert_eq!(dock.app.borrow().calls.states.get("app-act"), Some(&(false, Some(false))), "the plugin set the command's state");
+    dock.click("Probe Action");
+    assert_eq!(dock.app.borrow().posted(), ["Probe Action ran".to_string()], "the disabled button runs nothing");
+}
+
+#[test]
+fn a_frame_widget_shows_what_the_app_renders_for_the_plugin_request_and_takes_clicks() {
+    let mut dock = Dock::new();
+    dock.bring("preview");
+    let asked = dock.app.borrow().frames.last().cloned().expect("the app was asked for the preview's frame");
+    assert_eq!((asked.time, asked.scale, asked.comp), (0.0, 0.25, None));
+    dock.click("Frame");
+    assert!(dock.find("1 clicks").is_some(), "a click on the app's frame reached the plugin");
 }

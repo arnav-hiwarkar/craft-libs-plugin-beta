@@ -5,10 +5,42 @@ use craft_plugin::{TextStyle, UiEvent, Widget};
 use craft_ui::testing::Fixture;
 use egui::Vec2;
 
+#[derive(Default)]
+pub struct Plugged {
+    pub accepted: Vec<String>,
+    pub keys: Vec<String>,
+    pub pressed: Rc<RefCell<Vec<String>>>,
+}
+
+impl craft_plugin_ui_framework::Host for Plugged {
+    fn drag(&self, drag: &craft_plugin::Drag) -> Option<craft_plugin::Dropped> {
+        match drag {
+            craft_plugin::Drag::Data { data } => Some(craft_plugin::Dropped::Data { plugin: "test.painter".into(), data: data.clone() }),
+            craft_plugin::Drag::File { .. } => None,
+        }
+    }
+
+    fn accept_files(&mut self, paths: &[String]) {
+        self.accepted.extend_from_slice(paths);
+    }
+
+    fn keys(&self) -> &[String] {
+        &self.keys
+    }
+
+    fn pressed(&mut self, chord: &str) {
+        self.pressed.borrow_mut().push(chord.to_string());
+    }
+}
+
 pub fn shown(tree: Vec<Widget>) -> (Fixture, Rc<RefCell<Vec<UiEvent>>>) {
+    shown_with(tree, Plugged::default())
+}
+
+pub fn shown_with(tree: Vec<Widget>, mut host: Plugged) -> (Fixture, Rc<RefCell<Vec<UiEvent>>>) {
     let events = Rc::new(RefCell::new(Vec::new()));
     let seen = Rc::clone(&events);
-    let mut fixture = Fixture::new(move |ui| seen.borrow_mut().extend(craft_plugin_ui_framework::draw(ui, &tree, "painter", &mut ())));
+    let mut fixture = Fixture::new(move |ui| seen.borrow_mut().extend(craft_plugin_ui_framework::draw(ui, &tree, "painter", &mut host)));
     fixture.room(Vec2::new(480.0, 360.0));
     fixture.settle();
     events.borrow_mut().clear();
@@ -102,4 +134,84 @@ fn picking_a_submenu_row_sends_its_depth_first_index() {
     fixture.click(&inner);
     fixture.settle();
     assert_eq!(*events.borrow(), vec![UiEvent { id: 8, kind: craft_plugin::UiEventKind::Number(4.0) }]);
+}
+
+#[test]
+fn dragging_a_plugin_drag_source_onto_its_drop_target_drops_the_data_the_host_made_of_it() {
+    let swatch = Widget::DragSource { id: 30, drag: craft_plugin::Drag::Data { data: "red".into() }, children: vec![label("Red swatch")] };
+    let well = Widget::DropTarget { id: 31, children: vec![label("Colour well")] };
+    let (mut fixture, events) = shown(vec![swatch, label("between"), well]);
+    let from = fixture.by_label("Red swatch").expect("the source's child").rect.center();
+    let to = fixture.by_label("Colour well").expect("the target's child").rect.center();
+    fixture.drag_hold_at(from, to - from);
+    fixture.release_at(to);
+    fixture.settle();
+    let dropped = craft_plugin::Dropped::Data { plugin: "test.painter".into(), data: "red".into() };
+    assert_eq!(*events.borrow(), vec![UiEvent { id: 31, kind: craft_plugin::UiEventKind::Drop(dropped) }]);
+}
+
+#[test]
+fn a_drag_source_the_host_cannot_carry_draws_its_children_and_drags_nothing() {
+    let file = Widget::DragSource {
+        id: 32,
+        drag: craft_plugin::Drag::File { root: craft_plugin::Root::Data, path: "a.txt".into() },
+        children: vec![label("a.txt")],
+    };
+    let well = Widget::DropTarget { id: 33, children: vec![label("Inbox")] };
+    let (mut fixture, events) = shown(vec![file, label("between"), well]);
+    let from = fixture.by_label("a.txt").expect("the child shows").rect.center();
+    let to = fixture.by_label("Inbox").expect("the target's child").rect.center();
+    fixture.drag_hold_at(from, to - from);
+    fixture.release_at(to);
+    fixture.settle();
+    assert_eq!(*events.borrow(), vec![]);
+}
+
+#[test]
+fn a_gap_and_an_old_space_take_the_gap_tokens_between_their_neighbours() {
+    let (fixture, _) =
+        shown(vec![label("one"), Widget::Gap { gap: craft_plugin::Gap::Large }, label("two"), Widget::Space { size: 0.0 }, label("three")]);
+    let at = |name: &str| fixture.by_label(name).unwrap_or_else(|| panic!("`{name}` is drawn")).rect;
+    let gaps = craft_ui::testing::style::tokens(craft_theme::Mode::Light, craft_theme::Contrast::Standard).space.gap;
+    let (one, two, three) = (at("one"), at("two"), at("three"));
+    let flow = three.top() - two.bottom();
+    assert!((two.top() - one.bottom() - flow - gaps.section).abs() < 0.5, "a large gap adds the section gap: {one:?} {two:?} {three:?}");
+}
+
+fn renamable() -> Widget {
+    let items = ["file 0", "file 1"].map(craft_plugin::Item::new).to_vec();
+    let edit = craft_plugin::ListEdit { rename: true, ..Default::default() };
+    Widget::List { id: 4, columns: vec![], count: 2, first: 0, items, selected: vec![], multi: false, rows: 6, edit }
+}
+
+fn renamed(finish: egui::Key) -> Vec<UiEvent> {
+    let (mut fixture, events) = shown(vec![renamable()]);
+    fixture.key(egui::Key::Tab, egui::Modifiers::NONE).key(egui::Key::F2, egui::Modifiers::NONE).settle();
+    assert!(!fixture.by_role(craft_ui::contract::Role::TEXT_INPUT).is_empty(), "F2 opens a name field over the focused row");
+    fixture.type_text("New").settle();
+    fixture.key(finish, egui::Modifiers::NONE).settle();
+    events.take()
+}
+
+#[test]
+fn f2_renames_the_focused_row_in_place_and_escape_cancels_the_rename() {
+    let rename = craft_plugin::ListEvent::Rename { row: 0, text: "New".into() };
+    assert_eq!(renamed(egui::Key::Enter), vec![UiEvent { id: 4, kind: craft_plugin::UiEventKind::List(rename) }]);
+    assert_eq!(renamed(egui::Key::Escape), vec![]);
+}
+
+#[test]
+fn a_panel_key_pressed_while_a_panel_control_holds_the_key_focus_reaches_the_host_and_a_text_field_keeps_its_keys() {
+    let pressed = Rc::new(RefCell::new(Vec::new()));
+    let host = Plugged { keys: vec!["Delete".into(), "Cmd+D".into()], pressed: Rc::clone(&pressed), ..Default::default() };
+    let tree =
+        vec![Widget::Button { id: 1, text: "Apply".into(), enabled: true }, Widget::TextEdit { id: 2, value: "abc".into(), hint: "Name".into() }];
+    let (mut fixture, _) = shown_with(tree, host);
+    fixture.key(egui::Key::Tab, egui::Modifiers::NONE).settle();
+    fixture.key(egui::Key::Delete, egui::Modifiers::NONE).settle();
+    assert_eq!(pressed.take(), vec!["Delete".to_string()], "Delete while the button holds the key focus is the panel's key");
+    let name = fixture.by_label("Name").expect("the text field");
+    fixture.click(&name).settle();
+    fixture.key(egui::Key::Delete, egui::Modifiers::NONE).settle();
+    assert_eq!(pressed.take(), Vec::<String>::new(), "a text field keeps Delete for its text");
 }

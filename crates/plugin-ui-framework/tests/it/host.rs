@@ -7,13 +7,14 @@ use craft_behavior::dock::{Column, DockEdge, Group, Layout, Node, PanelState, Pe
 use craft_plugin::{Call, Contributions, PanelPlace, PanelReply, UiEvent};
 use craft_plugin_host::testing::probe_dir;
 use craft_plugin_host::{Access, Bundle, Limits, Plugin, Retained};
-use craft_plugin_ui_framework::dock::{command_def, panel_key, panel_spec};
+use craft_plugin_ui_framework::dock::{PanelPick, command_def, command_key, command_state, panel_key, panel_menu, panel_pick, panel_spec};
 use craft_theme::Tokens;
 use craft_ui::contract::{Bind, BodyCx};
 use craft_ui::docking::{DockConfig, DockPanels, PanelSpec};
+use craft_ui::menu::PanelRow;
 use craft_ui::notices::{NoticeCenter, PostedNotice};
 use craft_ui::patterns::dock::DockArea;
-use craft_ui::runtime::commands::AppCatalog;
+use craft_ui::runtime::commands::{AppCatalog, CommandRef, CommandState};
 use craft_ui::runtime::env::{Env, WindowKey};
 use craft_ui::shell::AppShell;
 use egui::{Pos2, Rect, Ui, Vec2};
@@ -60,6 +61,7 @@ pub struct Calls {
     pub commands: Vec<String>,
     pub shown: Vec<(String, bool)>,
     pub notices: Vec<String>,
+    pub states: BTreeMap<String, (bool, Option<bool>)>,
 }
 
 impl craft_plugin_host::Host for Calls {
@@ -74,6 +76,11 @@ impl craft_plugin_host::Host for Calls {
 
     fn notify(&mut self, message: &str) {
         self.notices.push(message.to_string());
+    }
+
+    fn command_state(&mut self, command: &str, enabled: bool, checked: Option<bool>) -> Result<(), String> {
+        self.states.insert(command.to_string(), (enabled, checked));
+        Ok(())
     }
 
     fn panel(&mut self, panel: &str, _instance: Option<&str>, open: bool) -> Result<(), String> {
@@ -94,6 +101,30 @@ pub struct App {
     parked: (Vec<String>, Vec<String>),
     generation: u64,
     now: u64,
+    pub frames: Vec<craft_plugin::FrameRequest>,
+    pub opened: Vec<String>,
+}
+
+struct PanelHost<'a> {
+    keys: &'a [String],
+    pressed: Vec<String>,
+    frames: &'a mut Vec<craft_plugin::FrameRequest>,
+}
+
+impl craft_plugin_ui_framework::Host for PanelHost<'_> {
+    fn keys(&self) -> &[String] {
+        self.keys
+    }
+
+    fn pressed(&mut self, chord: &str) {
+        self.pressed.push(chord.to_string());
+    }
+
+    fn frame(&mut self, ui: &mut Ui, request: &craft_plugin::FrameRequest, _: Vec2) -> Option<egui::Response> {
+        use craft_ui::contract::Show as _;
+        self.frames.push(request.clone());
+        Some(craft_ui::buttons::Button::new("Frame").show(ui).response)
+    }
 }
 
 fn default_workspace(panels: &[String]) -> Workspace<String> {
@@ -120,6 +151,8 @@ impl App {
             parked: (Vec::new(), Vec::new()),
             generation: 0,
             now: 0,
+            frames: Vec::new(),
+            opened: Vec::new(),
         };
         app.load();
         app
@@ -163,9 +196,31 @@ impl App {
         self.reconcile();
     }
 
+    fn menus(&self) -> Vec<(craft_plugin::PanelSpec, craft_plugin_ui_framework::dock::PanelMenu)> {
+        let menu_of = |spec: &craft_plugin::PanelSpec| self.retained.get(&panel_key(PROBE, &spec.id)).map_or(&[][..], |retained| retained.menu());
+        self.contributions.panels.iter().map(|spec| (spec.clone(), panel_menu(PROBE, spec, menu_of(spec)))).collect()
+    }
+
     pub fn catalog(&self) -> AppCatalog {
-        let defs = self.contributions.commands.iter().map(|spec| command_def(PROBE, spec)).collect();
-        AppCatalog::new(defs, self.generation).expect("the plugin's commands make one catalog")
+        let mut defs: Vec<_> = self.contributions.commands.iter().map(|spec| command_def(PROBE, spec)).collect();
+        defs.extend(self.menus().into_iter().flat_map(|(_, menu)| menu.commands.into_iter().map(|(def, _)| def)));
+        let generation = {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            (self.generation, defs.iter().map(|def| (&def.command.id, &def.label)).collect::<Vec<_>>()).hash(&mut hasher);
+            hasher.finish()
+        };
+        AppCatalog::new(defs, generation).expect("the plugin's commands make one catalog")
+    }
+
+    pub fn command_states(&self) -> Vec<(CommandRef, CommandState)> {
+        let plugin = self
+            .calls
+            .states
+            .iter()
+            .map(|(command, (enabled, checked))| (CommandRef::new(command_key(PROBE, command)), command_state(*enabled, *checked)));
+        let menus = self.menus().into_iter().flat_map(|(_, menu)| menu.commands.into_iter().map(|(def, state)| (def.command, state)));
+        plugin.chain(menus).collect()
     }
 
     pub fn shows(&self, panel: &str) -> bool {
@@ -182,7 +237,13 @@ impl App {
     }
 
     fn dock(&mut self, ui: &mut Ui) {
+        use craft_ui::contract::{Show as _, ShowContainer as _};
         self.tokens = Some(Tokens::clone(&Env::of(ui).tokens));
+        craft_ui::layout_components::Row::new().show(ui, |ui, _| {
+            for spec in self.contributions.commands.iter().filter(|spec| spec.toolbar) {
+                craft_ui::buttons::Button::command(CommandRef::new(command_key(PROBE, &spec.id))).show(ui);
+            }
+        });
         let mut workspace = std::mem::take(&mut self.workspace);
         DockArea::new("Workspace", Bind::bound(&mut workspace), self, DockConfig::default()).show(ui);
         self.workspace = workspace;
@@ -198,6 +259,20 @@ impl App {
     }
 
     pub fn run(&mut self, command: &str) {
+        let picked = self.contributions.panels.iter().find_map(|spec| panel_pick(PROBE, spec, command).map(|pick| (spec.id.clone(), pick)));
+        match picked {
+            Some((panel, PanelPick::Item(event))) => {
+                if let Some(retained) = self.retained.get_mut(&panel_key(PROBE, &panel)) {
+                    retained.push(vec![event], "");
+                }
+                return;
+            }
+            Some((_, PanelPick::Help(url))) => {
+                self.opened.push(url);
+                return;
+            }
+            None => {}
+        }
         let Some(id) = command.strip_prefix(&format!("plugin.{PROBE}.")) else { return };
         if let Some(loaded) = &self.loaded {
             loaded.plugin.call::<()>(&Call::Command { command: id.into() }, None, &mut self.calls).unwrap();
@@ -227,6 +302,10 @@ impl App {
         }
     }
 
+    pub fn bring(&mut self, panel: &str) {
+        self.workspace.apply(craft_behavior::dock::Action::activate(panel_key(PROBE, panel)), false, permissions).unwrap();
+    }
+
     pub fn widgets(&self, panel: &str) -> &[craft_plugin::Widget] {
         self.retained.get(&panel_key(PROBE, panel)).map_or(&[], |retained| retained.widgets())
     }
@@ -245,6 +324,10 @@ impl DockPanels<String> for App {
         permissions(panel)
     }
 
+    fn panel_rows(&mut self, panel: &String) -> Vec<PanelRow> {
+        self.menus().into_iter().find(|(spec, _)| panel_key(PROBE, &spec.id) == *panel).map_or_else(Vec::new, |(_, menu)| menu.rows)
+    }
+
     fn body(&mut self, panel: &String, ui: &mut Ui, _: &mut BodyCx<'_>) {
         if !self.registered(panel) || panel == CANVAS {
             return;
@@ -253,11 +336,18 @@ impl DockPanels<String> for App {
         self.sizes.insert(panel.clone(), [room.x, room.y]);
         let Some(retained) = self.retained.get(panel) else { return };
         let widgets = retained.widgets().to_vec();
-        let events: Vec<UiEvent> = craft_plugin_ui_framework::draw(ui, &widgets, panel, &mut ());
-        if let Some(retained) = self.retained.get_mut(panel)
-            && !events.is_empty()
-        {
-            retained.push(events, "");
+        let keys =
+            self.contributions.panels.iter().find(|spec| panel_key(PROBE, &spec.id) == *panel).map(|spec| spec.keys.clone()).unwrap_or_default();
+        let mut host = PanelHost { keys: &keys, pressed: Vec::new(), frames: &mut self.frames };
+        let events: Vec<UiEvent> = craft_plugin_ui_framework::draw(ui, &widgets, panel, &mut host);
+        let pressed = host.pressed;
+        if let Some(retained) = self.retained.get_mut(panel) {
+            for chord in &pressed {
+                retained.press(chord);
+            }
+            if !events.is_empty() {
+                retained.push(events, "");
+            }
         }
     }
 }

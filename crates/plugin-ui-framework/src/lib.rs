@@ -1,18 +1,19 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 mod canvas;
+mod containers;
 pub mod dock;
 mod icons;
 mod list;
 mod menu;
 mod values;
 
-use craft_plugin::{TextStyle, UiEvent, UiEventKind, Widget};
+use craft_plugin::{Dropped, FrameRequest, TextStyle, UiEvent, UiEventKind, Widget};
 use craft_theme::TypeRole;
 use craft_theme::variant::Tone;
 use craft_ui::buttons::{Button, IconButton};
 use craft_ui::choice::{Checkbox, Radio, RadioGroup, Switch};
-use craft_ui::contract::{Bind, Entry, Props, Show as _, ShowContainer as _};
+use craft_ui::contract::{Bind, Entry, Outcome as _, Props, Show as _, ShowContainer as _};
 use craft_ui::display::{Divider, Progress, Shade, Text};
 use craft_ui::form::SliderField;
 use craft_ui::layout_components::{Grid, Row, Stack};
@@ -24,9 +25,33 @@ use craft_ui::text::{NumberField, TextField};
 pub use values::changed;
 
 pub trait Host {
-    fn picture(&mut self, _key: &str) -> Option<egui::ColorImage> {
+    fn picture(&self, _key: &str) -> Option<egui::ColorImage> {
         None
     }
+
+    fn version(&self, _key: &str) -> u64 {
+        0
+    }
+
+    fn frame(&mut self, _ui: &mut egui::Ui, _request: &FrameRequest, _size: egui::Vec2) -> Option<egui::Response> {
+        None
+    }
+
+    fn triangulate(&self) -> craft_plugin_ui::Triangulate {
+        canvas::ear_clipped
+    }
+
+    fn drag(&self, _drag: &craft_plugin::Drag) -> Option<Dropped> {
+        None
+    }
+
+    fn accept_files(&mut self, _paths: &[String]) {}
+
+    fn keys(&self) -> &[String] {
+        &[]
+    }
+
+    fn pressed(&mut self, _chord: &str) {}
 }
 
 impl Host for () {}
@@ -42,6 +67,12 @@ pub(crate) struct Painter<'a> {
     host: &'a mut dyn Host,
     events: Vec<UiEvent>,
     pub(crate) last: Option<egui::Response>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Keys {
+    Panel,
+    Field,
 }
 
 #[derive(Default)]
@@ -110,6 +141,28 @@ impl Painter<'_> {
         }
     }
 
+    pub(crate) fn seen(&mut self, ui: &egui::Ui, response: &egui::Response, keys: Keys) {
+        self.last = Some(response.clone());
+        if keys == Keys::Field {
+            return;
+        }
+        let ctx = ui.ctx();
+        let pressed: Vec<String> = self
+            .host
+            .keys()
+            .iter()
+            .filter(|key| {
+                let Ok(chord) = craft_keymap::Chord::parse(key) else { return false };
+                craft_ui::runtime::keys::claim(ctx, response.id, chord);
+                craft_ui::runtime::keys::take_claimed(ctx, response.id, chord)
+            })
+            .cloned()
+            .collect();
+        for key in pressed {
+            self.host.pressed(&key);
+        }
+    }
+
     pub(crate) fn emit(&mut self, id: u64, kind: UiEventKind) {
         self.events.push(UiEvent { id, kind });
     }
@@ -121,7 +174,8 @@ impl Painter<'_> {
     fn widget(&mut self, ui: &mut egui::Ui, widget: &Widget, extras: &Extras) {
         match widget {
             Widget::Label { text: shown, style } => {
-                self.last = Some(text(shown, *style).label(extras.label(shown)).tip(extras).show(ui));
+                let out = text(shown, *style).label(extras.label(shown)).tip(extras).show(ui);
+                self.seen(ui, &out, Keys::Panel);
             }
             Widget::Text { spans } => {
                 Row::new().wrap(true).show(ui, |ui, _| {
@@ -132,7 +186,7 @@ impl Painter<'_> {
             }
             Widget::Button { id, text, enabled } => {
                 let out = Button::new(extras.label(text)).id_salt(self.salt(*id)).enabled(*enabled).tip(extras).show(ui);
-                self.last = Some(out.response.clone());
+                self.seen(ui, out.response(), Keys::Panel);
                 if out.clicked() {
                     self.emit(*id, UiEventKind::Click);
                 }
@@ -144,18 +198,21 @@ impl Painter<'_> {
                     .enabled(*enabled)
                     .tooltip(extras.tooltip.clone().unwrap_or_else(|| text.clone()))
                     .show(ui);
+                self.seen(ui, out.response(), Keys::Panel);
                 if out.clicked() {
                     self.emit(*id, UiEventKind::Click);
                 }
             }
             Widget::Checkbox { id, text, value } => {
                 let out = Checkbox::new(Bind::given(*value)).label(extras.label(text)).id_salt(self.salt(*id)).tip(extras).show(ui);
+                self.seen(ui, out.response(), Keys::Panel);
                 if let Some(on) = changed(&out, value) {
                     self.emit(*id, UiEventKind::Bool(on));
                 }
             }
             Widget::Toggle { id, text, value } => {
                 let out = Switch::new(Bind::given(*value)).label(extras.label(text)).id_salt(self.salt(*id)).tip(extras).show(ui);
+                self.seen(ui, out.response(), Keys::Panel);
                 if let Some(on) = changed(&out, value) {
                     self.emit(*id, UiEventKind::Bool(on));
                 }
@@ -166,13 +223,22 @@ impl Painter<'_> {
                     .id_salt(self.salt(*id))
                     .tip(extras)
                     .show(ui);
+                self.seen(ui, out.response(), Keys::Field);
                 if let Some(number) = changed(&out.edit, value) {
                     self.emit(*id, UiEventKind::Number(number));
                 }
             }
-            Widget::Number { id, text, value, range, .. } => {
+            Widget::Number { id, text, value, speed, range, decimals } => {
                 let given = Some(values::finite(*value, 0.0));
                 let field = NumberField::new(extras.label(text), Bind::given(given)).id_salt(self.salt(*id)).tip(extras);
+                let field = match values::step(*speed) {
+                    Some(step) => field.step(step),
+                    None => field,
+                };
+                let field = match decimals {
+                    Some(decimals) => field.fixed_decimals(usize::from(*decimals)).commit_decimals(usize::from(*decimals)),
+                    None => field,
+                };
                 let field = match range {
                     Some([low, high]) => {
                         let (low, high) = values::range(*low, *high);
@@ -181,6 +247,7 @@ impl Painter<'_> {
                     None => field,
                 };
                 let out = field.show(ui);
+                self.seen(ui, out.response(), Keys::Field);
                 if let Some(Some(number)) = changed(&out.edit, &given) {
                     self.emit(*id, UiEventKind::Number(number));
                 }
@@ -190,6 +257,7 @@ impl Painter<'_> {
             Widget::Popup { id, text, options, selected } => {
                 let entries: Vec<Entry<u32>> = options.iter().zip(0_u32..).map(|(option, at)| Entry::new(at, option.clone())).collect();
                 let out = Select::new(extras.label(text), Bind::given(*selected), &entries).id_salt(self.salt(*id)).tip(extras).show(ui);
+                self.seen(ui, out.response(), Keys::Panel);
                 if let Some(at) = changed(&out, selected) {
                     self.emit(*id, UiEventKind::Number(f64::from(at)));
                 }
@@ -200,6 +268,7 @@ impl Painter<'_> {
                         Radio::new(at).label(option.clone()).show(ui);
                     }
                 });
+                self.seen(ui, out.output.response(), Keys::Panel);
                 if let Some(at) = changed(&out.output, selected) {
                     self.emit(*id, UiEventKind::Number(f64::from(at)));
                 }
@@ -225,8 +294,8 @@ impl Painter<'_> {
             }
             Widget::Scroll { id, height, rows, children } => self.scroll(ui, *id, *height, *rows, children),
             Widget::Tabs { id, options, selected } => self.tabs(ui, *id, options, *selected),
-            Widget::List { id, columns, count, first, items, selected, multi, rows } => {
-                let shown = list::Rows { columns, count: *count, first: *first, items, selected, multi: *multi };
+            Widget::List { id, columns, count, first, items, selected, multi, rows, edit } => {
+                let shown = list::Rows { columns, count: *count, first: *first, items, selected, multi: *multi, edit };
                 match rows {
                     0 => self.list(ui, *id, &shown),
                     rows => {
@@ -241,28 +310,20 @@ impl Painter<'_> {
                 let widths = vec![craft_behavior::ColumnWidth::fill(1.0); (*columns).clamp(1, values::MAX_COLUMNS) as usize];
                 Grid::new(widths).id_salt(self.salt(*id)).show(ui, |ui, _| self.all(ui, children));
             }
-            Widget::Split { first, second, axis, .. } => match axis {
-                craft_plugin::Axis::Horizontal => {
-                    Row::new().show(ui, |ui, _| {
-                        Stack::new().show(ui, |ui, _| self.all(ui, first));
-                        Stack::new().show(ui, |ui, _| self.all(ui, second));
-                    });
-                }
-                craft_plugin::Axis::Vertical => {
-                    Stack::new().show(ui, |ui, _| {
-                        self.all(ui, first);
-                        Divider::horizontal().show(ui);
-                        self.all(ui, second);
-                    });
-                }
-            },
-            Widget::DropTarget { children, .. } | Widget::DragSource { children, .. } => {
-                Stack::new().show(ui, |ui, _| self.all(ui, children));
-            }
+            Widget::Split { id, axis, first, second } => self.split(ui, *id, *axis, first, second),
+            Widget::DropTarget { id, children } => self.drop_target(ui, *id, children),
+            Widget::DragSource { id, drag, children } => self.drag_source(ui, *id, drag, children),
             Widget::Canvas { id, size, shapes } => self.canvas(ui, *id, *size, shapes, extras.label("Plug-in drawing")),
             Widget::Menu { id, text, items } => self.menu(ui, *id, text.as_deref(), items),
             Widget::Focus { call } => self.focus(ui, *call),
-            Widget::Space { .. } | Widget::Gap { .. } | Widget::Tooltip { .. } | Widget::Name { .. } => {}
+            Widget::Frame { id, request, size } => self.frame(ui, *id, request, *size),
+            Widget::Gap { gap } => {
+                ui.add_space(values::gap(ui, *gap));
+            }
+            Widget::Space { size } => {
+                ui.add_space(values::nearest_gap(ui, *size));
+            }
+            Widget::Tooltip { .. } | Widget::Name { .. } => {}
         }
     }
 
@@ -279,6 +340,7 @@ impl Painter<'_> {
         let field = TextField::new(extras.label(hint), Bind::given(value.clone())).placeholder(hint.to_string()).id_salt(self.salt(id)).tip(extras);
         let field = if lines > 1 { field.lines(lines) } else { field };
         let out = field.show(ui);
+        self.seen(ui, out.response(), Keys::Field);
         if let Some(text) = changed(&out, value) {
             self.emit(id, UiEventKind::Text(text));
         }
@@ -295,6 +357,7 @@ impl Painter<'_> {
     fn tabs(&mut self, ui: &mut egui::Ui, id: u64, options: &[String], selected: u32) {
         let entries: Vec<Entry<u32>> = options.iter().zip(0_u32..).map(|(option, at)| Entry::new(at, option.clone())).collect();
         let out = craft_ui::choice::Segmented::new(Label::from(String::new()), Bind::given(selected), &entries).id_salt(self.salt(id)).show(ui);
+        self.seen(ui, out.response(), Keys::Panel);
         if let Some(at) = changed(&out, &selected) {
             self.emit(id, UiEventKind::Number(f64::from(at)));
         }
@@ -303,6 +366,7 @@ impl Painter<'_> {
     fn color(&mut self, ui: &mut egui::Ui, id: u64, text: &str, value: [f32; 4], extras: &Extras) {
         let given = values::picked(value);
         let out = craft_color_ui::ui::ColorPopover::new(extras.label(text), Bind::given(given)).show(ui);
+        self.seen(ui, out.response(), Keys::Panel);
         if let Some(picked) = out.events.value()
             && *picked != given
         {
@@ -316,6 +380,7 @@ impl Painter<'_> {
     fn curve(&mut self, ui: &mut egui::Ui, id: u64, text: &str, points: &[[f64; 2]]) {
         let given = values::curve(points);
         let out = craft_imaging::ui::curve::CurveEditor::new(text.to_string(), Bind::given(given)).levels(values::CURVE_LEVELS).show(ui);
+        self.seen(ui, out.response(), Keys::Panel);
         if let Some(curve) = out.edit.value() {
             let edited = values::points(curve);
             if edited != points {
@@ -327,6 +392,7 @@ impl Painter<'_> {
     fn gradient(&mut self, ui: &mut egui::Ui, id: u64, text: &str, value: &craft_plugin::Gradient) {
         let given = values::stops(value);
         let out = craft_color_ui::ui::gradient::GradientEditor::new(text.to_string(), Bind::given(given)).show(ui);
+        self.seen(ui, out.response(), Keys::Panel);
         if let Some(stops) = out.edit.value() {
             let edited = values::gradient(stops);
             if edited != *value {
@@ -335,10 +401,28 @@ impl Painter<'_> {
         }
     }
 
+    fn frame(&mut self, ui: &mut egui::Ui, id: u64, request: &FrameRequest, size: [f32; 2]) {
+        let room = egui::Vec2::new(values::extent(size[0]), values::extent(size[1]));
+        match self.host.frame(ui, request, room) {
+            Some(response) => {
+                if craft_ui::contract::clicked(&response) {
+                    self.emit(id, UiEventKind::Click);
+                }
+                self.seen(ui, &response, Keys::Panel);
+            }
+            None => {
+                let out = text("This app cannot show frames here", TextStyle::Weak).label(Label::from("Frame")).show(ui);
+                self.seen(ui, &out, Keys::Panel);
+            }
+        }
+    }
+
     fn image(&mut self, ui: &mut egui::Ui, id: u64, key: &str) {
-        let picture = self.host.picture(key);
-        let make = || picture.clone().unwrap_or_else(|| egui::ColorImage::new([1, 1], vec![Default::default()]));
-        let out = craft_ui::display::Picture::new(key.to_string(), values::key_hash(key), &make).id_salt(self.salt(id)).show(ui);
+        let host = &*self.host;
+        let make = || host.picture(key).unwrap_or_else(|| egui::ColorImage::new([1, 1], vec![Default::default()]));
+        let revision = craft_ui::primitives::Revision::new(host.version(key));
+        let out = craft_ui::display::Picture::new(key.to_string(), values::key_hash(key), &make).revision(revision).id_salt(self.salt(id)).show(ui);
+        self.seen(ui, &out, Keys::Panel);
         if craft_ui::contract::clicked(&out) {
             self.emit(id, UiEventKind::Click);
         }

@@ -27,6 +27,29 @@ pub(crate) fn extent(points: f32) -> f32 {
     if points.is_finite() { points.clamp(0.0, MAX_ROOM) } else { 0.0 }
 }
 
+pub(crate) fn step(speed: f64) -> Option<f64> {
+    (speed.is_finite() && speed > 0.0).then_some(speed)
+}
+
+fn gaps(ui: &egui::Ui) -> [f32; 3] {
+    let gap = &Env::of(ui).tokens.space.gap;
+    [gap.tight, gap.stack, gap.section]
+}
+
+pub(crate) fn gap(ui: &egui::Ui, gap: craft_plugin::Gap) -> f32 {
+    let [small, medium, large] = gaps(ui);
+    match gap {
+        craft_plugin::Gap::Small => small,
+        craft_plugin::Gap::Medium => medium,
+        craft_plugin::Gap::Large => large,
+    }
+}
+
+pub(crate) fn nearest_gap(ui: &egui::Ui, size: f32) -> f32 {
+    let wanted = extent(size);
+    std::iter::once(0.0).chain(gaps(ui)).min_by(|a, b| (a - wanted).abs().total_cmp(&(b - wanted).abs())).unwrap_or(0.0)
+}
+
 pub(crate) fn rows_height(ui: &egui::Ui, rows: u32) -> f32 {
     extent(Env::of(ui).tokens.size.row.text * rows as f32)
 }

@@ -1,8 +1,8 @@
 use craft_plugin::{Key, Modifiers, Paint, Pointer, PointerPhase, Shape, UiEventKind};
 use craft_ui::contract::{Props as _, Show as _};
 use craft_ui::controls::paint_area::{PaintArea, PaintPhase};
-use craft_ui::primitives::ContentPainterCx;
-use egui::epaint::{CubicBezierShape, PathShape, PathStroke};
+use craft_ui::primitives::{ContentPainterCx, Revision, TextureState, TextureStore, TextureStoreOptions};
+use egui::epaint::CubicBezierShape;
 use egui::{Align2, Color32, FontId, Pos2, Rect, Stroke, StrokeKind, Vec2};
 
 use crate::{Painter, values};
@@ -55,7 +55,19 @@ impl Space {
     }
 }
 
-fn shape(painter: &ContentPainterCx, space: &Space, shape: &Shape) -> Option<egui::Shape> {
+pub(crate) fn ear_clipped(outline: &[[f64; 2]]) -> Vec<[usize; 3]> {
+    let ring: Vec<Pos2> = outline.iter().map(|[x, y]| Pos2::new(*x as f32, *y as f32)).collect();
+    craft_ui::primitives::polygon_triangles(&ring)
+}
+
+struct Drawn<'a> {
+    space: Space,
+    triangulate: craft_plugin_ui::Triangulate,
+    textures: &'a [(String, egui::TextureId)],
+}
+
+fn shape(painter: &ContentPainterCx, drawn: &Drawn<'_>, shape: &Shape) -> Option<egui::Shape> {
+    let space = &drawn.space;
     let stroke = |paint: Paint, width: f32| Stroke::new(space.length(width), color(painter, paint));
     let points = |points: &[[f32; 2]]| points.iter().take(MAX_POINTS).map(|point| space.at(*point)).collect::<Option<Vec<_>>>();
     Some(match shape {
@@ -90,10 +102,13 @@ fn shape(painter: &ContentPainterCx, space: &Space, shape: &Shape) -> Option<egu
             let at = Align2::LEFT_TOP.anchor_size(space.at(*pos)?, galley.size()).min;
             egui::Shape::galley(at, galley, color(painter, *paint))
         }
-        Shape::Polygon { points: outline, fill } => {
-            egui::Shape::Path(PathShape { points: points(outline)?, closed: true, fill: color(painter, *fill), stroke: PathStroke::NONE })
+        Shape::Polygon { points: outline, fill } => craft_plugin_ui::filled_polygon(points(outline)?, color(painter, *fill), drawn.triangulate),
+        Shape::Image { key, min, max } => {
+            let (_, texture) = drawn.textures.iter().find(|(held, _)| held == key)?;
+            let whole = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
+            painter.picture(*texture, Rect::from_two_pos(space.at(*min)?, space.at(*max)?), whole, 0.0);
+            return None;
         }
-        Shape::Image { .. } => return None,
     })
 }
 
@@ -112,27 +127,56 @@ fn modifiers(mods: craft_keymap::Mods) -> Modifiers {
 }
 
 impl Painter<'_> {
+    fn textures(&self, ui: &egui::Ui, shapes: &[Shape]) -> Vec<(String, egui::TextureId)> {
+        let store = TextureStore::<String>::in_context(ui.ctx(), "craft-plugin-ui-framework.canvas", TextureStoreOptions::thumbnails());
+        let mut textures: Vec<(String, egui::TextureId)> = Vec::new();
+        for key in shapes.iter().filter_map(|shape| if let Shape::Image { key, .. } = shape { Some(key) } else { None }) {
+            if textures.iter().any(|(held, _)| held == key) {
+                continue;
+            }
+            let revision = Revision::new(self.host.version(key));
+            let texture = match store.state(ui.ctx(), key, revision) {
+                TextureState::Ready(texture) => Some(texture),
+                state => match self.host.picture(key) {
+                    Some(image) => Some(store.put(ui.ctx(), key.clone(), revision, image)),
+                    None => state.shown(),
+                },
+            };
+            textures.extend(texture.map(|texture| (key.clone(), texture.id)));
+        }
+        textures
+    }
+
     pub(crate) fn canvas(&mut self, ui: &mut egui::Ui, id: u64, size: [f32; 2], shapes: &[Shape], label: craft_ui::runtime::env::Label) {
         let aspect = if size[0] > 0.0 && size[1] > 0.0 { size[0] / size[1] } else { 2.0 };
+        let textures = self.textures(ui, shapes);
+        let triangulate = self.host.triangulate();
         let out = PaintArea::new(label, |painter, rect| {
-            let space = Space::of(rect, size);
-            painter.data_shapes(shapes.iter().filter_map(|drawn| shape(painter, &space, drawn)));
+            let drawn = Drawn { space: Space::of(rect, size), triangulate, textures: &textures };
+            for each in shapes {
+                painter.data_shapes(shape(painter, &drawn, each));
+            }
         })
         .aspect(aspect)
         .id_salt(self.salt(id))
         .show(ui);
-        self.last = Some(out.response.clone());
+        self.seen(ui, &out.response, crate::Keys::Field);
         let space = Space::of(out.rect, size);
         for sample in &out.pointers {
-            let phase = match sample.phase {
-                PaintPhase::Down => PointerPhase::Down,
-                PaintPhase::Drag => PointerPhase::Drag,
-                PaintPhase::Up => PointerPhase::Up,
-                _ => PointerPhase::Hover,
-            };
-            let pointer =
-                Pointer { pos: space.back(sample.pos), phase, modifiers: modifiers(sample.mods), scroll: [sample.scroll.x, sample.scroll.y] };
-            self.emit(id, UiEventKind::Pointer(pointer));
+            let at =
+                |phase| Pointer { pos: space.back(sample.pos), phase, modifiers: modifiers(sample.mods), scroll: [sample.scroll.x, sample.scroll.y] };
+            match sample.phase {
+                PaintPhase::Context => self.emit(id, UiEventKind::Context(at(PointerPhase::Down))),
+                PaintPhase::Down => self.emit(id, UiEventKind::Pointer(at(PointerPhase::Down))),
+                PaintPhase::Drag => self.emit(id, UiEventKind::Pointer(at(PointerPhase::Drag))),
+                PaintPhase::Up => {
+                    self.emit(id, UiEventKind::Pointer(at(PointerPhase::Up)));
+                    if sample.clicks >= 2 {
+                        self.emit(id, UiEventKind::Open(at(PointerPhase::Up)));
+                    }
+                }
+                _ => self.emit(id, UiEventKind::Pointer(at(PointerPhase::Hover))),
+            }
         }
         for chord in &out.keys {
             self.emit(id, UiEventKind::Key(Key { name: chord.key.to_egui().name().to_string(), modifiers: modifiers(chord.mods) }));
