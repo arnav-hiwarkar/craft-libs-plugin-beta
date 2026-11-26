@@ -4,7 +4,7 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 
 use crate::conformance::{Bare, theme};
-use crate::{Answer, draw, draw_form};
+use crate::{Answer, draw, draw_form, draw_panel_menu};
 
 fn harness(widgets: Vec<Widget>) -> Harness<'static, Vec<UiEvent>> {
     Harness::new_ui_state(
@@ -34,6 +34,26 @@ fn an_open_section_inside_a_row_stays_open_when_a_sibling_appears_above_the_row(
     harness.run();
     assert!(harness.query_by_label("Name taken").is_some());
     assert!(harness.query_by_label("Inside").is_some());
+}
+
+#[test]
+fn picking_a_panel_menu_item_sends_its_index_counting_separators_and_a_disabled_item_sends_nothing() {
+    let item = |text: &str| craft_plugin::MenuItem { text: text.into(), ..Default::default() };
+    let items = vec![
+        item("Zoom to Fit"),
+        craft_plugin::MenuItem { separator: true, ..Default::default() },
+        item("Reset View"),
+        craft_plugin::MenuItem { disabled: true, ..item("Export") },
+    ];
+    let mut harness = Harness::new_ui_state(
+        move |ui, events: &mut Vec<UiEvent>| events.extend(draw_panel_menu(ui, &items, &theme(), "plugin.test.panel", &mut Bare)),
+        Vec::new(),
+    );
+    harness.get_by_label("Export").click();
+    harness.run();
+    harness.get_by_label("Reset View").click();
+    harness.run();
+    assert_eq!(harness.state(), &vec![UiEvent { id: craft_plugin::PANEL_MENU, kind: UiEventKind::Number(2.0) }]);
 }
 
 #[test]
@@ -323,7 +343,7 @@ fn every_conformance_case_passes_on_the_egui_painter() {
 #[test]
 fn tab_enters_a_list_on_its_selected_row_with_real_focus_and_the_next_tab_leaves_the_list() {
     let items = (0..4).map(|row| craft_plugin::Item::new(&format!("file {row}"))).collect();
-    let list = Widget::List { id: 4, columns: vec![], count: 4, first: 0, items, selected: vec![2], multi: false, rows: 4 };
+    let list = Widget::List { id: 4, columns: vec![], count: 4, first: 0, items, selected: vec![2], multi: false, rows: 4, edit: Default::default() };
     let after = Widget::Button { id: 5, text: "After".into(), enabled: true };
     let mut harness = harness(vec![list, after]);
     harness.run();
@@ -342,7 +362,8 @@ fn tab_enters_a_list_on_its_selected_row_with_real_focus_and_the_next_tab_leaves
 fn a_table_is_a_grid_of_rows_under_column_headings_and_tree_rows_say_whether_they_are_open() {
     let columns = ["Name", "Size"].map(|title| craft_plugin::Column { title: title.into(), ..Default::default() }).to_vec();
     let items = vec![craft_plugin::Item::cells(&["Shots", "3"]).open(true), craft_plugin::Item::cells(&["shot 1", "1"]).depth(1)];
-    let mut harness = harness(vec![Widget::List { id: 4, columns, count: 2, first: 0, items, selected: vec![0], multi: false, rows: 4 }]);
+    let mut harness =
+        harness(vec![Widget::List { id: 4, columns, count: 2, first: 0, items, selected: vec![0], multi: false, rows: 4, edit: Default::default() }]);
     harness.run();
     assert_eq!(harness.get_by_label("Table").accesskit_node().role(), egui::accesskit::Role::Grid);
     assert_eq!(harness.query_all_by_role(egui::Role::ColumnHeader).count(), 2);
@@ -350,7 +371,7 @@ fn a_table_is_a_grid_of_rows_under_column_headings_and_tree_rows_say_whether_the
     assert_eq!((open.role(), open.is_selected(), open.data().is_expanded()), (egui::accesskit::Role::Row, Some(true), Some(true)));
     let child = harness.get_by_label("shot 1  1").accesskit_node();
     assert_eq!((child.is_selected(), child.data().is_expanded()), (Some(false), None));
-    harness.get_by_label("Close Shots").click();
+    harness.get_by_label("Collapse Shots").click();
     harness.run();
     assert_eq!(harness.state(), &vec![UiEvent { id: 4, kind: UiEventKind::List(craft_plugin::ListEvent::Toggle { row: 0, open: false }) }]);
 }
@@ -450,6 +471,7 @@ fn a_host_that_cannot_edit_curves_or_gradients_says_so_in_place() {
 #[derive(Default)]
 struct Curves {
     given: Vec<Vec<[f64; 2]>>,
+    colors: Vec<(String, [f32; 4])>,
 }
 
 impl crate::Host for Curves {
@@ -484,6 +506,13 @@ impl crate::Host for Curves {
         });
         Some((response, edited))
     }
+
+    fn color(&mut self, ui: &mut egui::Ui, key: &str, value: [f32; 4]) -> Option<(egui::Response, Option<[f32; 4]>)> {
+        self.colors.push((key.to_string(), value));
+        let response = ui.add(egui::Button::new("Pick red"));
+        let picked = response.clicked().then_some([1.0, 0.0, 0.0, 1.0]);
+        Some((response, picked))
+    }
 }
 
 #[test]
@@ -510,4 +539,77 @@ fn a_curve_drag_sends_points_and_the_host_keeps_drawing_what_was_sent_until_the_
     harness.drop_at(rect.center_top() + vec2(0.0, 25.0));
     harness.run();
     assert_eq!(harness.state().0.given.last(), Some(&vec![[0.0, 0.0], [1.0, 1.0]]), "after release it draws the plugin's points again");
+}
+
+#[test]
+fn an_app_colour_picker_draws_a_plugin_colour_under_its_key_and_its_pick_reaches_the_plugin() {
+    let tree = vec![Widget::Color { id: 6, text: "Ink".into(), value: [0.0, 0.0, 0.0, 1.0] }];
+    let mut harness = Harness::new_ui_state(
+        move |ui, state: &mut (Curves, Vec<UiEvent>)| {
+            let events = draw(ui, &tree, &theme(), "plugin.test.panel", &mut state.0);
+            state.1.extend(events);
+        },
+        (Curves::default(), Vec::new()),
+    );
+    harness.run();
+    assert_eq!(harness.state().0.colors.last(), Some(&("plugin.test.panel.6".to_string(), [0.0, 0.0, 0.0, 1.0])));
+    harness.get_by_label("Ink").click();
+    harness.run();
+    assert_eq!(harness.state().1, vec![UiEvent { id: 6, kind: UiEventKind::Color([1.0, 0.0, 0.0, 1.0]) }]);
+}
+
+fn renamable_list(selected: Vec<u32>) -> Widget {
+    let items = (0..3).map(|row| craft_plugin::Item::new(&format!("file {row}"))).collect();
+    let edit = craft_plugin::ListEdit { rename: true, ..Default::default() };
+    Widget::List { id: 4, columns: vec![], count: 3, first: 0, items, selected, multi: false, rows: 3, edit }
+}
+
+fn click_name(harness: &mut Harness<'static, Vec<UiEvent>>, row: &str, times: usize) {
+    let rect = harness.get_by_label(row).rect();
+    let pos = egui::pos2(rect.left() + 12.0, rect.center().y);
+    harness.event(egui::Event::PointerMoved(pos));
+    for _ in 0..times {
+        for pressed in [true, false] {
+            harness.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() });
+        }
+        harness.run_steps(3);
+    }
+    harness.run();
+}
+
+#[test]
+fn a_click_on_the_selected_rows_name_opens_it_for_renaming_after_the_double_click_time_and_a_double_click_activates_instead() {
+    let widgets = vec![renamable_list(vec![1])];
+    let mut harness = Harness::builder()
+        .with_step_dt(1.0 / 60.0)
+        .with_max_steps(64)
+        .build_ui_state(move |ui, events: &mut Vec<UiEvent>| events.extend(draw(ui, &widgets, &theme(), "plugin.test.panel", &mut Bare)), Vec::new());
+    harness.run();
+    click_name(&mut harness, "file 1", 1);
+    assert_eq!(harness.get_by_label("Rename").value().as_deref(), Some("file 1"));
+    harness.get_by_label("Rename").type_text("B");
+    harness.run();
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+    let select = UiEvent { id: 4, kind: UiEventKind::List(craft_plugin::ListEvent::Select(vec![1])) };
+    let renamed = UiEvent { id: 4, kind: UiEventKind::List(craft_plugin::ListEvent::Rename { row: 1, text: "B".into() }) };
+    assert_eq!(std::mem::take(harness.state_mut()), vec![select.clone(), renamed]);
+    assert!(harness.query_by_label("Rename").is_none());
+    click_name(&mut harness, "file 1", 2);
+    let activated = UiEvent { id: 4, kind: UiEventKind::List(craft_plugin::ListEvent::Activate(1)) };
+    assert_eq!(std::mem::take(harness.state_mut()), vec![select.clone(), select, activated]);
+    assert!(harness.query_by_label("Rename").is_none());
+    click_name(&mut harness, "file 2", 1);
+    assert!(harness.query_by_label("Rename").is_none());
+}
+
+#[test]
+fn the_sorted_column_heading_tells_assistive_tools_its_order() {
+    let columns = ["Name", "Size"].map(|title| craft_plugin::Column { title: title.into(), ..Default::default() }).to_vec();
+    let edit = craft_plugin::ListEdit { sortable: true, sorted: Some((1, true)), ..Default::default() };
+    let items = vec![craft_plugin::Item::cells(&["a", "1"])];
+    let mut harness = harness(vec![Widget::List { id: 4, columns, count: 1, first: 0, items, selected: vec![], multi: false, rows: 2, edit }]);
+    harness.run();
+    let order = |label: &str| harness.get_by_label(label).accesskit_node().sort_direction();
+    assert_eq!((order("Name"), order("Size")), (None, Some(egui::accesskit::SortDirection::Descending)));
 }

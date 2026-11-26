@@ -329,6 +329,22 @@ fn a_tree_panel_opens_folders_from_toggles_and_its_ten_thousand_row_table_builds
 }
 
 #[test]
+fn the_probe_take_table_sorts_by_the_clicked_column_flips_on_a_second_click_and_renames_a_take_in_its_sorted_place() {
+    use craft_plugin::ListEvent::{Rename, Sort};
+    let (_bundle, plugin) = probe();
+    let mut panel = plugin.panel("tree").unwrap();
+    let top = |panel: &craft_plugin_host::testing::PanelTest, n: usize| panel.rows(1).unwrap().1[..n].to_vec();
+    panel.list_event(1, Sort { column: 2, descending: false }).unwrap();
+    assert_eq!(top(&panel, 2), ["take 0\t0.0 s\t*", "take 5\t5.5 s\t*"]);
+    panel.list_event(1, Sort { column: 2, descending: true }).unwrap();
+    assert_eq!(top(&panel, 2), ["take 9999\t39.9 s\t*****", "take 9994\t34.4 s\t*****"]);
+    panel.list_event(1, Sort { column: 0, descending: false }).unwrap();
+    assert_eq!(top(&panel, 3), ["take 0\t0.0 s\t*", "take 1\t1.1 s\t**", "take 10\t10.0 s\t*"]);
+    panel.list_event(1, Rename { row: 1, text: "Opening".into() }).unwrap();
+    assert_eq!(top(&panel, 2), ["take 0\t0.0 s\t*", "Opening\t1.1 s\t**"]);
+}
+
+#[test]
 fn a_status_item_and_a_stamp_option_bar_take_their_places_and_each_notes_panel_keeps_its_own_text() {
     let (_bundle, plugin) = probe();
     let found = plugin.plugin().contributions();
@@ -378,4 +394,81 @@ fn the_controls_panel_takes_toggle_radio_text_area_menu_curve_and_gradient_event
     let texts = panel.texts();
     assert!(texts.contains(&"3 points".to_string()) && texts.contains(&"3 stops".to_string()), "{texts:?}");
     assert!(texts.contains(&"Probe controls".to_string()), "{texts:?}");
+}
+
+#[test]
+fn the_preview_panel_asks_the_app_for_a_frame_widget_and_never_reads_pixels_itself() {
+    let (_bundle, plugin) = probe();
+    let read = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let counted = read.clone();
+    plugin.frames(move |_| {
+        counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Err("the preview must not read frames".into())
+    });
+    let mut panel = plugin.panel("preview").unwrap();
+    let frame = |panel: &craft_plugin_host::testing::PanelTest| {
+        panel.widgets().iter().find_map(|widget| match widget {
+            craft_plugin::Widget::Frame { request, size, .. } => Some((request.comp.clone(), request.time, request.scale, *size)),
+            _ => None,
+        })
+    };
+    assert_eq!(frame(&panel), Some((None, 0.0, 0.25, [160.0, 90.0])));
+    panel.send("Composition", UiEventKind::Text("Shot 2".into())).unwrap();
+    assert_eq!(frame(&panel), Some((Some("Shot 2".into()), 0.0, 0.25, [160.0, 90.0])));
+    panel.click_frame(0).unwrap();
+    panel.click_frame(0).unwrap();
+    assert!(panel.texts().contains(&"2 clicks".to_string()), "{:?}", panel.texts());
+    assert_eq!(panel.click_frame(1).unwrap_err(), "panel `preview` shows 1 frames, so it has no frame 1");
+    assert_eq!(read.load(std::sync::atomic::Ordering::Relaxed), 0);
+}
+
+#[test]
+fn a_pad_right_click_reaches_a_plugin_at_ui_level_two_and_never_one_at_the_old_level() {
+    use craft_plugin::{Pointer, PointerPhase, UiEvent, Widget};
+    use craft_plugin_host::Retained;
+    let (_bundle, plugin) = probe();
+    let level = plugin.plugin().contributions().ui_level;
+    let said = |mut retained: Retained, kind: fn(Pointer) -> UiEventKind| {
+        let mut panel = plugin.panel("pad").unwrap();
+        let pad = panel.widgets().iter().find_map(|widget| if let Widget::Canvas { id, .. } = widget { Some(*id) } else { None }).unwrap();
+        retained.push(vec![UiEvent { id: pad, kind: kind(Pointer::new([10.0, 20.0], PointerPhase::Down)) }], "");
+        panel.input(retained.start([320.0, 480.0], std::time::Duration::ZERO).unwrap()).unwrap();
+        panel.texts().into_iter().find(|text| text.starts_with("pad")).unwrap_or_default()
+    };
+    let new = || Retained::with_level(level);
+    assert_eq!(
+        [said(Retained::new(), UiEventKind::Context), said(new(), UiEventKind::Context), said(new(), UiEventKind::Open)],
+        ["pad  ink [0.0, 0.0, 0.0, 1.0]", "pad context 10 20 ink [0.0, 0.0, 0.0, 1.0]", "pad open 10 20 ink [0.0, 0.0, 0.0, 1.0]"]
+    );
+    let mut panel = plugin.panel("pad").unwrap();
+    panel.send("Ink", UiEventKind::Color([1.0, 0.0, 0.0, 1.0])).unwrap();
+    assert_eq!(panel.texts().last().map(String::as_str), Some("pad open 10 20 ink [1.0, 0.0, 0.0, 1.0]"));
+}
+
+#[test]
+fn the_app_panel_takes_its_own_keys_and_panel_menu_picks_and_records_the_command_state_it_sets() {
+    let (_bundle, plugin) = probe();
+    let found = plugin.plugin().contributions();
+    let spec = found.panels.iter().find(|panel| panel.id == "app").map(|panel| (panel.keys.clone(), panel.help.clone()));
+    assert_eq!(spec, Some((vec!["Delete".to_string(), "Cmd+D".into()], Some("https://example.org/probe-app".into()))));
+    let mut panel = plugin.panel("app").unwrap();
+    assert_eq!(panel.panel_menu(), ["Zoom to Fit", "Reset View"]);
+    let said = |panel: &craft_plugin_host::testing::PanelTest| panel.texts().last().cloned().unwrap_or_default();
+    panel.press("cmd+d").unwrap();
+    assert_eq!(said(&panel), "pressed Cmd+D");
+    panel.press("Delete").unwrap();
+    assert_eq!(said(&panel), "pressed Delete");
+    assert_eq!(
+        panel.press("Backspace").unwrap_err(),
+        r#"panel `app` does not take `Backspace`; it takes ["Delete", "Cmd+D"]. Add the chord with .keys(&[..]) after .panel(..)"#
+    );
+    panel.pick_panel_menu("Reset View").unwrap();
+    assert_eq!(said(&panel), "view reset");
+    panel.pick_panel_menu("Zoom to Fit").unwrap();
+    assert_eq!(said(&panel), "zoomed to fit");
+    assert_eq!(panel.pick_panel_menu("Help").unwrap_err(), r#"the panel menu of `app` has no item `Help`; it has ["Zoom to Fit", "Reset View"]"#);
+    panel.send("Disable Probe Action", UiEventKind::Bool(true)).unwrap();
+    panel.send("Disable Probe Action", UiEventKind::Bool(false)).unwrap();
+    let state = |enabled: bool| craft_plugin_host::testing::CommandState { command: "app-act".into(), enabled, checked: Some(enabled) };
+    assert_eq!(plugin.command_states(), [state(false), state(true)]);
 }

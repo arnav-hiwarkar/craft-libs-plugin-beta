@@ -167,6 +167,7 @@ fn needs_the_app(call: &HostCall) -> bool {
             | HostCall::DataSet { .. }
             | HostCall::ShowPanel { .. }
             | HostCall::ClosePanel { .. }
+            | HostCall::CommandState { .. }
     )
 }
 
@@ -368,6 +369,7 @@ fn answer(cx: &mut HostCx, call: HostCall, bulk: &[u8]) -> Result<(Value, Bulk),
             cx.paused += started.elapsed();
             plain(json!(answer?.map(|values| form.answer(values)).transpose()?))
         }
+        HostCall::CommandState { command, enabled, checked } => cx.host.command_state(&command, enabled, checked).map(|()| (Value::Null, Bulk::None)),
         HostCall::ShowPanel { panel, instance } => cx.host.panel(&panel, instance.as_deref(), true).map(|()| (Value::Null, Bulk::None)),
         HostCall::ClosePanel { panel, instance } => cx.host.panel(&panel, instance.as_deref(), false).map(|()| (Value::Null, Bulk::None)),
         HostCall::UploadImage { key, width, height } => cx.plugin.images.put(key, width, height, bulk).map(|()| (Value::Null, Bulk::None)),

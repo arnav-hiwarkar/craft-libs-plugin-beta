@@ -39,9 +39,9 @@ pub use registry::{Approved, ApprovedBundle, Bundle, BundleError, Consent, Refus
 
 pub mod ui {
     pub use craft_plugin::{
-        AppEvent, Axis, Column, ColumnWidth, CommandSpec, Context, ControlsReply, Drag, Dropped, Gap, ICONS, Item, Key, ListEvent, MenuItem,
-        Modifiers, Paint, PanelPlace, PanelReply, PanelSize, PanelSpec, Pointer, PointerPhase, Root, Shape, Span, TextStyle, Topic, UiEvent,
-        UiEventKind, UiInput, View, Widget,
+        AppEvent, Axis, Column, ColumnWidth, CommandSpec, Context, ControlsReply, Drag, Dropped, FrameRequest, Gap, ICONS, Item, Key, ListEdit,
+        ListEvent, MenuItem, Modifiers, PANEL_MENU, Paint, PanelPlace, PanelReply, PanelSize, PanelSpec, Pointer, PointerPhase, Root, Shape, Span,
+        TextStyle, Topic, UI_LEVEL, UiEvent, UiEventKind, UiInput, View, Widget,
     };
 }
 

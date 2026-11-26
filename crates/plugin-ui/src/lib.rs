@@ -14,7 +14,7 @@ mod tests;
 
 pub use form::{Answer, draw_form, param_button};
 pub use marks::{draw_marks, filled_polygon};
-pub use panel::{draw, paint_icon};
+pub use panel::{draw, draw_panel_menu, paint_icon};
 pub use pen::PenSource;
 
 pub type Triangulate = fn(&[[f64; 2]]) -> Vec<[usize; 3]>;
@@ -76,6 +76,14 @@ pub trait Host {
     }
 
     fn gradient(&mut self, _ui: &mut egui::Ui, _key: &str, _value: &Gradient) -> Option<(egui::Response, Option<Gradient>)> {
+        None
+    }
+
+    fn color(&mut self, _ui: &mut egui::Ui, _key: &str, _value: [f32; 4]) -> Option<(egui::Response, Option<[f32; 4]>)> {
+        None
+    }
+
+    fn frame(&mut self, _ui: &mut egui::Ui, _request: &craft_plugin::FrameRequest, _size: egui::Vec2) -> Option<egui::Response> {
         None
     }
 

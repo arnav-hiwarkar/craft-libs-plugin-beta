@@ -189,6 +189,16 @@ impl Plugin {
         self
     }
 
+    pub fn keys(mut self, chords: &[&str]) -> Self {
+        self.last_panel("keys").keys = chords.iter().map(|chord| chord.to_string()).collect();
+        self
+    }
+
+    pub fn help(mut self, url: &str) -> Self {
+        self.last_panel("help").help = Some(url.into());
+        self
+    }
+
     pub fn menu(mut self, path: &str) -> Self {
         self.last_command("menu").menu = Some(path.into());
         self
@@ -225,6 +235,7 @@ impl Plugin {
             tools: self.tools.iter().map(|(spec, _)| spec.clone()).collect(),
             separate_input: true,
             bounded: true,
+            ui_level: crate::wire::UI_LEVEL,
         }
     }
 
@@ -539,6 +550,8 @@ mod tests {
             .icon("sliders")
             .place(PanelPlace::Float)
             .size(PanelSize::Large)
+            .keys(&["Delete"])
+            .help("https://example.org/inspector")
             .command("tidy", "Tidy Layers", || Ok(()))
             .menu("Layer/Arrange")
             .context(Context::Layers)
@@ -558,7 +571,9 @@ mod tests {
                 icon: Some("sliders".into()),
                 place: PanelPlace::Float,
                 size: PanelSize::Large,
-                multiple: false
+                multiple: false,
+                keys: vec!["Delete".into()],
+                help: Some("https://example.org/inspector".into())
             }
         );
         assert_eq!(
@@ -614,6 +629,8 @@ mod tests {
         assert_eq!((tool.named_icon, tool.options), (None, None));
         let event: crate::ToolEvent = serde_json::from_str(r#"{"kind":"down","comp":[1.0,2.0],"pressure":1.0}"#).unwrap();
         assert_eq!((event.pressure, event.pen), (1.0, None));
+        let found: Contributions = serde_json::from_str(r#"{"panels":[]}"#).unwrap();
+        assert_eq!((found.ui_level, Plugin::new().contributions().ui_level), (0, crate::wire::UI_LEVEL));
         let input: UiInput = serde_json::from_str(r#"{"size":[10.0,10.0]}"#).unwrap();
         assert_eq!((input.views, input.instance, input.call), (vec![], None, 0));
         let scroll: Widget = serde_json::from_str(r#"{"w":"scroll","id":1,"height":80.0,"children":[]}"#).unwrap();

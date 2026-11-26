@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use craft_plugin::math;
 use craft_plugin::prelude::*;
+use craft_plugin::{ListEvent, ListOptions};
 use serde_json::json;
 
 struct Invert;
@@ -1484,6 +1485,19 @@ fn make() -> Plugin {
         .place(PanelPlace::Bottom)
         .panel("controls", "Controls", Controls::default())
         .icon("sliders")
+        .panel("preview", "Preview", Preview::default())
+        .icon("image")
+        .panel("pad", "Pad", Pad::default())
+        .panel("app", "App", AppPanel::default())
+        .keys(&["Delete", "Cmd+D"])
+        .help("https://example.org/probe-app")
+        .command("app-act", "Probe Action", || {
+            host::notify("Probe Action ran");
+            Ok(())
+        })
+        .menu("Layer/Probe Tools")
+        .context(Context::Layers)
+        .toolbar()
         .effect(Peek)
         .tool("census", "Census", Census)
         .panel("shared", "Shared", Shared)
@@ -1704,10 +1718,46 @@ struct Tree {
     open: Vec<usize>,
     folder: Option<usize>,
     takes: Vec<usize>,
+    order: Vec<usize>,
+    names: BTreeMap<usize, String>,
+    sorted: Option<(usize, bool)>,
     said: String,
 }
 
+const TAKES: usize = 10_000;
+
+fn take_cells(take: usize, names: &BTreeMap<usize, String>) -> [String; 3] {
+    let name = names.get(&take).cloned().unwrap_or_else(|| format!("take {take}"));
+    [name, format!("{}.{} s", take % 60, take % 10), "*".repeat(take % 5 + 1)]
+}
+
 impl Tree {
+    fn edit_takes(&mut self, event: &ListEvent) {
+        match event {
+            ListEvent::Sort { column, descending } => {
+                let picked: Vec<usize> = self.takes.iter().map(|row| self.order[*row]).collect();
+                let key = |take: usize| match column {
+                    0 => (0, take_cells(take, &self.names)[0].clone()),
+                    1 => ((take % 60) * 10 + take % 10, String::new()),
+                    _ => (take % 5, String::new()),
+                };
+                let mut order: Vec<usize> = (0..TAKES).collect();
+                order.sort_by_cached_key(|take| key(*take));
+                if *descending {
+                    order.reverse();
+                }
+                self.takes = picked.iter().filter_map(|take| order.iter().position(|at| at == take)).collect();
+                (self.order, self.sorted) = (order, Some((*column as usize, *descending)));
+            }
+            ListEvent::Rename { row, text } => {
+                if let Some(take) = self.order.get(*row as usize) {
+                    self.names.insert(*take, text.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn shown(&self, nodes: &[(u8, String)]) -> Vec<usize> {
         let mut shut_below = u8::MAX;
         (0..nodes.len())
@@ -1745,11 +1795,18 @@ impl Panel for Tree {
         if let Some((row, open)) = picked.toggled {
             self.said = format!("{} {}", if open { "opened" } else { "closed" }, nodes[shown[row]].1);
         }
-        let takes = ui.table("takes", &["Take", "Length", "Rating"], 10_000, &mut self.takes, |row| {
-            Item::cells(&[&format!("take {row}"), &format!("{}.{} s", row % 60, row % 10), &"*".repeat(row % 5 + 1)])
-        });
+        if self.order.is_empty() {
+            self.order = (0..TAKES).collect();
+        }
+        for event in ui.list_events("takes") {
+            self.edit_takes(event);
+        }
+        let options = ListOptions { columns: &["Take", "Length", "Rating"], rename: true, sortable: true, sorted: self.sorted, ..Default::default() };
+        let (order, names) = (&self.order, &self.names);
+        let takes =
+            ui.list_with("takes", &options, TAKES, &mut self.takes, |row| Item::cells(&take_cells(order[row], names).each_ref().map(String::as_str)));
         if let Some(row) = takes.activated {
-            self.said = format!("activated take {row}");
+            self.said = format!("activated {}", take_cells(self.order[row], &self.names)[0]);
         }
         ui.label(&self.said);
     }
@@ -1794,5 +1851,79 @@ impl Panel for Notes {
     fn ui(&mut self, ui: &mut Ui) {
         ui.text_edit("note", &mut self.text, "Note");
         ui.label(&format!("note {}: {}", ui.instance().unwrap_or("-"), self.text));
+    }
+}
+
+#[derive(Default)]
+struct Preview {
+    comp: String,
+    clicks: u32,
+}
+
+impl Panel for Preview {
+    fn ui(&mut self, ui: &mut Ui) {
+        ui.text_edit("comp", &mut self.comp, "Composition");
+        let comp = Some(self.comp.clone()).filter(|comp| !comp.is_empty());
+        if ui.frame("view", craft_plugin::FrameRequest { comp, time: 0.0, scale: 0.25, ..Default::default() }, [160.0, 90.0]) {
+            self.clicks += 1;
+        }
+        ui.label(&format!("{} clicks", self.clicks));
+    }
+}
+
+#[derive(Default)]
+struct Pad {
+    said: String,
+    ink: Option<[f32; 4]>,
+}
+
+impl Panel for Pad {
+    fn ui(&mut self, ui: &mut Ui) {
+        ui.canvas("pad", [120.0, 80.0], |canvas| {
+            if let Some(at) = canvas.context {
+                self.said = format!("context {:.0} {:.0}", at.pos[0], at.pos[1]);
+            }
+            if let Some(at) = canvas.opened {
+                self.said = format!("open {:.0} {:.0}", at.pos[0], at.pos[1]);
+            }
+        });
+        let ink = self.ink.get_or_insert([0.0, 0.0, 0.0, 1.0]);
+        ui.color("Ink", ink);
+        ui.label(&format!("pad {} ink {ink:?}", self.said));
+    }
+}
+
+#[derive(Default)]
+struct AppPanel {
+    opacity: f64,
+    disabled: bool,
+    said: String,
+}
+
+impl Panel for AppPanel {
+    fn ui(&mut self, ui: &mut Ui) {
+        if let Some(chord) = ["Delete", "Cmd+D"].into_iter().find(|chord| ui.key(chord)) {
+            self.said = format!("pressed {chord}");
+        }
+        let (mut fit, mut reset) = (false, false);
+        ui.panel_menu(|menu| {
+            fit = menu.item("Zoom to Fit");
+            menu.separator();
+            reset = menu.item("Reset View");
+        });
+        if fit || reset {
+            self.said = if fit { "zoomed to fit" } else { "view reset" }.into();
+        }
+        if ui.slider("Opacity", &mut self.opacity, 0.0..=100.0)
+            && let Err(error) = host::command("prop.set", json!({"layer": "#1", "path": "transform/opacity", "value": self.opacity}))
+        {
+            self.said = error.0;
+        }
+        if ui.checkbox("Disable Probe Action", &mut self.disabled)
+            && let Err(error) = host::command_state("app-act", !self.disabled, Some(!self.disabled))
+        {
+            self.said = error.0;
+        }
+        ui.label(&self.said);
     }
 }

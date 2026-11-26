@@ -119,6 +119,10 @@ impl Engine {
         &self.identity.journal
     }
 
+    pub fn granted(&self, permission: Permission) -> bool {
+        self.identity.grants.contains(&permission)
+    }
+
     pub fn module_digest(&self) -> Option<&str> {
         match &self.kind {
             Kind::Wasm { module, .. } => module.name(),

@@ -202,6 +202,10 @@ impl Plugin {
         self.engine.module_digest()
     }
 
+    pub fn granted(&self, permission: Permission) -> bool {
+        self.engine.granted(permission)
+    }
+
     pub fn started(&self) -> bool {
         self.engine.started()
     }

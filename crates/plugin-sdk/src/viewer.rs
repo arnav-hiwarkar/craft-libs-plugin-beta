@@ -210,6 +210,17 @@ pub enum ToolEventKind {
     Up,
     Scroll,
     Key,
+    Context,
+    Open,
+}
+
+impl ToolEventKind {
+    pub fn ui_level(self) -> u32 {
+        match self {
+            ToolEventKind::Context | ToolEventKind::Open => 2,
+            _ => 1,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
