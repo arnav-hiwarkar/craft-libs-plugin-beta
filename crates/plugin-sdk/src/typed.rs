@@ -1,0 +1,562 @@
+use crate::curve::{CURVE_CHANNELS, Curve, check_points};
+use crate::effect::{Cx, Image};
+use crate::gradient::Gradient;
+use crate::wire::{EffectSpec, Is, Param, ParamKind, Value};
+
+pub trait FromParam: Sized {
+    fn from_param(cx: &Cx, id: &'static str) -> Self;
+}
+
+impl FromParam for f64 {
+    fn from_param(cx: &Cx, id: &'static str) -> Self {
+        cx.f(id)
+    }
+}
+
+impl FromParam for f32 {
+    fn from_param(cx: &Cx, id: &'static str) -> Self {
+        cx.f(id) as f32
+    }
+}
+
+impl FromParam for bool {
+    fn from_param(cx: &Cx, id: &'static str) -> Self {
+        cx.bool(id)
+    }
+}
+
+impl FromParam for usize {
+    fn from_param(cx: &Cx, id: &'static str) -> Self {
+        cx.index(id)
+    }
+}
+
+impl FromParam for u32 {
+    fn from_param(cx: &Cx, id: &'static str) -> Self {
+        u32::try_from(cx.index(id)).unwrap_or(u32::MAX)
+    }
+}
+
+impl FromParam for [f64; 2] {
+    fn from_param(cx: &Cx, id: &'static str) -> Self {
+        cx.point(id)
+    }
+}
+
+impl FromParam for [f64; 3] {
+    fn from_param(cx: &Cx, id: &'static str) -> Self {
+        cx.point3(id)
+    }
+}
+
+impl FromParam for [f32; 4] {
+    fn from_param(cx: &Cx, id: &'static str) -> Self {
+        cx.color(id)
+    }
+}
+
+impl FromParam for Gradient {
+    fn from_param(cx: &Cx, id: &'static str) -> Self {
+        cx.gradient(id).clone()
+    }
+}
+
+impl FromParam for String {
+    fn from_param(cx: &Cx, id: &'static str) -> Self {
+        cx.text(id).to_string()
+    }
+}
+
+impl FromParam for Curve {
+    fn from_param(cx: &Cx, id: &'static str) -> Self {
+        cx.curve(id)
+    }
+}
+
+impl FromParam for Vec<Curve> {
+    fn from_param(cx: &Cx, id: &'static str) -> Self {
+        cx.curves(id)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LayerParam {
+    pub id: &'static str,
+    pub connected: bool,
+}
+
+impl LayerParam {
+    pub fn image(&self, cx: &Cx) -> Option<Image> {
+        self.connected.then(|| cx.layer(self.id)).flatten()
+    }
+
+    pub fn image_at(&self, cx: &Cx, comp_time: f64) -> Option<Image> {
+        self.connected.then(|| cx.layer_at(self.id, comp_time)).flatten()
+    }
+}
+
+impl FromParam for LayerParam {
+    fn from_param(cx: &Cx, id: &'static str) -> Self {
+        LayerParam { id, connected: cx.bool(id) }
+    }
+}
+
+impl Param {
+    pub fn default_value(&self, layer_size: [f64; 2]) -> Value {
+        let [w, h] = layer_size;
+        match &self.kind {
+            ParamKind::Slider { default, .. } | ParamKind::Percent { default, .. } | ParamKind::Angle { default } => Value::Number(*default),
+            ParamKind::Checkbox { default } => Value::Bool(*default),
+            ParamKind::Popup { default, .. } => Value::Number(f64::from(*default)),
+            ParamKind::Point { default } => Value::List(vec![default[0] * w, default[1] * h]),
+            ParamKind::Point3 { default } => Value::List(vec![default[0] * w, default[1] * h, default[2]]),
+            ParamKind::Color { default } => Value::List(default.to_vec()),
+            ParamKind::Text { default } | ParamKind::Custom { default } => Value::Text(default.clone()),
+            ParamKind::Layer => Value::Bool(false),
+            ParamKind::Mask => Value::Number(0.0),
+            ParamKind::Gradient { default } => Value::Gradient(default.clone()),
+            ParamKind::Curve { default, channels } => Value::Text(crate::curve::default_curves_text(default, *channels)),
+            ParamKind::Button => Value::Bool(false),
+        }
+    }
+
+    pub fn fit(&self, value: Value) -> Result<Value, String> {
+        let list = |items: &[f64], n: usize| (items.len() == n).then(|| Value::List(items.to_vec()));
+        let fitted = match (&self.kind, &value) {
+            (ParamKind::Slider { min, max, .. }, Value::Number(n)) => Some(Value::Number(n.max(*min).min(*max))),
+            (ParamKind::Percent { .. } | ParamKind::Angle { .. }, Value::Number(n)) => Some(Value::Number(*n)),
+            (ParamKind::Popup { .. } | ParamKind::Mask, Value::Number(n)) => Some(Value::Number(n.max(0.0).trunc())),
+            (ParamKind::Checkbox { .. } | ParamKind::Layer, Value::Bool(b)) => Some(Value::Bool(*b)),
+            (ParamKind::Point { .. }, Value::List(items)) => list(items, 2),
+            (ParamKind::Point3 { .. }, Value::List(items)) => list(items, 3),
+            (ParamKind::Color { .. }, Value::List(items)) => list(items, 4),
+            (ParamKind::Text { .. } | ParamKind::Custom { .. }, Value::Text(text)) => Some(Value::Text(text.clone())),
+            (ParamKind::Gradient { .. }, Value::Gradient(gradient)) => Some(Value::Gradient(gradient.clone().limited())),
+            (ParamKind::Curve { channels, .. }, Value::Text(text)) => {
+                let curves = crate::curve::parse_curves(text, if *channels { CURVE_CHANNELS } else { 1 })
+                    .map_err(|error| format!("parameter `{}`: {error}", self.id))?;
+                Some(Value::Text(crate::curve::curves_text(&curves)))
+            }
+            _ => None,
+        };
+        fitted.ok_or_else(|| {
+            let wanted = match &self.kind {
+                ParamKind::Slider { .. } | ParamKind::Percent { .. } | ParamKind::Angle { .. } => "a number",
+                ParamKind::Popup { .. } | ParamKind::Mask => "an index",
+                ParamKind::Checkbox { .. } | ParamKind::Layer => "true or false",
+                ParamKind::Point { .. } => "a list of 2 numbers",
+                ParamKind::Point3 { .. } => "a list of 3 numbers",
+                ParamKind::Color { .. } => "a list of 4 numbers",
+                ParamKind::Text { .. } | ParamKind::Custom { .. } => "text",
+                ParamKind::Gradient { .. } => "a gradient",
+                ParamKind::Curve { .. } => "curve points as text, such as \"0,0 0.5,0.7 1,1\"",
+                ParamKind::Button => "no value, as it is a button",
+            };
+            let given = match value {
+                Value::Number(n) => format!("the number {n}"),
+                Value::Bool(b) => format!("{b}"),
+                Value::Text(text) => format!("the text {text:?}"),
+                Value::List(items) => format!("a list of {} numbers", items.len()),
+                Value::Gradient(_) => "a gradient".into(),
+            };
+            format!("parameter `{}` takes {wanted}, not {given}", self.id)
+        })
+    }
+}
+
+const MAX_PARAMS: usize = 512;
+const MAX_ID_BYTES: usize = 256;
+const MAX_ID_DEPTH: usize = 8;
+
+fn check_id(id: &str, bounded: bool) -> Result<(), String> {
+    if bounded && id.len() > MAX_ID_BYTES {
+        return Err(format!("is {} bytes long; at most {MAX_ID_BYTES} are allowed", id.len()));
+    }
+    if id.split('/').count() > MAX_ID_DEPTH {
+        return Err(format!("nests {} levels deep; at most {MAX_ID_DEPTH} are allowed", id.split('/').count()));
+    }
+    for part in id.split('/') {
+        if part.is_empty() {
+            return Err("has an empty part; each part between `/` needs a name".into());
+        }
+        if part.starts_with(['#', '@']) {
+            return Err(format!(
+                "has a part starting with `{}`, which property paths read as an index or a uid; start it with another character",
+                &part[..1]
+            ));
+        }
+        if bounded && part.contains(char::is_control) {
+            return Err("contains a control character; use printable characters".into());
+        }
+    }
+    Ok(())
+}
+
+fn shown(id: &str) -> String {
+    match id.char_indices().nth(40) {
+        Some((end, _)) => format!("{}…", &id[..end]),
+        None => id.to_string(),
+    }
+}
+
+impl EffectSpec {
+    pub fn check(&self) -> Result<(), String> {
+        self.check_bounded(true)
+    }
+
+    pub fn check_bounded(&self, bounded: bool) -> Result<(), String> {
+        if bounded && self.params.len() > MAX_PARAMS {
+            return Err(format!("effect `{}` declares {} parameters; at most {MAX_PARAMS} are allowed", self.id, self.params.len()));
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for param in &self.params {
+            check_id(&param.id, bounded).map_err(|problem| format!("effect `{}`: parameter id `{}` {problem}", self.id, shown(&param.id)))?;
+            if !seen.insert(param.id.as_str()) {
+                return Err(format!("effect `{}` declares the parameter id `{}` twice; give each parameter its own id", self.id, param.id));
+            }
+        }
+        for param in &self.params {
+            if let ParamKind::Slider { min, max, .. } = param.kind
+                && min.partial_cmp(&max).is_none_or(std::cmp::Ordering::is_gt)
+            {
+                return Err(format!("effect `{}`: parameter `{}` has the range {min}..={max}; give the smaller end first", self.id, param.id));
+            }
+            if let ParamKind::Gradient { default } = &param.kind {
+                default.check().map_err(|error| format!("effect `{}`: gradient `{}` {error}", self.id, param.id))?;
+            }
+            if let ParamKind::Curve { default, .. } = &param.kind {
+                check_points(default).map_err(|error| format!("effect `{}`: parameter `{}`: the default {error}", self.id, param.id))?;
+            }
+            for when in param.visible_when.iter().chain(&param.enabled_when) {
+                let fits = |kind: &ParamKind| match when.is {
+                    Is::On => matches!(kind, ParamKind::Checkbox { .. }),
+                    Is::Equals(_) | Is::NotEquals(_) => {
+                        matches!(kind, ParamKind::Slider { .. } | ParamKind::Percent { .. } | ParamKind::Angle { .. } | ParamKind::Popup { .. })
+                    }
+                };
+                if !self.params.iter().any(|other| other.id == when.param && other.id != param.id && fits(&other.kind)) {
+                    return Err(format!(
+                        "effect `{}`: parameter `{}` depends on `{}`, which is not another of its parameters of a kind that fits {:?}; name a checkbox for `Is::On` or a number or popup for `Is::Equals`",
+                        self.id, param.id, when.param, when.is
+                    ));
+                }
+            }
+        }
+        for preset in &self.presets {
+            for (id, value) in &preset.values {
+                let Some(param) = self.params.iter().find(|param| param.id == *id) else {
+                    let known: Vec<&str> = self.params.iter().map(|param| param.id.as_str()).collect();
+                    return Err(format!("effect `{}`: preset `{}` sets `{id}`, which is not one of its parameters {known:?}", self.id, preset.name));
+                };
+                param.fit(value.clone()).map_err(|error| format!("effect `{}`: preset `{}`: {error}", self.id, preset.name))?;
+            }
+        }
+        Ok(())
+    }
+}
+
+pub mod fits {
+    #[diagnostic::on_unimplemented(
+        message = "a slider, percent or angle parameter is read as a number, so its field cannot be `{Self}`",
+        label = "declare this field as `f64` or `f32`"
+    )]
+    pub trait Number {}
+    impl Number for f64 {}
+    impl Number for f32 {}
+
+    #[diagnostic::on_unimplemented(
+        message = "a checkbox parameter is read as `bool`, so its field cannot be `{Self}`",
+        label = "declare this field as `bool`"
+    )]
+    pub trait Flag {}
+    impl Flag for bool {}
+
+    #[diagnostic::on_unimplemented(
+        message = "a popup or mask parameter is read as an index, so its field cannot be `{Self}`",
+        label = "declare this field as `usize` or `u32`"
+    )]
+    pub trait Choice {}
+    impl Choice for usize {}
+    impl Choice for u32 {}
+
+    #[diagnostic::on_unimplemented(
+        message = "a point parameter is read as `[f64; 2]`, so its field cannot be `{Self}`",
+        label = "declare this field as `[f64; 2]`"
+    )]
+    pub trait Point {}
+    impl Point for [f64; 2] {}
+
+    #[diagnostic::on_unimplemented(
+        message = "a point3 parameter is read as `[f64; 3]`, so its field cannot be `{Self}`",
+        label = "declare this field as `[f64; 3]`"
+    )]
+    pub trait Point3 {}
+    impl Point3 for [f64; 3] {}
+
+    #[diagnostic::on_unimplemented(
+        message = "a color parameter is read as `[f32; 4]`, so its field cannot be `{Self}`",
+        label = "declare this field as `[f32; 4]`"
+    )]
+    pub trait Colour {}
+    impl Colour for [f32; 4] {}
+
+    #[diagnostic::on_unimplemented(
+        message = "a text or custom parameter is read as `String`, so its field cannot be `{Self}`",
+        label = "declare this field as `String`"
+    )]
+    pub trait Text {}
+    impl Text for String {}
+
+    #[diagnostic::on_unimplemented(
+        message = "a layer parameter is read as `LayerParam`, so its field cannot be `{Self}`",
+        label = "declare this field as `LayerParam`"
+    )]
+    pub trait Layer {}
+    impl Layer for super::LayerParam {}
+
+    #[diagnostic::on_unimplemented(
+        message = "a gradient parameter is read as `Gradient`, so its field cannot be `{Self}`",
+        label = "declare this field as `Gradient`"
+    )]
+    pub trait Gradient {}
+    impl Gradient for crate::gradient::Gradient {}
+
+    pub fn slider<T: Number>() {}
+    pub fn percent<T: Number>() {}
+    pub fn angle<T: Number>() {}
+    pub fn checkbox<T: Flag>() {}
+    pub fn popup<T: Choice>() {}
+    pub fn mask<T: Choice>() {}
+    pub fn point<T: Point>() {}
+    pub fn point3<T: Point3>() {}
+    pub fn color<T: Colour>() {}
+    pub fn text<T: Text>() {}
+    pub fn custom<T: Text>() {}
+    pub fn layer<T: Layer>() {}
+    pub fn gradient<T: Gradient>() {}
+
+    #[diagnostic::on_unimplemented(
+        message = "a curve parameter is read as `Curve`, or `Vec<Curve>` with `.channels()`, so its field cannot be `{Self}`",
+        label = "declare this field as `Curve` or `Vec<Curve>`"
+    )]
+    pub trait Curves {}
+    impl Curves for crate::Curve {}
+    impl Curves for Vec<crate::Curve> {}
+
+    pub fn curve<T: Curves>() {}
+}
+
+/// Declares an effect's parameters and a struct that reads them.
+///
+/// ```compile_fail,E0277
+/// craft_plugin::params! { struct Wrong { name: String = slider("Name", 1.0, 0.0..=2.0) } }
+/// ```
+#[macro_export]
+macro_rules! params {
+    ($(#[$meta:meta])* $vis:vis struct $name:ident { $($body:tt)* }) => {
+        $crate::params!(@munch [$(#[$meta])* $vis struct $name] [] $($body)*);
+    };
+    (@id $field:ident) => { ::core::stringify!($field) };
+    (@id $field:ident $id:literal) => { $id };
+    (@munch $head:tt [$($done:tt)*] $group:literal { $($inner:tt)* } , $($rest:tt)*) => {
+        $crate::params!(@group $head [$($done)*] $group [$($rest)*] $($inner)*);
+    };
+    (@munch $head:tt [$($done:tt)*] $group:literal { $($inner:tt)* } $($rest:tt)*) => {
+        $crate::params!(@group $head [$($done)*] $group [$($rest)*] $($inner)*);
+    };
+    (@munch $head:tt [$($done:tt)*] $fvis:vis $field:ident $(as $id:literal)? : $ty:ty = $kind:ident ( $($arg:tt)* ) $(. $method:ident ( $($method_arg:tt)* ))* $(, $($rest:tt)*)?) => {
+        $crate::params!(@munch $head [$($done)* ($fvis, $field, $ty, $crate::params!(@id $field $($id)?), $kind, ($($arg)*), ($(. $method ( $($method_arg)* ))*))] $($($rest)*)?);
+    };
+    (@group $head:tt [$($done:tt)*] $group:literal [$($rest:tt)*] $fvis:vis $field:ident $(as $id:literal)? : $ty:ty = $kind:ident ( $($arg:tt)* ) $(. $method:ident ( $($method_arg:tt)* ))* $(, $($inner:tt)*)?) => {
+        $crate::params!(@group $head [$($done)* ($fvis, $field, $ty, ::core::concat!($group, "/", $crate::params!(@id $field $($id)?)), $kind, ($($arg)*), ($(. $method ( $($method_arg)* ))*))] $group [$($rest)*] $($($inner)*)?);
+    };
+    (@group $head:tt [$($done:tt)*] $group:literal [$($rest:tt)*]) => {
+        $crate::params!(@munch $head [$($done)*] $($rest)*);
+    };
+    (@munch [$(#[$meta:meta])* $vis:vis struct $name:ident] [$(($fvis:vis, $field:ident, $ty:ty, $id:expr, $kind:ident, ($($arg:tt)*), ($(. $method:ident ( $($method_arg:tt)* ))*)))*]) => {
+        $(#[$meta])*
+        $vis struct $name {
+            $($fvis $field: $ty,)*
+        }
+
+        impl $name {
+            pub const IDS: &'static [&'static str] = &[$($id),*];
+
+            pub fn params() -> ::std::vec::Vec<$crate::Param> {
+                ::std::vec![$($crate::Param::$kind($id, $($arg)*) $(. $method ( $($method_arg)* ))*),*]
+            }
+
+            pub fn read(cx: &$crate::Cx) -> Self {
+                $($crate::typed::fits::$kind::<$ty>();)*
+                let _ = cx;
+                $name { $($field: <$ty as $crate::FromParam>::from_param(cx, $id),)* }
+            }
+        }
+    };
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use crate::{Cx, EffectSpec, Param, ParamKind, RenderCx, Value};
+
+    const MODES: [&str; 2] = ["Add", "Screen"];
+
+    params! {
+        struct Glow {
+            radius: f64 = slider("Radius", 20.0, 0.0..=200.0),
+            gain: f64 = slider("Gain", 1.0, 0.0..=1000.0).soft(0.01..=10.0).log(),
+            "Colour" {
+                tint: [f32; 4] = color("Tint", [1.0, 0.5, 0.25, 1.0]),
+                mode: usize = popup("Mode", &MODES, 1),
+            }
+            on: bool = checkbox("Enabled", true),
+            occluder: crate::LayerParam = layer("Occluder"),
+        }
+    }
+
+    #[test]
+    fn one_declaration_gives_the_parameter_list_with_group_ids_and_a_struct_read_by_those_ids() {
+        assert_eq!(Glow::IDS, ["radius", "gain", "Colour/tint", "Colour/mode", "on", "occluder"]);
+        let spec = EffectSpec::new("glow", "Glow", "Stylize").params(Glow::params());
+        assert_eq!(spec.params[1], Param::slider("gain", "Gain", 1.0, 0.0..=1000.0).soft(0.01..=10.0).log());
+        assert_eq!(spec.params[2], Param::color("Colour/tint", "Tint", [1.0, 0.5, 0.25, 1.0]));
+        assert_eq!(spec.params[3].kind, ParamKind::Popup { options: vec!["Add".into(), "Screen".into()], default: 1 });
+        let params = BTreeMap::from([
+            ("radius".to_string(), Value::Number(12.5)),
+            ("gain".to_string(), Value::Number(3.0)),
+            ("Colour/tint".to_string(), Value::List(vec![0.25, 0.5, 0.75, 1.0])),
+            ("Colour/mode".to_string(), Value::Number(1.0)),
+            ("on".to_string(), Value::Bool(false)),
+            ("occluder".to_string(), Value::Bool(true)),
+        ]);
+        let glow = Glow::read(&Cx::new(RenderCx { params, ..Default::default() }));
+        assert_eq!((glow.radius, glow.gain, glow.tint, glow.mode, glow.on), (12.5, 3.0, [0.25, 0.5, 0.75, 1.0], 1, false));
+        assert_eq!(glow.occluder, crate::LayerParam { id: "occluder", connected: true });
+    }
+
+    params! {
+        struct Nothing {}
+    }
+
+    params! {
+        struct Saved {
+            kind as "type": usize = popup("Type", &MODES, 1),
+            "Core" {
+                core_gain as "gain": f64 = slider("Core Gain", 1.0, 0.0..=4.0),
+                shape as "type": usize = popup("Shape", &MODES, 0),
+            },
+            "Glow" {
+                glow_gain as "gain": f64 = slider("Glow Gain", 2.0, 0.0..=4.0),
+            }
+            "Empty" {}
+            last: bool = checkbox("Last", true),
+        }
+    }
+
+    #[test]
+    fn a_reversed_hard_range_is_refused_with_the_effect_and_parameter_id() {
+        let spec = EffectSpec::new("glow", "Glow", "Stylize").param(Param::slider("gain", "Gain", 1.0, 10.0..=1.0));
+        assert_eq!(spec.check(), Err("effect `glow`: parameter `gain` has the range 10..=1; give the smaller end first".to_string()));
+        assert_eq!(EffectSpec::new("glow", "Glow", "Stylize").params(Glow::params()).check(), Ok(()));
+    }
+
+    #[test]
+    fn a_curve_default_or_value_that_breaks_the_point_rules_is_refused_and_a_good_one_is_cleaned() {
+        let spec = EffectSpec::new("tone", "Tone", "Color").param(Param::curve("curve", "Curve", &[[0.0, 0.0]]));
+        assert_eq!(spec.check(), Err("effect `tone`: parameter `curve`: the default a curve has 2 to 64 points, not 1".to_string()));
+        let grade = Param::curve("grade", "Grade", &[[0.0, 0.0], [1.0, 1.0]]).channels();
+        assert_eq!(grade.fit(Value::Text("0,0 1,1".into())), Err("parameter `grade`: 4 curve(s) separated by `|`, not 1".to_string()));
+        assert_eq!(
+            grade.fit(Value::Text("1,1 0,0|0,0 1,1|0,0 1,1|0,0.5 1,1".into())),
+            Ok(Value::Text("0,0 1,1 | 0,0 1,1 | 0,0 1,1 | 0,0.5 1,1".into()))
+        );
+    }
+
+    #[test]
+    fn a_preset_with_an_unknown_id_or_a_value_of_the_wrong_kind_is_refused_with_its_name_and_the_id() {
+        let spec = || EffectSpec::new("glow", "Glow", "Stylize").param(Param::slider("radius", "Radius", 20.0, 0.0..=200.0));
+        let misspelt = spec().preset("Wide", [("radus", Value::Number(80.0))]);
+        assert_eq!(misspelt.check(), Err(r#"effect `glow`: preset `Wide` sets `radus`, which is not one of its parameters ["radius"]"#.to_string()));
+        let text = spec().preset("Wide", [("radius", Value::Text("80".into()))]);
+        assert_eq!(text.check(), Err(r#"effect `glow`: preset `Wide`: parameter `radius` takes a number, not the text "80""#.to_string()));
+        assert_eq!(spec().preset("Wide", [("radius", Value::Number(80.0))]).check(), Ok(()));
+    }
+
+    #[test]
+    fn a_field_states_its_saved_id_and_empty_structs_groups_and_trailing_commas_parse() {
+        assert!(Nothing::IDS.is_empty() && Nothing::params().is_empty());
+        let _ = Nothing::read(&Cx::new(RenderCx::default()));
+        assert_eq!(Saved::IDS, ["type", "Core/gain", "Core/type", "Glow/gain", "last"]);
+        assert_eq!(Saved::params()[3], Param::slider("Glow/gain", "Glow Gain", 2.0, 0.0..=4.0));
+        let params = BTreeMap::from([
+            ("type".to_string(), Value::Number(0.0)),
+            ("Core/gain".to_string(), Value::Number(3.0)),
+            ("Core/type".to_string(), Value::Number(1.0)),
+            ("Glow/gain".to_string(), Value::Number(0.5)),
+            ("last".to_string(), Value::Bool(false)),
+        ]);
+        let saved = Saved::read(&Cx::new(RenderCx { params, ..Default::default() }));
+        assert_eq!((saved.kind, saved.core_gain, saved.shape, saved.glow_gain, saved.last), (0, 3.0, 1, 0.5, false));
+    }
+
+    #[test]
+    fn a_parameter_id_that_would_break_the_property_tree_is_refused_with_the_rule_it_breaks() {
+        let with = |id: &str| EffectSpec::new("glow", "Glow", "Stylize").param(Param::checkbox(id, "On", true)).check();
+        let deep = vec!["a"; 10_000].join("/");
+        assert_eq!(
+            with(&deep),
+            Err("effect `glow`: parameter id `a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/…` is 19999 bytes long; at most 256 are allowed".into())
+        );
+        assert_eq!(
+            with("a/b/c/d/e/f/g/h/i"),
+            Err("effect `glow`: parameter id `a/b/c/d/e/f/g/h/i` nests 9 levels deep; at most 8 are allowed".into())
+        );
+        assert_eq!(with("edges//on"), Err("effect `glow`: parameter id `edges//on` has an empty part; each part between `/` needs a name".into()));
+        assert_eq!(
+            with("#1/on"),
+            Err("effect `glow`: parameter id `#1/on` has a part starting with `#`, which property paths read as an index or a uid; start it with another character".into())
+        );
+        assert_eq!(
+            with("glow/@7"),
+            Err("effect `glow`: parameter id `glow/@7` has a part starting with `@`, which property paths read as an index or a uid; start it with another character".into())
+        );
+        assert_eq!(with("glow/o\nn"), Err("effect `glow`: parameter id `glow/o\nn` contains a control character; use printable characters".into()));
+        assert_eq!(with("Phosphor Glow/glow"), Ok(()));
+        assert_eq!(with("a/b/c/d/e/f/g/Glow & Rays (2) #1"), Ok(()));
+        let twice = EffectSpec::new("glow", "Glow", "Stylize").params([Param::checkbox("on", "On", true), Param::checkbox("on", "Again", false)]);
+        assert_eq!(twice.check(), Err("effect `glow` declares the parameter id `on` twice; give each parameter its own id".into()));
+        let many = EffectSpec::new("glow", "Glow", "Stylize").params((0..513).map(|i| Param::checkbox(&format!("p{i}"), "On", true)));
+        assert_eq!(many.check(), Err("effect `glow` declares 513 parameters; at most 512 are allowed".into()));
+        assert_eq!(many.check_bounded(false), Ok(()));
+        assert_eq!(
+            EffectSpec::new("glow", "Glow", "Stylize").param(Param::checkbox("a//b", "On", true)).check_bounded(false),
+            Err("effect `glow`: parameter id `a//b` has an empty part; each part between `/` needs a name".into())
+        );
+    }
+
+    #[test]
+    fn a_condition_must_name_another_parameter_whose_kind_it_can_test_and_is_read_from_the_current_values() {
+        let spec = |is: crate::Is| {
+            EffectSpec::new("fx", "Fx", "Probe")
+                .param(Param::popup("mode", "Mode", &MODES, 0))
+                .param(Param::checkbox("on", "On", true))
+                .param(Param::slider("soft", "Soft", 1.0, 0.0..=2.0).visible_when("mode", is))
+                .check_bounded(false)
+        };
+        assert_eq!(spec(crate::Is::Equals(1.0)), Ok(()));
+        assert!(spec(crate::Is::On).unwrap_err().contains("parameter `soft` depends on `mode`, which is not another of its parameters"));
+        let lone = EffectSpec::new("fx", "Fx", "Probe").param(Param::slider("soft", "Soft", 1.0, 0.0..=2.0).enabled_when("on", crate::Is::On));
+        assert!(lone.check_bounded(false).is_err());
+
+        let soft = Param::slider("soft", "Soft", 1.0, 0.0..=2.0).visible_when("mode", crate::Is::NotEquals(0.0)).enabled_when("on", crate::Is::On);
+        let values = |mode: f64, on: bool| move |id: &str| Some(if id == "mode" { Value::Number(mode) } else { Value::Bool(on) });
+        assert_eq!([soft.visible(values(0.0, true)), soft.visible(values(1.0, true)), soft.enabled(values(1.0, false))], [false, true, false]);
+        let wire = serde_json::to_value(&soft).unwrap();
+        assert_eq!(wire["visible_when"], serde_json::json!({"param": "mode", "is": {"not_equals": 0.0}}));
+        assert_eq!(serde_json::from_value::<Param>(wire).unwrap(), soft);
+        let old: Param = serde_json::from_str(r#"{"id": "soft", "name": "Soft", "kind": "checkbox", "default": true}"#).unwrap();
+        assert_eq!((old.visible_when, old.enabled_when), (None, None));
+    }
+}
