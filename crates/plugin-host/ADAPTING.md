@@ -71,9 +71,14 @@ SDK (EffectCraft keeps `crates/plugin/tests/it/legacy/legacy.wasm`).
    token, and drop it when any is stale. Feed `Retained` with the app's events (`Topic`: selection, time,
    comp, project, edit, mapped to the app's nearest equivalents). Give each custom parameter row its own
    `Retained` on the same worker and pass a `ControlsReply`'s `topics` and `timers` into it, so rows
-   subscribe and tick as panels do. Test: zero plugin calls over idle frames;
-   each event kind calls once; a reply after the project closed is dropped; kittests with real pointer and
-   key events.
+   subscribe and tick as panels do. Make each `Retained` with `Retained::with_level(contributions.event_level())`
+   and compare tool events with `event_level()` too: a plugin built before UI levels reports 0, which means 1,
+   and comparing with the raw `ui_level` drops all of its events. When the user closes a tab of a
+   `panel_each` instance, drop its `Retained` and send one more `Call::Panel` with `UiInput { closed: true,
+   instance, .. }` so the SDK forgets that instance. Test: zero plugin calls over idle frames;
+   each event kind calls once; a reply after the project closed is dropped; a panel click and a tool press of
+   the stored pre-programme probe (`tests/it/fixtures/probe-before-regions.wasm`) reach it; kittests with real
+   pointer and key events.
 4. **Tasks.** Run on their own thread and instance, bound to the project they started in and cancelled when
    it closes. Answer their document requests on the main thread through a pump. Test: progress, cancel,
    and a task that outlives its project.

@@ -154,12 +154,13 @@ impl<H: Host> Renderer<'_, H> {
 
     pub(crate) fn focus(&mut self, ui: &egui::Ui, call: u64) {
         let asked = egui::Id::unique(("plugin-focus", self.scope));
-        if ui.data(|data| data.get_temp::<u64>(asked)) == Some(call) {
-            return;
-        }
+        let pass = ui.ctx().cumulative_pass_nr();
+        let honoured = ui.data(|data| data.get_temp::<(u64, u64)>(asked)).is_some_and(|(seen, at)| seen == call && at + 1 >= pass);
         if let Some(response) = &self.last {
-            response.request_focus();
-            ui.data_mut(|data| data.insert_temp(asked, call));
+            if !honoured {
+                response.request_focus();
+            }
+            ui.data_mut(|data| data.insert_temp(asked, (call, pass)));
         }
     }
 

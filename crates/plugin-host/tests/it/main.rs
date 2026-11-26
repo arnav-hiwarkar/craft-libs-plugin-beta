@@ -520,6 +520,18 @@ fn a_retained_panel_is_not_called_while_nothing_happens_for_a_hundred_frames() {
 }
 
 #[test]
+fn a_plugin_built_before_ui_levels_still_gets_the_clicks_on_its_panel() {
+    let before = load_before_regions();
+    assert_eq!(before.plugin.contributions().ui_level, 0);
+    let mut counter = Retained::with_level(before.plugin.contributions().event_level());
+    assert!(panel_frame(&before, "counter", &mut counter, Duration::ZERO));
+    let Widget::Button { id, .. } = counter.widgets()[0] else { panic!("button expected") };
+    counter.push(vec![UiEvent { id, kind: UiEventKind::Click }], "");
+    assert!(panel_frame(&before, "counter", &mut counter, Duration::from_millis(20)));
+    assert_eq!(texts(counter.widgets()).first().map(String::as_str), Some("1 clicks at speed 0"));
+}
+
+#[test]
 fn two_clicks_on_one_button_made_during_a_call_are_counted_twice() {
     each_kind(|kind| {
         let loaded = load(kind, &[]);

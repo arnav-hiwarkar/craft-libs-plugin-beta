@@ -191,6 +191,7 @@ impl Plugin {
             }
         };
         plugin.engine.know_tasks(plugin.contributions.tasks.iter().map(|task| task.id.clone()).collect());
+        plugin.contributions.warnings().into_iter().for_each(|warning| plugin.warn(warning));
         Ok(plugin)
     }
 

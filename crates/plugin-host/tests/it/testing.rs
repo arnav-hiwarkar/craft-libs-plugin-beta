@@ -450,7 +450,7 @@ fn the_app_panel_takes_its_own_keys_and_panel_menu_picks_and_records_the_command
     let (_bundle, plugin) = probe();
     let found = plugin.plugin().contributions();
     let spec = found.panels.iter().find(|panel| panel.id == "app").map(|panel| (panel.keys.clone(), panel.help.clone()));
-    assert_eq!(spec, Some((vec!["Delete".to_string(), "Cmd+D".into()], Some("https://example.org/probe-app".into()))));
+    assert_eq!(spec, Some((vec!["Delete".to_string(), "Cmd+D".into(), "Cmd+Z".into()], Some("https://example.org/probe-app".into()))));
     let mut panel = plugin.panel("app").unwrap();
     assert_eq!(panel.panel_menu(), ["Zoom to Fit", "Reset View"]);
     let said = |panel: &craft_plugin_host::testing::PanelTest| panel.texts().last().cloned().unwrap_or_default();
@@ -460,7 +460,7 @@ fn the_app_panel_takes_its_own_keys_and_panel_menu_picks_and_records_the_command
     assert_eq!(said(&panel), "pressed Delete");
     assert_eq!(
         panel.press("Backspace").unwrap_err(),
-        r#"panel `app` does not take `Backspace`; it takes ["Delete", "Cmd+D"]. Add the chord with .keys(&[..]) after .panel(..)"#
+        r#"panel `app` does not take `Backspace`; it takes ["Delete", "Cmd+D", "Cmd+Z"]. Add the chord with .keys(&[..]) after .panel(..)"#
     );
     panel.pick_panel_menu("Reset View").unwrap();
     assert_eq!(said(&panel), "view reset");

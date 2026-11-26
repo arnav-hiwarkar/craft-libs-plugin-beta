@@ -178,6 +178,7 @@ impl<H: Host> Renderer<'_, H> {
             Widget::TextEdit { id, value, hint } => {
                 let mut text = value.clone();
                 let response = ui.add(egui::TextEdit::singleline(&mut text).hint_text(hint.as_str()));
+                ui.ctx().accesskit_node_builder(response.id, |node| node.set_label(hint.as_str()));
                 self.register(*id, &response, hint);
                 if response.changed() {
                     self.emit(*id, UiEventKind::Text(text));
@@ -216,8 +217,15 @@ impl<H: Host> Renderer<'_, H> {
             Widget::Space { size } => ui.add_space(extent(*size)),
             Widget::Canvas { id, size, shapes } => self.canvas(ui, *id, *size, shapes),
             Widget::Image { id, key, size } => self.image(ui, *id, key, *size),
-            Widget::Scroll { id, height, children, .. } => {
-                egui::ScrollArea::vertical().id_salt(id).max_height(extent(*height)).auto_shrink([false, true]).show(ui, |ui| self.all(ui, children));
+            Widget::Scroll { id, height, rows, children } => {
+                let spacing = ui.spacing();
+                let height = rows.map_or(extent(*height), |rows| extent(rows as f32 * (spacing.interact_size.y + spacing.item_spacing.y)));
+                egui::ScrollArea::vertical()
+                    .id_salt(id)
+                    .max_height(height)
+                    .min_scrolled_height(height)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| self.all(ui, children));
             }
             Widget::Collapsing { id, title, open, children } => {
                 egui::CollapsingHeader::new(title.as_str()).id_salt(id).default_open(*open).show(ui, |ui| self.all(ui, children));

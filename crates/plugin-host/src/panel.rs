@@ -178,6 +178,7 @@ impl Retained {
         self.hidden = true;
         self.events.clear();
         self.keys.clear();
+        self.pressed.clear();
     }
 
     pub fn next_due(&self) -> Option<Duration> {
@@ -222,7 +223,7 @@ impl Retained {
         self.calls += 1;
         let (keys, app, views) = (std::mem::take(&mut self.keys), std::mem::take(&mut self.app), self.views.clone());
         let pressed = std::mem::take(&mut self.pressed);
-        let input = UiInput { events, size, keys, app, timers, views, instance: None, call: self.calls, pressed };
+        let input = UiInput { events, size, keys, app, timers, views, instance: None, call: self.calls, pressed, closed: false };
         (self.size, self.stale, self.in_flight) = (size, false, true);
         Some(input)
     }
@@ -490,6 +491,15 @@ mod tests {
         panel.push(vec![click(1)], "");
         let later = panel.start(SIZE, ms(3)).map(|input| (input.views, input.call));
         assert_eq!(later, Some((vec![View { id: 5, first: 300, count: 40 }], 3)));
+    }
+
+    #[test]
+    fn a_chord_pressed_on_a_panel_that_is_then_hidden_is_not_delivered_when_it_shows_again() {
+        let mut panel = drawn(vec![], vec![]);
+        panel.press("Delete");
+        panel.hide();
+        panel.invalidate();
+        assert_eq!(panel.start(SIZE, ms(1)).map(|input| input.pressed), Some(vec![]));
     }
 
     #[test]

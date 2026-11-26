@@ -3,8 +3,8 @@ use std::ops::RangeInclusive;
 
 use crate::gradient::Gradient;
 use crate::wire::{
-    AppEvent, Axis, Column, Drag, Dropped, FrameRequest, Gap, Item, Key, LIST_WINDOW, ListEdit, ListEvent, MAX_LIST_ITEMS, MIN_TIMER_MS, MenuItem,
-    PANEL_MENU, Paint, PanelReply, Pointer, Shape, Span, TextStyle, Timer, Topic, UiEventKind, UiInput, Widget,
+    AppEvent, Axis, Column, ColumnWidth, Drag, Dropped, FrameRequest, Gap, Item, Key, LIST_WINDOW, ListEdit, ListEvent, MAX_LIST_ITEMS, MIN_TIMER_MS,
+    MenuItem, PANEL_MENU, Paint, PanelReply, Pointer, Shape, Span, TextStyle, Timer, Topic, UiEventKind, UiInput, Widget,
 };
 
 pub trait Panel: Send + 'static {
@@ -380,10 +380,15 @@ impl<'a> Ui<'a> {
         selected: &mut S,
         item: impl FnMut(usize) -> Item,
     ) -> Picked {
-        let columns = options.columns.iter().map(|title| Column { title: title.to_string(), ..Default::default() }).collect();
+        let width = |at: usize| options.widths.get(at).copied().unwrap_or_default();
+        let columns = options.columns.iter().enumerate().map(|(at, title)| Column { title: title.to_string(), width: width(at) }).collect();
         let sorted = options.sorted.map(|(column, descending)| (column as u32, descending));
         let edit = ListEdit { rename: options.rename, reorder: options.reorder, sortable: options.sortable, sorted };
-        self.rows_of(key, columns, edit, count, selected, item)
+        let picked = self.rows_of(key, columns, edit, count, selected, item);
+        if let Some(Widget::List { rows, .. }) = self.widgets.last_mut() {
+            *rows = options.rows;
+        }
+        picked
     }
 
     pub fn table<S: Selection>(&mut self, key: &str, columns: &[&str], count: usize, selected: &mut S, item: impl FnMut(usize) -> Item) -> Picked {
@@ -431,9 +436,13 @@ impl<'a> Ui<'a> {
     }
 
     pub fn icon_button(&mut self, icon: &str, text: &str) -> bool {
+        self.icon_button_enabled(icon, text, true)
+    }
+
+    pub fn icon_button_enabled(&mut self, icon: &str, text: &str, enabled: bool) -> bool {
         let id = self.id(text);
-        self.widgets.push(Widget::IconButton { id, icon: icon.into(), text: text.into(), enabled: true });
-        matches!(self.event(id), Some(UiEventKind::Click))
+        self.widgets.push(Widget::IconButton { id, icon: icon.into(), text: text.into(), enabled });
+        enabled && matches!(self.event(id), Some(UiEventKind::Click))
     }
 
     pub fn toggle(&mut self, text: &str, value: &mut bool) -> bool {
@@ -591,6 +600,8 @@ pub struct Picked {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ListOptions<'c> {
     pub columns: &'c [&'c str],
+    pub widths: &'c [ColumnWidth],
+    pub rows: u32,
     pub rename: bool,
     pub reorder: bool,
     pub sortable: bool,
@@ -1171,12 +1182,34 @@ mod tests {
         ];
         let mut picked = (Picked::default(), Picked::default());
         frame(events.clone(), |ui| picked.0 = ui.list("names", 3, &mut None, |_| Item::new("a")));
-        let options = ListOptions { columns: &["Name", "Size"], rename: true, reorder: true, sortable: true, sorted: Some((0, false)) };
+        let options =
+            ListOptions { columns: &["Name", "Size"], rename: true, reorder: true, sortable: true, sorted: Some((0, false)), ..Default::default() };
         let widgets = frame(events, |ui| picked.1 = ui.list_with("names", &options, 3, &mut None, |_| Item::cells(&["a", "1"])));
         assert_eq!((picked.0.renamed, picked.0.moved, picked.0.sorted), (None, None, None));
         assert_eq!((picked.1.renamed, picked.1.moved, picked.1.sorted), (Some((1, "New".into())), Some((vec![2], 0)), Some((1, true))));
         let Widget::List { edit, columns, .. } = &widgets[0] else { panic!("list expected") };
         assert_eq!((edit.sorted, columns.len()), (Some((0, false)), 2));
+    }
+
+    #[test]
+    fn list_options_set_the_shown_rows_and_column_widths_and_a_disabled_icon_button_takes_no_click() {
+        let options = ListOptions { columns: &["Name", "Size"], widths: &[ColumnWidth::Fill], rows: 6, ..Default::default() };
+        let widgets = frame(vec![], |ui| {
+            ui.list_with("names", &options, 3, &mut None, |_| Item::cells(&["a", "1"]));
+        });
+        let Widget::List { rows, columns, .. } = &widgets[0] else { panic!("list expected") };
+        let widths: Vec<ColumnWidth> = columns.iter().map(|column| column.width).collect();
+        assert_eq!((*rows, widths), (6, vec![ColumnWidth::Fill, ColumnWidth::Auto]));
+        let id = match &frame(vec![], |ui| {
+            ui.icon_button_enabled("trash", "Delete", false);
+        })[0]
+        {
+            Widget::IconButton { id, enabled: false, .. } => *id,
+            other => panic!("a disabled icon button expected, not {other:?}"),
+        };
+        let mut clicked = true;
+        frame(vec![UiEvent { id, kind: UiEventKind::Click }], |ui| clicked = ui.icon_button_enabled("trash", "Delete", false));
+        assert!(!clicked);
     }
 
     fn id_of_list(widgets: &[Widget]) -> u64 {
