@@ -1466,6 +1466,8 @@ fn make() -> Plugin {
         .icon("sliders")
         .place(PanelPlace::Float)
         .size(PanelSize::Large)
+        .panel("tree", "Tree", Tree::default())
+        .icon("list")
         .effect(Peek)
         .tool("census", "Census", Census)
         .panel("shared", "Shared", Shared)
@@ -1610,3 +1612,71 @@ fn make() -> Plugin {
 }
 
 craft_plugin::export!(make);
+
+fn folders() -> Vec<(u8, String)> {
+    let mut nodes = Vec::new();
+    for a in 0..3 {
+        nodes.push((0, format!("Folder {a}")));
+        for b in 0..2 {
+            nodes.push((1, format!("Shot {a}.{b}")));
+            nodes.extend((0..2).map(|c| (2, format!("Take {a}.{b}.{c}"))));
+        }
+    }
+    nodes
+}
+
+#[derive(Default)]
+struct Tree {
+    open: Vec<usize>,
+    folder: Option<usize>,
+    takes: Vec<usize>,
+    said: String,
+}
+
+impl Tree {
+    fn shown(&self, nodes: &[(u8, String)]) -> Vec<usize> {
+        let mut shut_below = u8::MAX;
+        (0..nodes.len())
+            .filter(|at| {
+                let depth = nodes[*at].0;
+                if depth > shut_below {
+                    return false;
+                }
+                shut_below = if depth < 2 && !self.open.contains(at) { depth } else { u8::MAX };
+                true
+            })
+            .collect()
+    }
+}
+
+impl Panel for Tree {
+    fn ui(&mut self, ui: &mut Ui) {
+        let nodes = folders();
+        let before = self.shown(&nodes);
+        if let Some((row, open)) = ui.toggled("folders") {
+            let picked = self.folder.and_then(|row| before.get(row).copied());
+            let node = before.get(row).copied().unwrap_or_default();
+            self.open.retain(|at| *at != node);
+            if open {
+                self.open.push(node);
+            }
+            self.folder = picked.and_then(|node| self.shown(&nodes).iter().position(|at| *at == node));
+        }
+        let shown = self.shown(&nodes);
+        let picked = ui.list("folders", shown.len(), &mut self.folder, |row| {
+            let (depth, name) = &nodes[shown[row]];
+            let item = Item::new(name).depth(*depth).icon(if *depth < 2 { "folder" } else { "film" });
+            if *depth < 2 { item.open(self.open.contains(&shown[row])) } else { item }
+        });
+        if let Some((row, open)) = picked.toggled {
+            self.said = format!("{} {}", if open { "opened" } else { "closed" }, nodes[shown[row]].1);
+        }
+        let takes = ui.table("takes", &["Take", "Length", "Rating"], 10_000, &mut self.takes, |row| {
+            Item::cells(&[&format!("take {row}"), &format!("{}.{} s", row % 60, row % 10), &"*".repeat(row % 5 + 1)])
+        });
+        if let Some(row) = takes.activated {
+            self.said = format!("activated take {row}");
+        }
+        ui.label(&self.said);
+    }
+}
