@@ -5,6 +5,7 @@ mod containers;
 pub mod dock;
 mod drag_source;
 mod icons;
+mod key_area;
 mod list;
 mod menu;
 mod paint_area;
@@ -67,7 +68,7 @@ pub fn draw(ui: &mut egui::Ui, widgets: &[Widget], scope: &str, host: &mut dyn H
         painter.all(ui, widgets);
         return painter.events;
     }
-    let area = craft_ui::sections::KeyArea::new(keys.iter().map(|(_, chord)| *chord).collect())
+    let area = key_area::KeyArea::new(keys.iter().map(|(_, chord)| *chord).collect())
         .id_salt(("craft-plugin-ui-framework.keys", scope))
         .show(ui, |ui, _| painter.all(ui, widgets));
     for chord in area.output.pressed {
