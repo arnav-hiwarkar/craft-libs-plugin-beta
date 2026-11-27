@@ -411,7 +411,8 @@ impl<C: Collection> ItemsHooks<'_, '_, C> {
     /// Scrolls the rows while the pointer, `y` below the rows' top edge, is within a row of an edge of the `view`,
     /// faster the further past it, up to `EDGE_ROWS_PER_SECOND` a full band in or beyond the edge: the rate of a row
     /// drag or a marquee near the edge of a scroll region. It asks for the next frame only while the pointer is in or
-    /// past a band, so a drag held over the middle rests.
+    /// past a band and the rows can still scroll that way, so a drag held over the middle, or at an end the rows
+    /// already reached, rests.
     ///
     /// The step is the frame's time, taken once: a pass that repeats a frame carries no input and scrolls nothing, as
     /// the body's scroll strips do (`body/scroll.rs`, `scroll_input`).
@@ -427,6 +428,10 @@ impl<C: Collection> ItemsHooks<'_, '_, C> {
         }
         // Taken even by a pass that steps by no time, so the body around does not step in a rerun pass instead.
         reorder::mark_edge_step(&cx.core.ctx);
+        let room = if rate < 0.0 { self.offset } else { self.max_offset(view) - self.offset };
+        if room <= 0.0 {
+            return;
+        }
         cx.core.ctx.request_repaint();
         let dt = crate::runtime::frame::facts(&cx.core.ctx).elapsed.clamp(0.0, 0.1) as f32;
         self.offset = (self.offset + f64::from(rate * dt)).clamp(0.0, self.max_offset(view));
