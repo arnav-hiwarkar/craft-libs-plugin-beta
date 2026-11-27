@@ -342,6 +342,11 @@ fn the_probe_take_table_sorts_by_the_clicked_column_flips_on_a_second_click_and_
     assert_eq!(top(&panel, 3), ["take 0\t0.0 s\t*", "take 1\t1.1 s\t**", "take 10\t10.0 s\t*"]);
     panel.list_event(1, Rename { row: 1, text: "Opening".into() }).unwrap();
     assert_eq!(top(&panel, 2), ["take 0\t0.0 s\t*", "Opening\t1.1 s\t**"]);
+    let keys = panel.widgets().iter().rev().find_map(|widget| match widget {
+        craft_plugin::Widget::List { items, .. } => Some(items.iter().take(3).map(|item| item.key.clone().unwrap_or_default()).collect::<Vec<_>>()),
+        _ => None,
+    });
+    assert_eq!(keys, Some(vec!["take-0".to_string(), "take-1".into(), "take-10".into()]), "each take keeps its key in its sorted place");
 }
 
 #[test]

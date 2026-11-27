@@ -2223,6 +2223,8 @@ pub struct Item {
     pub open: Option<bool>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub weak: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
 }
 
 fn is_zero(depth: &u8) -> bool {
@@ -2255,6 +2257,11 @@ impl Item {
 
     pub fn weak(mut self) -> Item {
         self.weak = true;
+        self
+    }
+
+    pub fn key(mut self, key: &str) -> Item {
+        self.key = Some(key.into());
         self
     }
 }

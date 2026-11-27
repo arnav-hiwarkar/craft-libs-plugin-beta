@@ -1825,7 +1825,9 @@ impl Panel for Tree {
         let options = ListOptions { columns: &["Take", "Length", "Rating"], rename: true, sortable: true, sorted: self.sorted, ..Default::default() };
         let (order, names) = (&self.order, &self.names);
         let takes =
-            ui.list_with("takes", &options, TAKES, &mut self.takes, |row| Item::cells(&take_cells(order[row], names).each_ref().map(String::as_str)));
+            ui.list_with("takes", &options, TAKES, &mut self.takes, |row| {
+                Item::cells(&take_cells(order[row], names).each_ref().map(String::as_str)).key(&format!("take-{}", order[row]))
+            });
         if let Some(row) = takes.activated {
             self.said = format!("activated {}", take_cells(self.order[row], &self.names)[0]);
         }

@@ -113,7 +113,10 @@ fn lists(widgets: &[Widget]) -> Vec<(u64, Shown<'_>)> {
 
 fn moved_row(row: u32, (old_first, old): Shown, (new_first, new): Shown) -> Option<u32> {
     let Some(item) = row.checked_sub(old_first).and_then(|at| old.get(at as usize)) else { return Some(row) };
-    let mut same = new.iter().enumerate().filter(|(_, other)| *other == item);
+    let mut same = new.iter().enumerate().filter(|(_, other)| match (&item.key, &other.key) {
+        (Some(key), Some(other)) => key == other,
+        _ => *other == item,
+    });
     match (same.next(), same.next()) {
         (Some((at, _)), None) => Some(new_first + at as u32),
         _ => None,
@@ -726,6 +729,36 @@ mod tests {
         panel.push(vec![rename(2)], "");
         panel.finish(answered(&["new", "a", "c"]), ms(40));
         assert_eq!((panel.pending(), panel.start(SIZE, ms(50))), (false, None), "the renamed item is gone, so the rename is dropped");
+    }
+
+    #[test]
+    fn a_row_action_on_one_of_two_equal_items_follows_its_key_to_its_new_row_even_when_its_cells_changed() {
+        let take = |key: &str| craft_plugin::Item::new("take").key(key);
+        let list = |items: Vec<craft_plugin::Item>| Widget::List {
+            id: 5,
+            columns: Vec::new(),
+            count: items.len() as u32,
+            first: 0,
+            items,
+            selected: Vec::new(),
+            multi: false,
+            rows: 8,
+            edit: Default::default(),
+        };
+        let answered = |items| Ok(PanelReply { widgets: vec![list(items)], ..Default::default() });
+        let activate = |row| UiEvent { id: 5, kind: UiEventKind::List(ListEvent::Activate(row)) };
+        let mut panel = Retained::new();
+        panel.start(SIZE, ms(0));
+        panel.finish(answered(vec![take("take-1"), take("take-2")]), ms(0));
+        slow_call(&mut panel);
+        panel.push(vec![activate(1)], "");
+        panel.finish(answered(vec![craft_plugin::Item::new("new"), take("take-1"), craft_plugin::Item::new("take, rated").key("take-2")]), ms(20));
+        assert_eq!(panel.start(SIZE, ms(30)).map(|input| input.events), Some(vec![activate(2)]));
+        panel.finish(answered(vec![take("take-2"), take("take-1")]), ms(30));
+        slow_call(&mut panel);
+        panel.push(vec![activate(0)], "");
+        panel.finish(answered(vec![take("take-1"), craft_plugin::Item::new("take")]), ms(40));
+        assert_eq!((panel.pending(), panel.start(SIZE, ms(50))), (false, None), "take-2 is gone and the unkeyed twin is not it");
     }
 
     #[test]
