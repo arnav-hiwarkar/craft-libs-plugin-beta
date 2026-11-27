@@ -3070,8 +3070,11 @@ name = "craft-plugin-ui"
 version = "0.1.0"
 dependencies = [
  "craft-plugin",
+ "craft-plugin-host",
+ "craft-plugin-ui",
  "egui",
  "egui_kittest",
+ "serde_json",
 ]
 
 [[package]]
