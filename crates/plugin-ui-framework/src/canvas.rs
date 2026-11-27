@@ -1,6 +1,6 @@
+use crate::paint_area::{PaintArea, PaintPhase};
 use craft_plugin::{Key, Modifiers, Paint, Pointer, PointerPhase, Shape, UiEventKind};
 use craft_ui::contract::{Props as _, Show as _};
-use craft_ui::controls::paint_area::{PaintArea, PaintPhase};
 use craft_ui::primitives::{ContentPainterCx, Revision, TextureState, TextureStore, TextureStoreOptions};
 use egui::epaint::CubicBezierShape;
 use egui::{Align2, Color32, FontId, Pos2, Rect, Stroke, StrokeKind, Vec2};
@@ -151,13 +151,12 @@ impl Painter<'_> {
         let aspect = if size[0] > 0.0 && size[1] > 0.0 { size[0] / size[1] } else { 2.0 };
         let textures = self.textures(ui, shapes);
         let triangulate = self.host.triangulate();
-        let out = PaintArea::new(label, |painter, rect| {
+        let out = PaintArea::new(label, aspect, |painter, rect| {
             let drawn = Drawn { space: Space::of(rect, size), triangulate, textures: &textures };
             for each in shapes {
                 painter.data_shapes(shape(painter, &drawn, each));
             }
         })
-        .aspect(aspect)
         .id_salt(self.salt(id))
         .show(ui);
         self.seen(ui, &out.response, crate::Keys::Field);

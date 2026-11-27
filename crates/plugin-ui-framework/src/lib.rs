@@ -6,6 +6,7 @@ pub mod dock;
 mod icons;
 mod list;
 mod menu;
+mod paint_area;
 mod values;
 
 use craft_plugin::{Dropped, FrameRequest, TextStyle, UiEvent, UiEventKind, Widget};
