@@ -214,7 +214,7 @@ impl<H: Host> Renderer<'_, H> {
             0 => ui.available_height().max(row_height),
             shown => row_height * shown as f32,
         };
-        let guess = Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), height));
+        let guess = Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), height.min(stride * rows.count as f32)));
         let list = ui.interact(cursor.area.unwrap_or(guess), egui::Id::unique(("plugin-list-area", self.scope, id)), Sense::CLICK);
         let (role, name) = if rows.columns.is_empty() { (egui::Role::List, "List") } else { (egui::Role::Grid, "Table") };
         let label = self.host.tr(name);
@@ -305,7 +305,8 @@ impl<H: Host> Renderer<'_, H> {
                 menu |= response;
             }
         });
-        cursor.area = Some(output.inner_rect);
+        let inner = output.inner_rect;
+        cursor.area = Some(Rect::from_min_size(inner.min, vec2(inner.width(), inner.height().min(output.content_size.y))));
         if let Some((row, done)) = renamed {
             if let Some(text) = done.filter(|text| rows.item(row).and_then(|item| item.cells.first()) != Some(text)) {
                 self.emit(id, UiEventKind::List(ListEvent::Rename { row, text }));

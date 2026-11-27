@@ -1829,6 +1829,11 @@ impl Panel for Tree {
         if let Some(row) = takes.activated {
             self.said = format!("activated {}", take_cells(self.order[row], &self.names)[0]);
         }
+        let mut copy = false;
+        ui.context_menu(|menu| copy = menu.item("Copy Take Name"));
+        if let Some(row) = self.takes.first().filter(|_| copy) {
+            self.said = format!("copied {}", take_cells(self.order[*row], &self.names)[0]);
+        }
         ui.label(&self.said);
     }
 }
