@@ -389,6 +389,13 @@ pub fn cases() -> Vec<Case> {
             expect: Expect::Events(vec![event(21, UiEventKind::Number(7.0))]),
         },
         Case {
+            name: "right-clicking a list row selects it and opens the context menu that follows the list",
+            size: [400.0, 300.0],
+            tree: vec![list(3, 0, 3, vec![]), menu(21, None)],
+            steps: vec![Step::RightClick("file 1"), Step::Click("Rename")],
+            expect: Expect::Events(vec![select(&[1]), event(21, UiEventKind::Number(0.0))]),
+        },
+        Case {
             name: "the Menu key opens the context menu of the focused widget",
             size: [400.0, 300.0],
             tree: vec![button(20, "Clip"), menu(21, None)],

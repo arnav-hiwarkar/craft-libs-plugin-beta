@@ -656,3 +656,14 @@ fn text_typed_in_two_passes_before_the_plugin_replies_keeps_both_letters_and_a_r
     harness.run();
     assert_eq!(harness.get_by_role(egui::Role::MultilineTextInput).accesskit_node().value().as_deref(), Some(""));
 }
+
+#[test]
+fn a_short_list_that_may_fill_the_panel_claims_only_its_rows_so_the_button_after_it_is_outside() {
+    let items = (0..3).map(|row| craft_plugin::Item::new(&format!("file {row}"))).collect();
+    let list = Widget::List { id: 4, columns: vec![], count: 3, first: 0, items, selected: vec![], multi: false, rows: 0, edit: Default::default() };
+    let mut harness = harness(vec![list, Widget::Button { id: 9, text: "After".into(), enabled: true }]);
+    harness.set_size(vec2(240.0, 400.0));
+    harness.run();
+    let (list, after) = (harness.get_by_label("List").rect(), harness.get_by_label("After").rect());
+    assert!(list.max.y <= after.min.y, "the list area {list:?} reaches over the button {after:?}");
+}
