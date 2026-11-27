@@ -43,6 +43,8 @@ pub enum Access {
     Refused(String),
 }
 
+pub type Job<T> = Box<dyn FnOnce() -> T + Send>;
+
 pub struct Pixels {
     pub width: u32,
     pub height: u32,
@@ -105,6 +107,16 @@ pub trait Host {
 
     fn audio(&mut self, _request: &AudioRequest) -> Result<Samples, String> {
         Err("audio is not available here".into())
+    }
+
+    fn frame_job(&mut self, request: &FrameRequest) -> Result<Job<Pixels>, String> {
+        let pixels = self.frame(request)?;
+        Ok(Box::new(move || pixels))
+    }
+
+    fn audio_job(&mut self, request: &AudioRequest) -> Result<Job<Samples>, String> {
+        let samples = self.audio(request)?;
+        Ok(Box::new(move || samples))
     }
 
     fn pick_file(&mut self, _request: &PickFile) -> Result<Option<PathBuf>, String> {

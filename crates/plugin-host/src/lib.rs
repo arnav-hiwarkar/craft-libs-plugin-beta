@@ -15,6 +15,7 @@ mod runtime;
 #[cfg(target_family = "wasm")]
 #[path = "unavailable.rs"]
 mod runtime;
+mod surfaces;
 #[cfg(all(feature = "testing", not(target_family = "wasm")))]
 pub mod testing;
 
@@ -25,7 +26,7 @@ pub use craft_plugin::{
     ParamsAt, Permission, PickFile, Pixel, Place, Plan, PlanData, PlanImage, PlanPass, Rect, RenderCx, RunMode, Scene, TaskSpec, TaskState,
     TaskStatus, UiEvent, UiEventKind, UiInput, Value, Widget, applied_padding, default_curves_text,
 };
-pub use host::{Access, AuxPlanes, Host, MAX_FRAME_SCALE, Origin, Pixels, Samples, check_frame};
+pub use host::{Access, AuxPlanes, Host, Job, MAX_FRAME_SCALE, Origin, Pixels, Samples, check_frame};
 pub use images::{MAX_IMAGE_SIDE, PluginImage};
 pub use journal::{LogLine, LogPage};
 pub use package::{
@@ -43,8 +44,12 @@ pub mod ui {
         ListEvent, MenuItem, Modifiers, PANEL_MENU, Paint, PanelPlace, PanelReply, PanelSize, PanelSpec, Pointer, PointerPhase, Root, Shape, Span,
         TextStyle, Topic, UI_LEVEL, UiEvent, UiEventKind, UiInput, View, Widget,
     };
+
+    pub use crate::surfaces::{AskedForm, Document, Gesture, Owner, Shown, Surface, Surfaces, Values, answer_form, asked_form, run_now};
 }
 
 pub mod viewer {
     pub use craft_plugin::{Bind, Cursor, Handle, Mark, Overlay, Pen, Space, ToolEvent, ToolEventKind, ToolSpec};
+
+    pub use crate::surfaces::viewer::Shown;
 }

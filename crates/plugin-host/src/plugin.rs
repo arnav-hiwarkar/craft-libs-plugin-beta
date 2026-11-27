@@ -147,6 +147,7 @@ pub struct Plugin {
     limits: Limits,
     contributions: Contributions,
     warned_gradients: Mutex<HashMap<String, u64>>,
+    stopped: AtomicBool,
 }
 
 struct NoHost;
@@ -176,7 +177,14 @@ impl Plugin {
     }
 
     fn described(manifest: Manifest, engine: Arc<Engine>, limits: Limits) -> Result<Plugin, PluginError> {
-        let mut plugin = Plugin { manifest, engine, limits, contributions: Contributions::default(), warned_gradients: Mutex::default() };
+        let mut plugin = Plugin {
+            manifest,
+            engine,
+            limits,
+            contributions: Contributions::default(),
+            warned_gradients: Mutex::default(),
+            stopped: AtomicBool::new(false),
+        };
         let kept = plugin.engine.described().and_then(|reply| parse::<Contributions>(&reply).ok().filter(|found| found.check().is_ok()));
         plugin.contributions = match kept {
             Some(contributions) => contributions,
@@ -452,6 +460,15 @@ impl Plugin {
 
     pub fn cancel_all(&self) {
         self.engine.cancel_all();
+    }
+
+    pub fn stop(&self) {
+        self.stopped.store(true, std::sync::atomic::Ordering::Release);
+        self.engine.cancel_all();
+    }
+
+    pub fn stopped(&self) -> bool {
+        self.stopped.load(std::sync::atomic::Ordering::Acquire)
     }
 
     pub fn pump(&self, host: &mut dyn Host) -> usize {

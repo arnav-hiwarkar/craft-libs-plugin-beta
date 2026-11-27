@@ -62,30 +62,41 @@ SDK (EffectCraft keeps `crates/plugin/tests/it/legacy/legacy.wasm`).
    commands to `document.write`, require both file permissions for any command that names a file, and run
    one plugin batch as one undo step. Keep a census of every allowed command with its decision and a test
    that fails when a command is added. Test each rule with a probe call that is refused without it.
-3. **Panels.** Dock a panel per contribution. Run interactive calls on three worker threads per plugin,
-   each started on first use: UI (panels, controls, buttons, migrations), viewer (overlays, drags, tools)
-   and commands, so a slow panel call holds back no overlay, tool or command. The kit runs a sandboxed
-   overlay or drag on a pooled instance and a tool on an instance of its own; only commands share the
-   panels' instance. A plugin whose `event_level()` is below 2 (built before lanes) keeps one instance for
-   panels, tools, overlays and drags, so statics its panel sets still reach its tool and overlay; the
-   threads stay, and its viewer calls wait while a panel call runs. The UI thread posts requests, answers host calls that need the document, and applies
-   replies, with a time budget per UI frame. Give each request the plugin's load, the project's token and the surface's
-   token, and drop it when any is stale. Feed `Retained` with the app's events (`Topic`: selection, time,
-   comp, project, edit, mapped to the app's nearest equivalents). Give each custom parameter row its own
-   `Retained` on the same worker and pass a `ControlsReply`'s `topics` and `timers` into it, so rows
-   subscribe and tick as panels do. Make each `Retained` with `Retained::with_level(contributions.event_level())`
-   and compare tool events with `event_level()` too: a plugin built before UI levels reports 0, which means 1,
-   and comparing with the raw `ui_level` drops all of its events. When the user closes a tab of a
-   `panel_each` instance, drop its `Retained` and send one more `Call::Panel` with `UiInput { closed: true,
-   instance, .. }` on the same UI worker, so the SDK forgets that instance. Key each `Retained` and the
-   painter scope on the structured identity (plugin, panel, instance); escape `.`, `#` and `%` in the scope's
-   panel and instance parts. When the project a `Retained` was drawn for is replaced, call
-   `Retained::reset` and drop the surface's token, so queued input never reaches the new project. Call
-   `Retained::split` when a drag starts on the panel and give each call the undo gesture of
-   `started_gesture()`, so two drags behind a slow call stay two undo steps. Test: zero plugin calls over idle frames;
-   each event kind calls once; a reply after the project closed is dropped; a panel click and a tool press of
-   the stored pre-programme probe (`tests/it/fixtures/probe-before-regions.wasm`) reach it; kittests with real
-   pointer and key events.
+3. **Panels.** The kit's `ui::Surfaces` runs every interactive call: panel slots and their `Retained`, custom
+   parameter rows, buttons, menu commands, overlays, handle drags and tools, on three worker threads per plugin
+   (UI, viewer, commands) with the forwarding queue, the per-frame time budget, project and surface tokens,
+   instance close calls, timers, app-event fan-out and the form queue. The app implements one trait,
+   `ui::Document`, over whatever holds its open document, and calls `Surfaces` from its UI thread:
+   - `project()`: the open document's closed flag (`Arc<AtomicBool>`); a new one for each document opened.
+     Requests, replies, forms and slots are bound to it, so nothing reaches the next document.
+   - `app_events()`: what changed since the last frame, as `AppEvent`s (selection, time, comp, project, edit,
+     mapped to the app's nearest equivalents). `Surfaces::frame` asks once per frame, after it applied replies.
+   - `serve(plugin, gesture, call)`: run `call` with the app's `Host` for that plugin (its permission gate and
+     commands), and with a gesture fold what the call changed into that gesture's one undo step.
+     `Gesture::state` holds what the app needs to remember per gesture (EffectCraft keeps the document after the
+     gesture's last edit); `keeps_own()` marks a command or button, whose single own undo step keeps its label.
+   - `admit(gesture)` (optional): refuse a call of a gesture that should stop, such as a button that became
+     hidden; the text reaches the plugin's log.
+   - `holds(edit)` and `write(edit, value)`: `edit` is the app's own JSON naming where a custom control or
+     handle writes. `write` applies a reply's value; `holds` returns what that place holds now. A handle's drag
+     reply is written only if `holds` still returns what it returned when the drag was sent, so an edit made
+     while the plugin answered is kept.
+   Per frame call `frame(doc, now)` (it returns when the next timer is due) and `show(doc, plugin, surface,
+   size)` for each visible panel or custom row; give `Surface::Control` the row's current value and `edit`.
+   Forward input with `submit`, `press_key`, `hold` (a drag starts or ends) and `menu`; post `command`,
+   `press` (a `Call::Button` with a `Gesture::new(name).keeping_own()`), `overlay`, `drag`, `tool` and
+   `put_tool_away`; `close` an instance tab with its `Owner`. Run a command synchronously for automation with
+   `ui::run_now`, which serves the document while it waits. Show a form while `ui::asked_form(project)` returns
+   one and answer it with `ui::answer_form`. When the app stops or replaces a plugin, call `Plugin::stop` on the
+   old load (it is how queued requests learn the load is gone). Implement `Host::frame_job` and
+   `Host::audio_job` so frames a panel asks for render off the UI thread. The kit makes each `Retained` at the
+   plugin's `event_level()`, compares tool events with it, keys slots on the structured identity
+   (`Owner::Panel { plugin, panel, instance }`), resets a slot when its document changes, and splits drags into
+   gestures. The app still escapes `.`, `#` and `%` in its painter scope. Test: zero plugin calls over idle
+   frames; each event kind calls once; a reply after the project closed is dropped; a panel click and a tool
+   press of the stored pre-programme probe (`tests/it/fixtures/probe-before-regions.wasm`) reach it; a drag
+   reply after a direct edit of its parameter leaves the edit; kittests with real pointer and key events.
+   EffectCraft's `Document` is `Doc` in `crates/plugin/src/panels.rs`.
 4. **Tasks.** Run on their own thread and instance, bound to the project they started in and cancelled when
    it closes. Answer their document requests on the main thread through a pump. Test: progress, cancel,
    and a task that outlives its project.
@@ -135,9 +146,9 @@ Paths in the EffectCraft fork (`pluginkit/effectcraft`, branch `pluginkit`).
 | Command gate policy and its census | `crates/plugin/src/gate.rs` (`DOCUMENT_FAMILIES`, `SessionHost`), `crates/plugin/src/gate/census.tsv` |
 | Script refusal of plugin management | `crates/engine/src/cmd/plugin.rs` |
 | Effects: `EffectRegistry`, `ParamValues`, the render `Host`, margins | `crates/plugin/src/effects.rs` (`impl EffectRegistry for Engine`, `impl ParamValues for Placed`, `RenderHost`, `margin`) |
-| One queue per plugin, request identity, the panel worker's `Host` | `crates/plugin/src/panels.rs` (`Panels`, `Remote`) |
+| The `ui::Document` over the session, buttons, app events, custom-row edits | `crates/plugin/src/panels.rs` (`Doc`, `Panels`, `Target`) |
 | State versions: stamp, migrate on open, keep newer | `crates/plugin/src/effects.rs` (`migrate`), `crates/engine/src/session/edit.rs` (`upgrade_effects`) |
-| Overlays, handles, caps | `crates/plugin/src/viewer.rs` |
+| Overlay contexts, handle binds | `crates/plugin/src/viewer.rs` |
 | UI `Host` and `Theme` | `crates/ui-egui/src/panels/plugin_view.rs` (`AppHost`, `theme`) |
 | Effect Controls rows, overlay drawing, handles | `crates/ui-egui/src/panels/effect_controls/{rows,plugin_overlay,viewer}.rs` |
 | Tools, manager window | `crates/ui-egui/src/panels/plugin_tools.rs`, `plugin_manager.rs` |
