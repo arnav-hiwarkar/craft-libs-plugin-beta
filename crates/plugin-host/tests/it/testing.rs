@@ -297,15 +297,15 @@ fn a_sandboxed_panel_sees_a_static_its_command_set_while_its_tool_and_overlay_ru
 }
 
 #[test]
-fn a_tool_reads_the_pen_pressure_tilt_and_end_of_a_move_and_a_mouse_move_has_no_pen() {
+fn a_tool_reads_the_pen_pressure_tilt_turn_and_end_of_a_move_and_a_mouse_move_has_no_pen() {
     let (_bundle, plugin) = probe();
-    let pen = craft_plugin::Pen { pressure: 0.5, tilt: [0.25, -0.5], eraser: true, rotation: 0.0 };
+    let pen = craft_plugin::Pen { pressure: 0.5, tilt: [0.25, -0.5], eraser: true, rotation: 1.25 };
     let drawn = written(
         plugin.tool("stamp", craft_plugin::ToolEvent { pen: Some(pen), pressure: 0.5, ..pointer(ToolEventKind::Move, [40.0, 30.0]) }).unwrap(),
     );
-    assert_eq!(drawn, ["Move 40.0 30.0 pen 0.50 0.25 -0.50 eraser at 0.50"]);
+    assert_eq!(drawn, ["Move 40.0 30.0 pen 0.50 0.25 -0.50 turn 1.25 eraser at 0.50"]);
     let drawn = written(plugin.tool("stamp", pointer(ToolEventKind::Move, [50.0, 35.0])).unwrap());
-    assert_eq!(drawn, ["Move 40.0 30.0 pen 0.50 0.25 -0.50 eraser at 0.50", "Move 50.0 35.0"]);
+    assert_eq!(drawn, ["Move 40.0 30.0 pen 0.50 0.25 -0.50 turn 1.25 eraser at 0.50", "Move 50.0 35.0"]);
 }
 
 #[test]

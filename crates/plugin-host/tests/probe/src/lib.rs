@@ -1199,7 +1199,7 @@ impl Tool for Stamp {
         let [x, y] = event.comp;
         let pen = event.pen.map_or(String::new(), |pen| {
             let end = if pen.eraser { " eraser" } else { "" };
-            format!(" pen {:.2} {:.2} {:.2}{end} at {:.2}", pen.pressure, pen.tilt[0], pen.tilt[1], event.pressure)
+            format!(" pen {:.2} {:.2} {:.2} turn {:.2}{end} at {:.2}", pen.pressure, pen.tilt[0], pen.tilt[1], pen.rotation, event.pressure)
         });
         let line = format!("{:?} {x:.1} {y:.1}{pen}", event.kind);
         match event.kind {
