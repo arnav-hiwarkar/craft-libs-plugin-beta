@@ -8,6 +8,7 @@ mod icons;
 mod list;
 mod menu;
 mod paint_area;
+mod picture_button;
 mod values;
 
 use craft_plugin::{Dropped, FrameRequest, TextStyle, UiEvent, UiEventKind, Widget};
@@ -438,8 +439,7 @@ impl Painter<'_> {
         let make = || host.picture(key).unwrap_or_else(|| egui::ColorImage::new([1, 1], vec![Default::default()]));
         let revision = craft_ui::primitives::Revision::new(host.version(key));
         let room = egui::Vec2::new(values::extent(size[0]), values::extent(size[1]));
-        let out = craft_ui::buttons::PictureButton::new(extras.label(key), values::key_hash(key), &make, room)
-            .revision(revision)
+        let out = picture_button::PictureButton::new(extras.label(key), values::key_hash(key), revision, &make, room)
             .id_salt(self.salt(id))
             .tip(extras)
             .show(ui);
