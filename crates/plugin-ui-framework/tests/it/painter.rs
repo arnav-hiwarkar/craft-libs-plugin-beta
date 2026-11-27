@@ -246,3 +246,21 @@ fn an_image_takes_the_size_the_plugin_gave_and_a_click_on_it_sends_its_id() {
     fixture.settle();
     assert_eq!(*events.borrow(), vec![UiEvent { id: 9, kind: craft_plugin::UiEventKind::Click }]);
 }
+
+#[test]
+fn the_default_triangulation_covers_a_concave_polygon_with_indices_into_its_own_points_in_either_winding() {
+    use craft_plugin_ui_framework::Host as _;
+    let ell = [[0.0, 0.0], [40.0, 0.0], [40.0, 10.0], [10.0, 10.0], [10.0, 30.0], [0.0, 30.0]];
+    let triangulate = ().triangulate();
+    for ring in [ell.to_vec(), ell.iter().rev().copied().collect()] {
+        let triangles = triangulate(&ring);
+        assert_eq!(triangles.len(), 4, "a hexagon is four triangles");
+        let area = |[a, b, c]: [usize; 3]| {
+            let ([ax, ay], [bx, by], [cx, cy]) = (ring[a], ring[b], ring[c]);
+            ((bx - ax) * (cy - ay) - (by - ay) * (cx - ax)).abs() / 2.0
+        };
+        let covered: f64 = triangles.iter().copied().map(area).sum();
+        assert_eq!(covered, 600.0, "the triangles over the given points cover the L's 600 square points");
+    }
+    assert!(triangulate(&[[0.0, 0.0], [1.0, 0.0]]).is_empty(), "two points are no polygon");
+}
