@@ -1,0 +1,669 @@
+use craft_plugin::{Key, Modifiers, Paint, Pointer, PointerPhase, Shape, TextStyle, UiEvent, UiEventKind, Widget};
+use egui::vec2;
+use egui_kittest::Harness;
+use egui_kittest::kittest::{NodeT, Queryable};
+
+use crate::conformance::{Bare, theme};
+use crate::{Answer, draw, draw_form, draw_panel_menu};
+
+fn harness(widgets: Vec<Widget>) -> Harness<'static, Vec<UiEvent>> {
+    Harness::new_ui_state(
+        move |ui, events: &mut Vec<UiEvent>| events.extend(draw(ui, &widgets, &theme(), "plugin.test.panel", &mut Bare)),
+        Vec::new(),
+    )
+}
+
+#[test]
+fn an_open_section_inside_a_row_stays_open_when_a_sibling_appears_above_the_row() {
+    let section = Widget::Collapsing {
+        id: 2,
+        title: "More".into(),
+        open: false,
+        children: vec![Widget::Button { id: 3, text: "Inside".into(), enabled: true }],
+    };
+    let mut harness = Harness::new_ui_state(
+        move |ui, widgets: &mut Vec<Widget>| {
+            draw(ui, widgets, &theme(), "plugin.test.panel", &mut Bare);
+        },
+        vec![Widget::Row { children: vec![section] }],
+    );
+    harness.get_by_label("More").click();
+    harness.run();
+    assert!(harness.query_by_label("Inside").is_some());
+    harness.state_mut().insert(0, Widget::Label { text: "Name taken".into(), style: TextStyle::Error });
+    harness.run();
+    assert!(harness.query_by_label("Name taken").is_some());
+    assert!(harness.query_by_label("Inside").is_some());
+}
+
+#[test]
+fn picking_a_panel_menu_item_sends_its_index_counting_separators_and_a_disabled_item_sends_nothing() {
+    let item = |text: &str| craft_plugin::MenuItem { text: text.into(), ..Default::default() };
+    let items = vec![
+        item("Zoom to Fit"),
+        craft_plugin::MenuItem { separator: true, ..Default::default() },
+        item("Reset View"),
+        craft_plugin::MenuItem { disabled: true, ..item("Export") },
+    ];
+    let mut harness = Harness::new_ui_state(
+        move |ui, events: &mut Vec<UiEvent>| events.extend(draw_panel_menu(ui, &items, &theme(), "plugin.test.panel", &mut Bare)),
+        Vec::new(),
+    );
+    harness.get_by_label("Export").click();
+    harness.run();
+    harness.get_by_label("Reset View").click();
+    harness.run();
+    assert_eq!(harness.state(), &vec![UiEvent { id: craft_plugin::PANEL_MENU, kind: UiEventKind::Number(2.0) }]);
+}
+
+#[test]
+fn clicking_a_button_sends_a_click_with_its_id() {
+    let mut harness = harness(vec![Widget::Button { id: 42, text: "Count".into(), enabled: true }]);
+    harness.get_by_label("Count").click();
+    harness.run();
+    assert_eq!(harness.state(), &vec![UiEvent { id: 42, kind: UiEventKind::Click }]);
+}
+
+#[test]
+fn dragging_a_slider_sends_numbers_with_its_id_ending_at_the_dragged_value() {
+    let mut harness = harness(vec![Widget::Slider { id: 7, text: "Speed".into(), value: 0.0, min: 0.0, max: 10.0 }]);
+    harness.run();
+    let rail = harness.get_by_role(egui::Role::Slider).rect();
+    harness.drag_at(rail.left_center());
+    harness.run();
+    harness.hover_at(rail.right_center() + vec2(40.0, 0.0));
+    harness.run();
+    harness.drop_at(rail.right_center() + vec2(40.0, 0.0));
+    harness.run();
+    let events = harness.state();
+    assert!(!events.is_empty());
+    assert!(events.iter().all(|event| event.id == 7 && matches!(event.kind, UiEventKind::Number(_))), "{events:?}");
+    assert_eq!(events.last().map(|event| &event.kind), Some(&UiEventKind::Number(10.0)));
+}
+
+#[test]
+fn dragging_a_number_with_a_range_stops_at_the_range_and_keeps_its_decimals() {
+    let number = Widget::Number { id: 3, text: "Count".into(), value: 2.0, speed: 1.0, range: Some([0.0, 5.0]), decimals: Some(1) };
+    let mut harness = harness(vec![number]);
+    harness.run();
+    assert_eq!(harness.get_by_role(egui::Role::SpinButton).value().as_deref(), Some("2.0"));
+    let at = harness.get_by_role(egui::Role::SpinButton).rect().center();
+    harness.drag_at(at);
+    harness.run();
+    harness.hover_at(at + vec2(200.0, 0.0));
+    harness.run();
+    harness.drop_at(at + vec2(200.0, 0.0));
+    harness.run();
+    assert_eq!(harness.state().last().map(|event| &event.kind), Some(&UiEventKind::Number(5.0)));
+}
+
+#[test]
+fn enter_in_a_number_field_commits_the_value_and_tab_then_reaches_the_next_control() {
+    let number = Widget::Number { id: 3, text: "Count".into(), value: 2.0, speed: 1.0, range: None, decimals: None };
+    let next = Widget::Button { id: 10, text: "Next".into(), enabled: true };
+    let mut harness = harness(vec![number, next]);
+    harness.run();
+    harness.get_by_role(egui::Role::SpinButton).click();
+    harness.run();
+    harness.get_by_role(egui::Role::SpinButton).type_text("4");
+    harness.run();
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+    assert_eq!(harness.state().last().map(|event| &event.kind), Some(&UiEventKind::Number(4.0)));
+    assert!(harness.get_by_role(egui::Role::SpinButton).is_focused(), "the field keeps the keyboard after Enter");
+    harness.key_press(egui::Key::Tab);
+    harness.run();
+    assert!(harness.get_by_label("Next").is_focused(), "Tab goes to the control after the field");
+}
+
+#[test]
+fn a_canvas_with_extreme_or_broken_coordinates_still_draws_in_bounded_time() {
+    let far = f32::MAX;
+    let shapes = vec![
+        Shape::Bezier { points: [[0.0, 0.0], [1e30, 1e30], [-1e30, 0.0], [10.0, 10.0]], color: Paint::Accent, width: 1e30 },
+        Shape::Bezier { points: [[0.0, 0.0], [f32::NAN, 1.0], [2.0, f32::INFINITY], [10.0, 10.0]], color: Paint::Accent, width: 1.0 },
+        Shape::Line { points: vec![[0.0, 0.0], [far, -far], [f32::NAN, 0.0]], color: Paint::Text, width: f32::NAN },
+        Shape::Circle { center: [5.0, 5.0], radius: f32::INFINITY, fill: Some(Paint::Error), stroke: None },
+        Shape::Rect { min: [-far, -far], max: [far, far], fill: Some(Paint::Surface), stroke: Some((Paint::Border, far)), radius: f32::NAN },
+        Shape::Text { pos: [f32::NAN, 0.0], text: "x".into(), color: Paint::Text, size: f32::INFINITY },
+    ];
+    let mut harness = harness(vec![Widget::Canvas { id: 7, size: [f32::INFINITY, f32::NAN], shapes }]);
+    harness.run();
+    assert!(harness.state().iter().all(|event| event.id == 7));
+}
+
+#[test]
+fn clicking_a_tab_inside_a_scroll_area_and_a_grid_sends_its_index() {
+    let tabs = Widget::Tabs { id: 5, options: vec!["Red".into(), "Green".into()], selected: 0 };
+    let grid = Widget::Grid { id: 6, columns: 2, children: vec![tabs, Widget::Progress { fraction: 0.5, text: "Half".into() }] };
+    let mut harness = harness(vec![Widget::Scroll { id: 4, height: 80.0, rows: None, children: vec![grid] }]);
+    harness.get_by_label("Green").click();
+    harness.run();
+    assert_eq!(harness.state(), &vec![UiEvent { id: 5, kind: UiEventKind::Number(1.0) }]);
+}
+
+#[test]
+fn a_collapsing_section_closed_by_default_hides_its_children_until_opened() {
+    let button = Widget::Button { id: 3, text: "Inside".into(), enabled: true };
+    let mut harness = harness(vec![Widget::Collapsing { id: 2, title: "More".into(), open: false, children: vec![button] }]);
+    harness.run();
+    assert!(harness.query_by_label("Inside").is_none());
+    harness.get_by_label("More").click();
+    harness.run();
+    harness.run();
+    assert!(harness.query_by_label("Inside").is_some());
+}
+
+#[test]
+fn dragging_on_a_canvas_sends_down_then_drags_then_up_with_the_held_modifiers() {
+    let mut harness = harness(vec![Widget::Canvas { id: 11, size: [100.0, 100.0], shapes: vec![] }]);
+    harness.run();
+    let rect = harness.get_by_label("Plug-in drawing").rect();
+    harness.drag_at(rect.center());
+    harness.run();
+    harness.hover_at(rect.center() + vec2(10.0, 0.0));
+    harness.run();
+    harness.hover_at(rect.center() + vec2(20.0, 0.0));
+    harness.run();
+    harness.drop_at(rect.center() + vec2(20.0, 0.0));
+    harness.run();
+    let phases: Vec<PointerPhase> = harness
+        .state()
+        .iter()
+        .filter_map(|event| match event.kind {
+            UiEventKind::Pointer(pointer) if event.id == 11 => Some(pointer.phase),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(phases.first(), Some(&PointerPhase::Down), "{phases:?}");
+    assert!(phases.contains(&PointerPhase::Drag), "{phases:?}");
+    assert_eq!(phases.last(), Some(&PointerPhase::Up), "{phases:?}");
+}
+
+fn canvas_events(harness: &Harness<'static, Vec<UiEvent>>) -> Vec<UiEventKind> {
+    harness.state().iter().filter(|event| event.id == 11).map(|event| event.kind.clone()).collect()
+}
+
+#[test]
+fn a_canvas_reached_with_tab_gets_arrow_keys_with_their_modifiers_and_keeps_the_focus() {
+    let button = Widget::Button { id: 10, text: "Before".into(), enabled: true };
+    let mut harness = harness(vec![button, Widget::Canvas { id: 11, size: [100.0, 60.0], shapes: vec![] }]);
+    harness.run();
+    harness.key_press(egui::Key::Tab);
+    harness.run();
+    harness.key_press(egui::Key::Tab);
+    harness.run();
+    assert!(harness.get_by_label("Plug-in drawing").is_focused());
+    harness.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::ArrowLeft);
+    harness.run();
+    harness.key_press(egui::Key::ArrowDown);
+    harness.run();
+    let shift = Modifiers { shift: true, alt: false, command: false };
+    assert_eq!(
+        canvas_events(&harness),
+        vec![
+            UiEventKind::Key(Key { name: "Left".into(), modifiers: shift }),
+            UiEventKind::Key(Key { name: "Down".into(), modifiers: Modifiers::default() })
+        ]
+    );
+    assert!(harness.get_by_label("Plug-in drawing").is_focused());
+}
+
+#[test]
+fn every_pointer_move_of_a_frame_reaches_the_canvas_in_order() {
+    let mut harness = harness(vec![Widget::Canvas { id: 11, size: [100.0, 100.0], shapes: vec![] }]);
+    harness.run();
+    let origin = harness.get_by_label("Plug-in drawing").rect().min;
+    harness.drag_at(origin + vec2(10.0, 10.0));
+    harness.run();
+    harness.state_mut().clear();
+    for x in [20.0, 30.0, 40.0] {
+        harness.event(egui::Event::PointerMoved(origin + vec2(x, 10.0)));
+    }
+    harness.run();
+    let drags: Vec<[f32; 2]> = canvas_events(&harness)
+        .into_iter()
+        .filter_map(|kind| match kind {
+            UiEventKind::Pointer(Pointer { phase: PointerPhase::Drag, pos, .. }) => Some(pos),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(drags, vec![[20.0, 10.0], [30.0, 10.0], [40.0, 10.0]]);
+}
+
+type Asked = (std::collections::BTreeMap<String, craft_plugin::Value>, Option<Answer>);
+
+fn form_harness() -> Harness<'static, Asked> {
+    let form = craft_plugin::Form::new("Settings")
+        .field(craft_plugin::Param::checkbox("soft", "Soft", false))
+        .field(craft_plugin::Param::text("label", "Label", "none"));
+    Harness::new_ui_state(
+        move |ui, (values, answer): &mut Asked| {
+            *answer = answer.or(draw_form(ui, &form, values, "plugin.test.form", &mut Bare));
+        },
+        Asked::default(),
+    )
+}
+
+#[test]
+fn a_form_returns_the_entered_values_on_ok_and_nothing_but_cancel_on_cancel() {
+    let mut harness = form_harness();
+    harness.run();
+    assert_eq!(harness.state().0["label"], craft_plugin::Value::Text("none".into()));
+    harness.get_by_role(egui::Role::CheckBox).click();
+    let field = harness.get_by_role(egui::Role::TextInput);
+    field.click();
+    harness.run();
+    harness.get_by_role(egui::Role::TextInput).type_text("!");
+    harness.run();
+    harness.get_by_label("OK").click();
+    harness.run();
+    let (values, answer) = harness.state();
+    assert_eq!(*answer, Some(Answer::Ok));
+    assert_eq!(values["soft"], craft_plugin::Value::Bool(true));
+    assert_eq!(values["label"], craft_plugin::Value::Text("none!".into()));
+
+    let mut harness = form_harness();
+    harness.run();
+    harness.get_by_role(egui::Role::CheckBox).click();
+    harness.run();
+    harness.get_by_label("Cancel").click();
+    harness.run();
+    assert_eq!(harness.state().1, Some(Answer::Cancel));
+
+    let mut harness = form_harness();
+    harness.run();
+    harness.key_press(egui::Key::Escape);
+    harness.run();
+    assert_eq!(harness.state().1, Some(Answer::Cancel));
+}
+
+#[test]
+fn a_form_field_shows_and_enables_by_another_fields_value_and_keeps_its_value_while_hidden() {
+    let form = craft_plugin::Form::new("Settings")
+        .field(craft_plugin::Param::checkbox("soft", "Soft", false))
+        .field(craft_plugin::Param::slider("amount", "Amount", 3.0, 0.0..=10.0).visible_when("soft", craft_plugin::Is::On))
+        .field(craft_plugin::Param::text("label", "Label", "none").enabled_when("soft", craft_plugin::Is::On));
+    let mut harness = Harness::new_ui_state(
+        move |ui, (values, answer): &mut Asked| {
+            *answer = answer.or(draw_form(ui, &form, values, "plugin.test.form", &mut Bare));
+        },
+        Asked::default(),
+    );
+    harness.run();
+    assert!(harness.query_all_by_label("Amount").next().is_none());
+    assert!(harness.get_by_role(egui::Role::TextInput).accesskit_node().is_disabled());
+    harness.get_by_role(egui::Role::CheckBox).click();
+    harness.run();
+    assert!(harness.query_all_by_label("Amount").next().is_some());
+    assert!(!harness.get_by_role(egui::Role::TextInput).accesskit_node().is_disabled());
+    harness.get_by_role(egui::Role::CheckBox).click();
+    harness.run();
+    assert!(harness.query_all_by_label("Amount").next().is_none());
+    assert_eq!(harness.state().0["amount"], craft_plugin::Value::Number(3.0));
+}
+
+#[test]
+fn a_parameter_button_reports_a_press_by_pointer_and_keyboard_only_while_enabled() {
+    let press = |enabled: bool| {
+        let param = craft_plugin::Param::button("analyze", "Analyze");
+        let mut harness = Harness::new_ui_state(
+            move |ui, pressed: &mut u32| *pressed += u32::from(crate::param_button(ui, &param, enabled, "fx.analyze", &mut Bare)),
+            0,
+        );
+        harness.get_by_label("Analyze").click();
+        harness.run();
+        harness.get_by_label("Analyze").focus();
+        harness.run();
+        harness.key_press(egui::Key::Enter);
+        harness.run();
+        *harness.state()
+    };
+    assert_eq!((press(true), press(false)), (2, 0));
+}
+
+#[test]
+fn every_conformance_case_passes_on_the_egui_painter() {
+    let failures = crate::conformance::run_all(|| Box::new(|ui, widgets| draw(ui, widgets, &theme(), "plugin.test.panel", &mut Bare)));
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+#[test]
+fn tab_enters_a_list_on_its_selected_row_with_real_focus_and_the_next_tab_leaves_the_list() {
+    let items = (0..4).map(|row| craft_plugin::Item::new(&format!("file {row}"))).collect();
+    let list = Widget::List { id: 4, columns: vec![], count: 4, first: 0, items, selected: vec![2], multi: false, rows: 4, edit: Default::default() };
+    let after = Widget::Button { id: 5, text: "After".into(), enabled: true };
+    let mut harness = harness(vec![list, after]);
+    harness.run();
+    harness.key_press(egui::Key::Tab);
+    harness.run();
+    assert!(harness.get_by_label("file 2").accesskit_node().is_focused());
+    harness.key_press(egui::Key::ArrowDown);
+    harness.run();
+    assert!(harness.get_by_label("file 3").accesskit_node().is_focused());
+    harness.key_press(egui::Key::Tab);
+    harness.run();
+    assert!(harness.get_by_label("After").accesskit_node().is_focused());
+}
+
+#[test]
+fn a_table_is_a_grid_of_rows_under_column_headings_and_tree_rows_say_whether_they_are_open() {
+    let columns = ["Name", "Size"].map(|title| craft_plugin::Column { title: title.into(), ..Default::default() }).to_vec();
+    let items = vec![craft_plugin::Item::cells(&["Shots", "3"]).open(true), craft_plugin::Item::cells(&["shot 1", "1"]).depth(1)];
+    let mut harness =
+        harness(vec![Widget::List { id: 4, columns, count: 2, first: 0, items, selected: vec![0], multi: false, rows: 4, edit: Default::default() }]);
+    harness.run();
+    assert_eq!(harness.get_by_label("Table").accesskit_node().role(), egui::accesskit::Role::Grid);
+    assert_eq!(harness.query_all_by_role(egui::Role::ColumnHeader).count(), 2);
+    let open = harness.get_by_label("Shots  3").accesskit_node();
+    assert_eq!((open.role(), open.is_selected(), open.data().is_expanded()), (egui::accesskit::Role::Row, Some(true), Some(true)));
+    let child = harness.get_by_label("shot 1  1").accesskit_node();
+    assert_eq!((child.is_selected(), child.data().is_expanded()), (Some(false), None));
+    harness.get_by_label("Collapse Shots").click();
+    harness.run();
+    assert_eq!(harness.state(), &vec![UiEvent { id: 4, kind: UiEventKind::List(craft_plugin::ListEvent::Toggle { row: 0, open: false }) }]);
+}
+
+#[test]
+fn a_panel_icon_the_app_cannot_draw_is_the_first_letter_of_its_title() {
+    let ctx = egui::Context::default();
+    let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), vec2(16.0, 16.0));
+        crate::paint_icon(&mut Bare, ui.painter(), rect, "nonesuch", "notes", egui::Color32::WHITE);
+    });
+    output.textures_delta.clear();
+    let texts: Vec<String> = output
+        .shapes
+        .iter()
+        .filter_map(|clipped| match &clipped.shape {
+            egui::Shape::Text(text) => Some(text.galley.text().to_string()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(texts, ["N"]);
+}
+
+fn x_of(harness: &Harness<'static, Vec<UiEvent>>, label: &str) -> f32 {
+    harness.get_by_label(label).rect().min.x
+}
+
+#[test]
+fn the_split_divider_moves_the_second_pane_by_keyboard_and_by_drag_and_stays_inside_the_split() {
+    let split = Widget::Split {
+        id: 4,
+        axis: craft_plugin::Axis::Horizontal,
+        first: vec![Widget::Button { id: 1, text: "Left".into(), enabled: true }],
+        second: vec![Widget::Button { id: 2, text: "Right".into(), enabled: true }],
+    };
+    let mut harness = harness(vec![split]);
+    harness.run();
+    let start = x_of(&harness, "Right");
+    harness.get_by_label("Divider").focus();
+    harness.run();
+    harness.key_press(egui::Key::ArrowRight);
+    harness.run();
+    let stepped = x_of(&harness, "Right");
+    assert!(stepped > start, "Right moved the divider right: {start} -> {stepped}");
+    let divider = harness.get_by_label("Divider").rect().center();
+    harness.drag_at(divider);
+    harness.run();
+    harness.hover_at(divider - vec2(2_000.0, 0.0));
+    harness.run();
+    harness.drop_at(divider - vec2(2_000.0, 0.0));
+    harness.run();
+    let dragged = x_of(&harness, "Right");
+    assert!(dragged < start && dragged > x_of(&harness, "Left"), "a drag far left stops at the limit: {dragged}");
+    assert!(harness.state().is_empty(), "the divider is the painter's own state: {:?}", harness.state());
+}
+
+#[test]
+fn focus_is_taken_once_per_call_so_tab_can_leave_until_the_plugin_asks_again() {
+    let tree = |call| {
+        vec![
+            Widget::Button { id: 1, text: "First".into(), enabled: true },
+            Widget::Button { id: 2, text: "Second".into(), enabled: true },
+            Widget::Focus { call },
+        ]
+    };
+    let mut harness = Harness::new_ui_state(
+        |ui, widgets: &mut Vec<Widget>| {
+            draw(ui, widgets, &theme(), "plugin.test.panel", &mut Bare);
+        },
+        tree(3),
+    );
+    harness.run();
+    let focused = |harness: &Harness<'static, Vec<Widget>>| harness.get_by_label("Second").accesskit_node().is_focused();
+    assert!(focused(&harness));
+    harness.key_press(egui::Key::Tab);
+    harness.run();
+    assert!(!focused(&harness), "Tab left the asked widget and a redraw with the same call keeps it away");
+    *harness.state_mut() = tree(4);
+    harness.run();
+    assert!(focused(&harness), "a new call asks again");
+    harness.key_press(egui::Key::Tab);
+    *harness.state_mut() = tree(4)[..2].to_vec();
+    harness.run();
+    *harness.state_mut() = tree(4);
+    harness.run();
+    assert!(
+        focused(&harness),
+        "a reloaded plugin numbers its calls from the start again, and a Focus that comes back after a tree without one asks again"
+    );
+}
+
+#[test]
+fn a_scroll_area_sized_in_rows_shows_that_many_rows_of_controls() {
+    let top_of_after = |rows: u32| {
+        let buttons = (0..40).map(|row| Widget::Button { id: 10 + row, text: format!("row {row}"), enabled: true }).collect();
+        let mut harness = harness(vec![
+            Widget::Scroll { id: 1, height: 0.0, rows: Some(rows), children: buttons },
+            Widget::Button { id: 2, text: "After".into(), enabled: true },
+        ]);
+        harness.run();
+        let (first, after) = (harness.get_by_label("row 0").rect(), harness.get_by_label("After").rect());
+        (after.top() - first.top(), harness.get_by_label(&format!("row {}", rows - 1)).rect().bottom() <= after.top())
+    };
+    let ((six, six_fit), (twelve, twelve_fit)) = (top_of_after(6), top_of_after(12));
+    assert!(six_fit && twelve_fit, "each area holds its rows above the next widget");
+    assert!(six > 100.0 && twelve > six * 1.8, "six rows take {six} points and twelve {twelve}");
+}
+
+#[test]
+fn a_text_field_is_named_by_its_hint() {
+    let mut harness = harness(vec![Widget::TextEdit { id: 3, value: String::new(), hint: "Search".into() }]);
+    harness.run();
+    assert_eq!(harness.get_by_label("Search").accesskit_node().role(), egui::accesskit::Role::TextInput);
+}
+
+#[test]
+fn a_host_that_cannot_edit_curves_or_gradients_says_so_in_place() {
+    let mut harness = harness(vec![
+        Widget::Curve { id: 1, text: "Shape".into(), points: vec![[0.0, 0.0], [1.0, 1.0]] },
+        Widget::Gradient { id: 2, text: "Ramp".into(), value: craft_plugin::Gradient::new(&[(0.0, [0.0; 4]), (1.0, [1.0; 4])]) },
+    ]);
+    harness.run();
+    let shown: Vec<String> = harness.query_all(egui_kittest::kittest::by()).filter_map(|node| node.accesskit_node().value()).collect();
+    assert!(
+        shown.contains(&"This app cannot edit curves here".to_string()) && shown.contains(&"This app cannot edit gradients here".to_string()),
+        "{shown:?}"
+    );
+}
+
+#[derive(Default)]
+struct Curves {
+    given: Vec<Vec<[f64; 2]>>,
+    colors: Vec<(String, [f32; 4])>,
+}
+
+impl crate::Host for Curves {
+    type Payload = ();
+
+    fn tr(&self, english: &str) -> String {
+        english.to_string()
+    }
+    fn register(&mut self, _: &str, _: &egui::Response, _: &str) {}
+    fn texture(&mut self, _: &egui::Context, _: &str) -> Option<egui::TextureId> {
+        None
+    }
+    fn triangulate(&self) -> crate::Triangulate {
+        |_| Vec::new()
+    }
+    fn drag(&self, _: &craft_plugin::Drag) -> Option<()> {
+        None
+    }
+    fn dropped(&self, _: &()) -> Option<craft_plugin::Dropped> {
+        None
+    }
+    fn accept_files(&mut self, _: &[String]) {}
+
+    fn curve(&mut self, ui: &mut egui::Ui, key: &str, points: &[[f64; 2]]) -> Option<(egui::Response, Option<Vec<[f64; 2]>>)> {
+        self.given.push(points.to_vec());
+        let (rect, _) = ui.allocate_exact_size(vec2(100.0, 100.0), egui::Sense::hover());
+        let response = ui.interact(rect, egui::Id::unique(key), egui::Sense::drag());
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Canvas, true, "Curve"));
+        let edited = response.interact_pointer_pos().filter(|_| response.dragged()).map(|at| {
+            let y = f64::from((rect.bottom() - at.y) / rect.height()).clamp(0.0, 1.0);
+            vec![[0.0, 0.0], [0.5, (y * 100.0).round() / 100.0], [1.0, 1.0]]
+        });
+        Some((response, edited))
+    }
+
+    fn color(&mut self, ui: &mut egui::Ui, key: &str, value: [f32; 4]) -> Option<(egui::Response, Option<[f32; 4]>)> {
+        self.colors.push((key.to_string(), value));
+        let response = ui.add(egui::Button::new("Pick red"));
+        let picked = response.clicked().then_some([1.0, 0.0, 0.0, 1.0]);
+        Some((response, picked))
+    }
+}
+
+#[test]
+fn a_curve_drag_sends_points_and_the_host_keeps_drawing_what_was_sent_until_the_pointer_lets_go() {
+    let tree = vec![Widget::Curve { id: 6, text: "Shape".into(), points: vec![[0.0, 0.0], [1.0, 1.0]] }];
+    let mut harness = Harness::new_ui_state(
+        move |ui, state: &mut (Curves, Vec<UiEvent>)| {
+            let events = draw(ui, &tree, &theme(), "plugin.test.panel", &mut state.0);
+            state.1.extend(events);
+        },
+        (Curves::default(), Vec::new()),
+    );
+    harness.run();
+    let rect = harness.get_by_role(egui::Role::Canvas).rect();
+    harness.drag_at(rect.center());
+    harness.run();
+    harness.hover_at(rect.center_top() + vec2(0.0, 25.0));
+    harness.run();
+    let sent = vec![[0.0, 0.0], [0.5, 0.75], [1.0, 1.0]];
+    assert_eq!(harness.state().1.last(), Some(&UiEvent { id: 6, kind: UiEventKind::Points(sent.clone()) }));
+    harness.state_mut().0.given.clear();
+    harness.run();
+    assert_eq!(harness.state().0.given.last(), Some(&sent), "while held the host draws the sent points, not the stale tree");
+    harness.drop_at(rect.center_top() + vec2(0.0, 25.0));
+    harness.run();
+    assert_eq!(harness.state().0.given.last(), Some(&vec![[0.0, 0.0], [1.0, 1.0]]), "after release it draws the plugin's points again");
+}
+
+#[test]
+fn an_app_colour_picker_draws_a_plugin_colour_under_its_key_and_its_pick_reaches_the_plugin() {
+    let tree = vec![Widget::Color { id: 6, text: "Ink".into(), value: [0.0, 0.0, 0.0, 1.0] }];
+    let mut harness = Harness::new_ui_state(
+        move |ui, state: &mut (Curves, Vec<UiEvent>)| {
+            let events = draw(ui, &tree, &theme(), "plugin.test.panel", &mut state.0);
+            state.1.extend(events);
+        },
+        (Curves::default(), Vec::new()),
+    );
+    harness.run();
+    assert_eq!(harness.state().0.colors.last(), Some(&("plugin.test.panel.6".to_string(), [0.0, 0.0, 0.0, 1.0])));
+    harness.get_by_label("Ink").click();
+    harness.run();
+    assert_eq!(harness.state().1, vec![UiEvent { id: 6, kind: UiEventKind::Color([1.0, 0.0, 0.0, 1.0]) }]);
+}
+
+fn renamable_list(selected: Vec<u32>) -> Widget {
+    let items = (0..3).map(|row| craft_plugin::Item::new(&format!("file {row}"))).collect();
+    let edit = craft_plugin::ListEdit { rename: true, ..Default::default() };
+    Widget::List { id: 4, columns: vec![], count: 3, first: 0, items, selected, multi: false, rows: 3, edit }
+}
+
+fn click_name(harness: &mut Harness<'static, Vec<UiEvent>>, row: &str, times: usize) {
+    let rect = harness.get_by_label(row).rect();
+    let pos = egui::pos2(rect.left() + 12.0, rect.center().y);
+    harness.event(egui::Event::PointerMoved(pos));
+    for _ in 0..times {
+        for pressed in [true, false] {
+            harness.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() });
+        }
+        harness.run_steps(3);
+    }
+    harness.run();
+}
+
+#[test]
+fn a_click_on_the_selected_rows_name_opens_it_for_renaming_after_the_double_click_time_and_a_double_click_activates_instead() {
+    let widgets = vec![renamable_list(vec![1])];
+    let mut harness = Harness::builder()
+        .with_step_dt(1.0 / 60.0)
+        .with_max_steps(64)
+        .build_ui_state(move |ui, events: &mut Vec<UiEvent>| events.extend(draw(ui, &widgets, &theme(), "plugin.test.panel", &mut Bare)), Vec::new());
+    harness.run();
+    click_name(&mut harness, "file 1", 1);
+    assert_eq!(harness.get_by_label("Rename").value().as_deref(), Some("file 1"));
+    harness.get_by_label("Rename").type_text("B");
+    harness.run();
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+    let select = UiEvent { id: 4, kind: UiEventKind::List(craft_plugin::ListEvent::Select(vec![1])) };
+    let renamed = UiEvent { id: 4, kind: UiEventKind::List(craft_plugin::ListEvent::Rename { row: 1, text: "B".into() }) };
+    assert_eq!(std::mem::take(harness.state_mut()), vec![select.clone(), renamed]);
+    assert!(harness.query_by_label("Rename").is_none());
+    click_name(&mut harness, "file 1", 2);
+    let activated = UiEvent { id: 4, kind: UiEventKind::List(craft_plugin::ListEvent::Activate(1)) };
+    assert_eq!(std::mem::take(harness.state_mut()), vec![select.clone(), select, activated]);
+    assert!(harness.query_by_label("Rename").is_none());
+    click_name(&mut harness, "file 2", 1);
+    assert!(harness.query_by_label("Rename").is_none());
+}
+
+#[test]
+fn the_sorted_column_heading_tells_assistive_tools_its_order() {
+    let columns = ["Name", "Size"].map(|title| craft_plugin::Column { title: title.into(), ..Default::default() }).to_vec();
+    let edit = craft_plugin::ListEdit { sortable: true, sorted: Some((1, true)), ..Default::default() };
+    let items = vec![craft_plugin::Item::cells(&["a", "1"])];
+    let mut harness = harness(vec![Widget::List { id: 4, columns, count: 1, first: 0, items, selected: vec![], multi: false, rows: 2, edit }]);
+    harness.run();
+    let order = |label: &str| harness.get_by_label(label).accesskit_node().sort_direction();
+    assert_eq!((order("Name"), order("Size")), (None, Some(egui::accesskit::SortDirection::Descending)));
+}
+
+#[test]
+fn text_typed_in_two_passes_before_the_plugin_replies_keeps_both_letters_and_a_reply_that_clears_the_field_is_shown() {
+    type Typing = (Vec<Widget>, Vec<UiEvent>);
+    let notes = |value: &str| vec![Widget::TextArea { id: 3, value: value.into(), hint: "Notes".into(), rows: 3 }];
+    let mut harness = Harness::new_ui_state(
+        move |ui, (widgets, events): &mut Typing| events.extend(draw(ui, widgets, &theme(), "plugin.test.panel", &mut Bare)),
+        (notes(""), Vec::new()),
+    );
+    harness.get_by_role(egui::Role::MultilineTextInput).click();
+    harness.run();
+    for letter in ["a", "b"] {
+        harness.get_by_role(egui::Role::MultilineTextInput).type_text(letter);
+        harness.run();
+    }
+    assert_eq!(harness.state().1.last(), Some(&UiEvent { id: 3, kind: UiEventKind::Text("ab".into()) }));
+    harness.state_mut().0 = notes("ab");
+    harness.run();
+    harness.state_mut().0 = notes("");
+    harness.run();
+    assert_eq!(harness.get_by_role(egui::Role::MultilineTextInput).accesskit_node().value().as_deref(), Some(""));
+}
+
+#[test]
+fn a_short_list_that_may_fill_the_panel_claims_only_its_rows_so_the_button_after_it_is_outside() {
+    let items = (0..3).map(|row| craft_plugin::Item::new(&format!("file {row}"))).collect();
+    let list = Widget::List { id: 4, columns: vec![], count: 3, first: 0, items, selected: vec![], multi: false, rows: 0, edit: Default::default() };
+    let mut harness = harness(vec![list, Widget::Button { id: 9, text: "After".into(), enabled: true }]);
+    harness.set_size(vec2(240.0, 400.0));
+    harness.run();
+    let (list, after) = (harness.get_by_label("List").rect(), harness.get_by_label("After").rect());
+    assert!(list.max.y <= after.min.y, "the list area {list:?} reaches over the button {after:?}");
+}

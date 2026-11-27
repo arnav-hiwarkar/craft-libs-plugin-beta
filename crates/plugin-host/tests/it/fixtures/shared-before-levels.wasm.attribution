@@ -1,0 +1,7 @@
+asset:        shared-before-levels.wasm
+title:        A plugin built before UI levels whose panel button bumps a static that its tool and its effect overlay read, the reference for an older plugin's shared instance
+author:       Craft contributors
+source:       original work, built from shared-before-levels.rs and shared-before-levels.toml beside it (rename the toml to Cargo.toml and point it at crates/plugin-sdk from git archive 6828f7726, the SDK before UI levels), cargo build --release --target wasm32-unknown-unknown
+license:      MIT OR Apache-2.0
+added:        2026-11-27 by Craft contributors (Claude agent, plugin UI fix 2)
+notes:        Read by crates/plugin-host/tests/it/main.rs. Its describe reply has no ui_level.

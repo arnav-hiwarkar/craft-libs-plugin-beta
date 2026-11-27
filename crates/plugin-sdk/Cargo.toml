@@ -1,0 +1,21 @@
+[package]
+name = "craft-plugin"
+description = "Craft Plugin Kit SDK: write effects, panels and commands for Craft apps, compiled to sandboxed WebAssembly or a trusted native library"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+cognitive_complexity = "deny"
+too_many_arguments = "deny"
+wildcard_imports = "deny"
+dbg_macro = "warn"
+todo = "warn"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true, features = ["float_roundtrip"] }

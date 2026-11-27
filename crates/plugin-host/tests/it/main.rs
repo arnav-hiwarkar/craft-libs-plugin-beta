@@ -1,0 +1,1975 @@
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
+use craft_plugin::{
+    BlendMode, Call, Channel, FrameDesc, Layout, LogLevel, MaskPath, ParamsAt, Permission, Pixel, Plan, PlanImage, PlanPass, RenderCx, Taps,
+    TaskState, TaskStatus, UiEvent, UiEventKind, UiInput, Widget, native_target,
+};
+use craft_plugin_host::testing::probe_dir;
+use craft_plugin_host::{Access, AuxPlanes, Bundle, Host, Limits, Memo, Pixels, Plugin, PluginError, Rect, Refusal, Registry, Retained};
+use serde_json::{Value, json};
+
+mod package;
+mod testing;
+
+fn build(extra: &[&str]) {
+    let status = Command::new(env!("CARGO"))
+        .args(["build", "--release", "--quiet", "--manifest-path"])
+        .arg(probe_dir().join("Cargo.toml"))
+        .args(extra)
+        .status()
+        .expect("cargo runs");
+    assert!(status.success(), "the probe plugin builds");
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Kind {
+    Wasm,
+    Native,
+}
+
+fn bundle(kind: Kind, permissions: &[&str]) -> (tempfile::TempDir, Bundle) {
+    static BUILT: OnceLock<()> = OnceLock::new();
+    BUILT.get_or_init(|| {
+        build(&["--target", "wasm32-unknown-unknown"]);
+        build(&[]);
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let release = probe_dir().join("target");
+    let native_file = libloading::library_filename("probe").into_string().unwrap();
+    let (entry, file, built) = match kind {
+        Kind::Wasm => (json!({"wasm": "probe.wasm"}), "probe.wasm", release.join("wasm32-unknown-unknown/release/probe.wasm")),
+        Kind::Native => (json!({"native": {native_target(): native_file}}), native_file.as_str(), release.join("release").join(&native_file)),
+    };
+    std::fs::copy(&built, dir.path().join(file)).unwrap();
+    let manifest = json!({"id": "test.probe", "name": "Probe", "version": "1.0.0", "entry": entry, "permissions": permissions});
+    std::fs::write(dir.path().join("plugin.json"), manifest.to_string()).unwrap();
+    let bundle = Bundle::open(dir.path()).unwrap();
+    (dir, bundle)
+}
+
+struct Loaded {
+    _dir: tempfile::TempDir,
+    data: tempfile::TempDir,
+    plugin: Plugin,
+}
+
+fn load(kind: Kind, permissions: &[&str]) -> Loaded {
+    let (dir, bundle) = bundle(kind, permissions);
+    open(dir, bundle)
+}
+
+fn load_before_regions() -> Loaded {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/it/fixtures/probe-before-regions.wasm"), dir.path().join("probe.wasm")).unwrap();
+    let manifest = json!({"id": "test.probe-before-regions", "name": "Probe", "version": "1.0.0", "entry": {"wasm": "probe.wasm"}});
+    std::fs::write(dir.path().join("plugin.json"), manifest.to_string()).unwrap();
+    let bundle = Bundle::open(dir.path()).unwrap();
+    open(dir, bundle)
+}
+
+fn open(dir: tempfile::TempDir, bundle: Bundle) -> Loaded {
+    let data = tempfile::tempdir().unwrap();
+    let grants = bundle.manifest.permissions.clone();
+    let limits = Limits { interactive: Duration::from_millis(400), work: Duration::from_millis(400) };
+    let plugin = Plugin::load(&bundle, grants, data.path().join("data"), limits).unwrap();
+    Loaded { _dir: dir, data, plugin }
+}
+
+#[derive(Default)]
+struct Recorder {
+    commands: Vec<String>,
+    picked: Option<PathBuf>,
+    clipboard: String,
+    answer: Option<serde_json::Value>,
+    panels: Vec<(String, bool)>,
+}
+
+impl Host for Recorder {
+    fn access(&self, command: &str, _params: &Value) -> Access {
+        match command {
+            "comp.info" => Access::Needs(vec![Permission::DocumentRead]),
+            "script.run" => Access::Refused("plugins cannot run scripts".into()),
+            _ => Access::Needs(vec![Permission::DocumentWrite]),
+        }
+    }
+
+    fn command(&mut self, id: &str, params: Value) -> Result<Value, String> {
+        self.commands.push(id.to_string());
+        Ok(json!({"echo": params}))
+    }
+
+    fn layer(&mut self, param: &str, _comp_time: Option<f64>) -> Option<Pixels> {
+        (param == "matte").then(|| Pixels { width: 2, height: 1, data: vec![[0.0; 4], [0.625, 0.0, 0.0, 1.0]] })
+    }
+
+    fn source(&mut self, layer_time: f64) -> Option<Pixels> {
+        Some(Pixels { width: 1, height: 1, data: vec![[0.0, 0.0, 0.0, layer_time as f32]] })
+    }
+
+    fn masks(&mut self) -> Vec<MaskPath> {
+        vec![MaskPath { name: "m".into(), points: vec![[0.0, 0.0], [42.0, 7.0]], closed: true, inverted: false }]
+    }
+
+    fn frame(&mut self, request: &craft_plugin::FrameRequest) -> Result<Pixels, String> {
+        let width = (4.0 * request.scale) as u32;
+        Ok(Pixels { width, height: 1, data: vec![[request.time as f32, 0.0, 0.0, 1.0]; width as usize] })
+    }
+
+    fn pick_file(&mut self, _request: &craft_plugin::PickFile) -> Result<Option<PathBuf>, String> {
+        Ok(self.picked.clone())
+    }
+
+    fn form(&mut self, form: &craft_plugin::Form) -> Result<Option<std::collections::BTreeMap<String, craft_plugin::Value>>, String> {
+        self.commands.push(form.title.clone());
+        Ok(self.answer.clone().map(|answer| serde_json::from_value(answer).unwrap()))
+    }
+
+    fn params_at(&mut self, layer_time: f64) -> Option<ParamsAt> {
+        let params = [("level".to_string(), craft_plugin::Value::Number(10.0 + 10.0 * layer_time))].into();
+        Some(ParamsAt { params, history: Some(7) })
+    }
+
+    fn clipboard(&mut self) -> Result<String, String> {
+        Ok(self.clipboard.clone())
+    }
+
+    fn panel(&mut self, panel: &str, _instance: Option<&str>, open: bool) -> Result<(), String> {
+        self.panels.push((panel.to_string(), open));
+        Ok(())
+    }
+
+    fn set_clipboard(&mut self, text: &str) -> Result<(), String> {
+        self.clipboard = text.to_string();
+        Ok(())
+    }
+}
+
+fn cx(width: u32, height: u32) -> RenderCx {
+    RenderCx { size: [width, height], scale: 1.0, time: 3.0, ..Default::default() }
+}
+
+fn command(loaded: &Loaded, id: &str, host: &mut Recorder) -> Result<(), PluginError> {
+    loaded.plugin.call(&Call::Command { command: id.into() }, None, host)
+}
+
+fn each_kind(test: impl Fn(Kind)) {
+    test(Kind::Wasm);
+    test(Kind::Native);
+}
+
+#[test]
+fn a_plugin_describes_its_effects_panels_and_commands() {
+    each_kind(|kind| {
+        let loaded = load(kind, &[]);
+        let found = loaded.plugin.contributions();
+        let effects: Vec<&str> = found.effects.iter().map(|e| e.id.as_str()).collect();
+        assert!(["invert", "shift-down", "read-inputs", "spin"].iter().all(|id| effects.contains(id)), "{kind:?} {effects:?}");
+        assert_eq!(found.panels[0].title, "Counter");
+        assert!(found.commands.iter().any(|c| c.id == "edit"));
+        let ask = found.commands.iter().find(|c| c.id == "ask").unwrap();
+        assert_eq!((ask.title.as_str(), ask.shortcut.as_deref()), ("Ask For Settings", Some("Alt+Shift+F11")));
+        let edit = found.commands.iter().find(|c| c.id == "edit").unwrap();
+        assert_eq!(edit.shortcut, None);
+        assert_eq!(
+            (edit.menu.as_deref(), edit.context.as_slice(), edit.toolbar, edit.icon.as_deref()),
+            (Some("Layer/Probe Tools"), &[craft_plugin::Context::Layers][..], true, Some("wand"))
+        );
+    });
+}
+
+#[test]
+fn a_command_opens_a_form_and_gets_the_answer_fitted_with_defaults_or_nothing_on_cancel() {
+    each_kind(|kind| {
+        let loaded = load(kind, &[]);
+        let form = || std::fs::read_to_string(loaded.data.path().join("data/form.json")).unwrap();
+        let mut host = Recorder { answer: Some(json!({"radius": 250.0, "soft": true, "stray": true})), ..Default::default() };
+        command(&loaded, "ask", &mut host).unwrap();
+        assert_eq!(host.commands, ["Settings"]);
+        let answered: Value = serde_json::from_str(&form()).unwrap();
+        assert_eq!(answered, json!({"radius": 100.0, "soft": true, "mode": 0.0, "label": "none"}), "{kind:?}");
+
+        command(&loaded, "ask", &mut Recorder::default()).unwrap();
+        assert_eq!(form(), "cancelled", "{kind:?}");
+
+        let mut wrong = Recorder { answer: Some(json!({"soft": 1.0})), ..Default::default() };
+        let error = command(&loaded, "ask", &mut wrong).unwrap_err().to_string();
+        assert!(error.contains("parameter `soft` takes true or false"), "{kind:?} {error}");
+
+        let mut asked = Recorder { answer: Some(json!({})), ..Default::default() };
+        let error = command(&loaded, "ask-layer", &mut asked).unwrap_err().to_string();
+        assert!(error.contains("form field `in` is a layer"), "{kind:?} {error}");
+        assert!(asked.commands.is_empty(), "{kind:?}");
+    });
+}
+
+#[test]
+fn a_gradient_parameter_reaches_the_effect_and_samples_the_same_sandboxed_and_native() {
+    each_kind(|kind| {
+        let loaded = load(kind, &[]);
+        let mut cx = cx(1, 1);
+        let ramp = craft_plugin::Gradient {
+            colors: vec![(0.0, [0.0, 0.0, 0.0, 1.0]), (1.0, [0.5, 0.0, 0.5, 1.0])],
+            opacities: vec![(0.0, 1.0), (1.0, 0.5)],
+        };
+        cx.params.insert("ramp".into(), craft_plugin::Value::Gradient(ramp));
+        cx.params.insert("at".into(), craft_plugin::Value::Number(0.5));
+        let mut pixels: Vec<Pixel> = vec![[1.0; 4]];
+        loaded.plugin.render("ramp", &cx, &Layout::pointwise(), None, &mut pixels, Recorder::default).unwrap();
+        assert_eq!(pixels, [[0.25, 0.0, 0.25, 0.75]], "{kind:?}");
+    });
+}
+
+#[test]
+fn an_effect_changes_the_pixels_it_is_given_using_its_parameters() {
+    each_kind(|kind| {
+        let loaded = load(kind, &[]);
+        let mut cx = cx(2, 1);
+        cx.params.insert("amount".into(), craft_plugin::Value::Number(1.0));
+        let mut pixels: Vec<Pixel> = vec![[0.25, 0.5, 1.0, 1.0], [0.0, 0.0, 0.0, 0.5]];
+        loaded.plugin.render("invert", &cx, &Layout::neighbourhood(0), None, &mut pixels, Recorder::default).unwrap();
+        assert_eq!(pixels, [[0.75, 0.5, 0.0, 1.0], [1.0, 1.0, 1.0, 0.5]], "{kind:?}");
+    });
+}
+
+#[test]
+fn fast_maths_gives_the_same_bits_sandboxed_and_native_and_stays_within_its_bounds() {
+    let source: Vec<Pixel> = (0..4096).map(|i| [-3.0 + i as f32 * (6.0 / 4096.0), 0.0, 0.0, 1.0]).collect();
+    let render = |kind: Kind| {
+        let loaded = load(kind, &[]);
+        let mut pixels = source.clone();
+        loaded.plugin.render("fast-maths", &cx(4096, 1), &Layout::neighbourhood(0), None, &mut pixels, Recorder::default).unwrap();
+        pixels
+    };
+    let (wasm, native) = (render(Kind::Wasm), render(Kind::Native));
+    assert!(wasm == native, "the sandboxed and the native render differ");
+    let mut worst = [0.0f64; 4];
+    for (input, out) in source.iter().zip(&wasm) {
+        let x = f64::from(input[0]);
+        let exact = [x.exp(), x.sin(), x.atan2(2.0 - x), x.abs().powf(2.4)];
+        let relative = [true, false, false, true];
+        for c in 0..4 {
+            let error = (f64::from(out[c]) - exact[c]).abs();
+            worst[c] = worst[c].max(if relative[c] { error / exact[c].max(1e-30) } else { error });
+        }
+    }
+    assert!(worst[0] < 5e-7 && worst[1] < 2e-6 && worst[2] < 5e-6 && worst[3] < 2e-5, "{worst:?}");
+    assert!((wasm[3072][0] - 4.481_689).abs() < 1e-5 && (wasm[3072][1] - 0.997_495).abs() < 1e-5, "{:?}", wasm[3072]);
+}
+
+#[test]
+fn the_cheaper_fast_maths_gives_the_same_bits_sandboxed_and_native_and_stays_within_its_bounds() {
+    let source: Vec<Pixel> = (0..4096).map(|i| [-3.0 + i as f32 * (6.0 / 4096.0) + 1e-3, 0.0, 0.0, 1.0]).collect();
+    let render = |kind: Kind| {
+        let loaded = load(kind, &[]);
+        let mut cx = cx(4096, 1);
+        cx.params.insert("cheaper".into(), craft_plugin::Value::Bool(true));
+        let mut pixels = source.clone();
+        loaded.plugin.render("fast-maths", &cx, &Layout::neighbourhood(0), None, &mut pixels, Recorder::default).unwrap();
+        pixels
+    };
+    let (wasm, native) = (render(Kind::Wasm), render(Kind::Native));
+    assert!(wasm == native, "the sandboxed and the native render differ");
+    let mut worst = [0.0f64; 4];
+    for (input, out) in source.iter().zip(&wasm) {
+        let x = f64::from(input[0]);
+        let exact = [x.exp(), x.sin(), x.cos(), x.abs().ln()];
+        let scale = [exact[0], 1.0, 1.0, exact[3].abs().max(1.0)];
+        for c in 0..4 {
+            worst[c] = worst[c].max((f64::from(out[c]) - exact[c]).abs() / scale[c]);
+        }
+    }
+    assert!(worst[0] < 9e-6 && worst[1] < 2e-6 && worst[2] < 2e-6 && worst[3] < 1.2e-7, "{worst:?}");
+}
+
+#[test]
+fn fast_exp2_gives_the_same_bits_sandboxed_and_native_and_stays_within_its_bound() {
+    let source: Vec<Pixel> = (0..4096).map(|i| [-126.0 + i as f32 * (252.0 / 4096.0) + 1e-3, 0.0, 0.0, 1.0]).collect();
+    let render = |kind: Kind| {
+        let loaded = load(kind, &[]);
+        let mut cx = cx(4096, 1);
+        cx.params.insert("exp2".into(), craft_plugin::Value::Bool(true));
+        let mut pixels = source.clone();
+        loaded.plugin.render("fast-maths", &cx, &Layout::neighbourhood(0), None, &mut pixels, Recorder::default).unwrap();
+        pixels
+    };
+    let (wasm, native) = (render(Kind::Wasm), render(Kind::Native));
+    assert!(wasm == native, "the sandboxed and the native render differ");
+    let worst = source.iter().zip(&wasm).map(|(input, out)| {
+        let exact = f64::from(input[0]).exp2();
+        (f64::from(out[0]) - exact).abs() / exact
+    });
+    assert!(worst.fold(0.0, f64::max) < 4e-6);
+    assert!((wasm[2048][0] - 1.000_693_4).abs() < 1e-5, "{}", wasm[2048][0]);
+}
+
+#[test]
+fn rendering_in_parallel_bands_gives_the_same_picture_as_one_pass() {
+    each_kind(|kind| {
+        let loaded = load(kind, &[]);
+        let (width, height) = (7usize, 1024usize);
+        let source: Vec<Pixel> = (0..width * height).map(|i| [i as f32, (i / width) as f32, 0.5, 1.0]).collect();
+        let mut expected = vec![[0.0; 4]; width];
+        expected.extend_from_slice(&source[..width * (height - 1)]);
+
+        let cx = cx(width as u32, height as u32);
+        let mut banded = source.clone();
+        loaded.plugin.render("shift-down", &cx, &Layout::neighbourhood(1), None, &mut banded, Recorder::default).unwrap();
+        assert!(banded == expected, "{kind:?} banded render differs from the shifted source");
+
+        let mut tall = source.clone();
+        loaded.plugin.render("shift-down", &cx, &Layout::neighbourhood(150), None, &mut tall, Recorder::default).unwrap();
+        assert!(tall == expected, "{kind:?} render with a reach taller than an even band differs from the shifted source");
+
+        let mut whole = source.clone();
+        loaded.plugin.render("shift-down", &cx, &Layout::whole_frame(), None, &mut whole, Recorder::default).unwrap();
+        assert!(whole == expected, "{kind:?} whole-frame render differs from the shifted source");
+    });
+}
+
+fn numbered(width: usize, height: usize) -> Vec<Pixel> {
+    (0..width * height).map(|i| [i as f32, (i / width) as f32, 0.5, 1.0]).collect()
+}
+
+fn cut(pixels: &[Pixel], width: usize, part: Rect) -> Vec<Pixel> {
+    let columns = part.left as usize..part.right as usize;
+    (part.top as usize..part.bottom as usize).flat_map(|y| pixels[y * width..(y + 1) * width][columns.clone()].to_vec()).collect()
+}
+
+#[test]
+fn a_render_of_a_part_of_the_frame_equals_that_part_cut_from_a_whole_render() {
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+    let (width, height) = (40usize, 300usize);
+    let (source, cx, layout) = (numbered(width, height), cx(width as u32, height as u32), Layout::neighbourhood(3));
+    let part = Rect { left: 7, top: 101, right: 29, bottom: 260 };
+    each_kind(|kind| {
+        let loaded = load(kind, &[]);
+        let mut whole = source.clone();
+        pool.install(|| loaded.plugin.render("shift-down", &cx, &layout, None, &mut whole, Recorder::default)).unwrap();
+        let mut pixels = source.clone();
+        let area = pool.install(|| loaded.plugin.render("shift-down", &cx, &layout, Some(part), &mut pixels, Recorder::default)).unwrap();
+        assert_eq!(area, part, "{kind:?}");
+        assert_eq!(pixels[0], [4007.0, 100.0, 0.5, 1.0], "{kind:?} the first pixel is the source pixel one row up");
+        assert!(pixels == cut(&whole, width, part), "{kind:?} the part differs from the whole render");
+    });
+    let before = load_before_regions();
+    let mut pixels = source.clone();
+    let area = pool.install(|| before.plugin.render("shift-down", &cx, &layout, Some(part), &mut pixels, Recorder::default)).unwrap();
+    assert_eq!(area, Rect { left: 0, right: 40, ..part }, "a plugin built before regions renders whole rows");
+    assert!(pixels == cut(&source, width, Rect { top: 100, bottom: 259, ..area }));
+}
+
+#[test]
+fn an_effect_that_reads_no_other_rows_changes_whole_rows_where_they_lie() {
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+    let (width, height) = (5usize, 300usize);
+    let mut cx = cx(width as u32, height as u32);
+    cx.params.insert("amount".into(), craft_plugin_host::Value::Number(1.0));
+    let (rows, part) = (Rect { left: 0, top: 101, right: 5, bottom: 260 }, Rect { left: 2, top: 101, right: 4, bottom: 260 });
+    each_kind(|kind| {
+        let loaded = load(kind, &[]);
+        let mut pixels = numbered(width, height);
+        let at = pixels.as_ptr();
+        pool.install(|| loaded.plugin.render("invert", &cx, &Layout::pointwise(), None, &mut pixels, Recorder::default)).unwrap();
+        assert_eq!((pixels.as_ptr(), pixels[7]), (at, [-6.0, 0.0, 0.5, 1.0]), "{kind:?}");
+        for shown in [rows, part] {
+            let mut pixels_shown = numbered(width, height);
+            assert_eq!(
+                pool.install(|| loaded.plugin.render("invert", &cx, &Layout::pointwise(), Some(shown), &mut pixels_shown, Recorder::default)),
+                Ok(shown)
+            );
+            assert!(pixels_shown == cut(&pixels, width, shown), "{kind:?} {shown:?} differs from the whole render");
+        }
+        let mut pixels_part = numbered(width, height);
+        pool.install(|| loaded.plugin.render("invert", &cx, &Layout::pointwise(), Some(part), &mut pixels_part, Recorder::default)).unwrap();
+        assert_eq!((pixels_part.len(), pixels_part.capacity()), (318, 318), "{kind:?} holds more memory than the part it shows");
+    });
+}
+
+#[test]
+fn an_effect_without_a_cpu_render_leaves_the_part_it_is_asked_for_unchanged() {
+    let source = numbered(5, 4);
+    let part = Rect { left: 1, top: 1, right: 4, bottom: 3 };
+    each_kind(|kind| {
+        let loaded = load(kind, &[]);
+        let mut pixels = source.clone();
+        loaded.plugin.render("plain", &cx(5, 4), &Layout::whole_frame(), Some(part), &mut pixels, Recorder::default).unwrap();
+        assert_eq!(pixels, cut(&source, 5, part), "{kind:?}");
+        assert_eq!(pixels[0], [6.0, 1.0, 0.5, 1.0], "{kind:?}");
+    });
+}
+
+#[test]
+fn an_effect_that_maps_its_input_reads_the_rows_it_names_in_every_band() {
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+    let (width, height) = (3usize, 600usize);
+    let source = numbered(width, height);
+    let mut expected = source[8 * width..].to_vec();
+    expected.resize(width * height, [0.0; 4]);
+    each_kind(|kind| {
+        let loaded = load(kind, &[]);
+        let mut pixels = source.clone();
+        let layout = Layout::pointwise().maps_input();
+        pool.install(|| loaded.plugin.render("lift", &cx(width as u32, height as u32), &layout, None, &mut pixels, Recorder::default)).unwrap();
+        assert_eq!(pixels[149 * width], [471.0, 157.0, 0.5, 1.0], "{kind:?} the last row of the first band");
+        assert!(pixels == expected, "{kind:?} the lifted frame differs from the source moved up 8 rows");
+    });
+}
+
+#[test]
+fn a_plugin_built_before_frames_had_separate_input_renders_the_same_pixels() {
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+    let (before, now) = (load_before_regions(), load(Kind::Wasm, &[]));
+    assert!(!before.plugin.contributions().separate_input && now.plugin.contributions().separate_input);
+    let (width, height) = (7usize, 700usize);
+    let mut cx = cx(width as u32, height as u32);
+    cx.params.insert("amount".into(), craft_plugin::Value::Number(0.25));
+    cx.params.insert("strength".into(), craft_plugin::Value::Number(0.75));
+    let source: Vec<Pixel> = (0..width * height).map(|i| [(i % 13) as f32 / 13.0, (i % 7) as f32 / 7.0, 0.25, 1.0]).collect();
+    for (effect, layout) in [("invert", Layout::pointwise()), ("shift-down", Layout::neighbourhood(2)), ("gpu-soften", Layout::whole_frame())] {
+        let render = |loaded: &Loaded| {
+            let mut pixels = source.clone();
+            pool.install(|| loaded.plugin.render(effect, &cx, &layout, None, &mut pixels, Recorder::default)).unwrap();
+            pixels
+        };
+        let (old, new) = (render(&before), render(&now));
+        assert!(old == new, "{effect} renders differently from the plugin built before");
+        assert!(old != source, "{effect} left the frame unchanged");
+        if effect == "invert" {
+            assert_eq!(old[0], [0.25, 0.25, 0.375, 1.0]);
+        }
+    }
+}
+
+#[test]
+fn an_effect_reads_masks_another_layer_and_its_own_earlier_frame_through_the_host() {
+    each_kind(|kind| {
+        let loaded = load(kind, &[]);
+        let mut pixels: Vec<Pixel> = vec![[0.0; 4]; 4];
+        loaded.plugin.render("read-inputs", &cx(2, 2), &Layout::whole_frame(), None, &mut pixels, Recorder::default).unwrap();
+        assert_eq!(pixels[0], [1.0, 42.0, 0.625, 2.0], "{kind:?}");
+    });
+}
+
+#[test]
+fn an_effect_reads_its_parameters_at_another_time_through_the_host() {
+    each_kind(|kind| {
+        let loaded = load(kind, &[]);
+        let mut cx = cx(1, 1);
+        cx.params.insert("level".into(), craft_plugin::Value::Number(40.0));
+        let mut pixels: Vec<Pixel> = vec![[0.0; 4]];
+        loaded.plugin.render("report", &cx, &Layout::whole_frame(), None, &mut pixels, Recorder::default).unwrap();
+        assert_eq!(pixels[0], [40.0, 10.0, 0.0, 1.0], "{kind:?}");
+    });
+}
+
+#[test]
+fn a_panel_keeps_its_state_between_frames_and_reacts_to_events() {
+    each_kind(|kind| {
+        let loaded = load(kind, &[]);
+        let frame = |events: Vec<UiEvent>| -> Vec<Widget> {
+            let call = Call::Panel { panel: "counter".into(), input: UiInput { events, size: [300.0, 200.0], ..Default::default() } };
+            loaded.plugin.call::<craft_plugin::PanelReply>(&call, None, &mut Recorder::default()).unwrap().widgets
+        };
+        let first = frame(vec![]);
+        let (Widget::Button { id: button, .. }, Widget::Slider { id: slider, .. }) = (&first[0], &first[1]) else {
+            panic!("{kind:?} unexpected widgets {first:?}")
+        };
+        frame(vec![UiEvent { id: *button, kind: UiEventKind::Click }]);
+        frame(vec![UiEvent { id: *button, kind: UiEventKind::Click }, UiEvent { id: *slider, kind: UiEventKind::Number(4.0) }]);
+        let last = frame(vec![]);
+        assert!(matches!(&last[2], Widget::Label { text, .. } if text == "2 clicks at speed 4"), "{kind:?} {:?}", last[2]);
+    });
+}
+
+fn panel_frame(loaded: &Loaded, panel: &str, retained: &mut Retained, now: Duration) -> bool {
+    let Some(input) = retained.start([300.0, 200.0], now) else { return false };
+    let call = Call::Panel { panel: panel.into(), input: input.clone() };
+    let reply = loaded.plugin.call::<craft_plugin::PanelReply>(&call, None, &mut Recorder::default()).map_err(|e| e.to_string());
+    retained.finish(reply, now);
+    true
+}
+
+fn texts(widgets: &[Widget]) -> Vec<String> {
+    widgets
+        .iter()
+        .filter_map(|widget| match widget {
+            Widget::Label { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_retained_panel_is_not_called_while_nothing_happens_for_a_hundred_frames() {
+    each_kind(|kind| {
+        let loaded = load(kind, &[]);
+        let mut counter = Retained::new();
+        assert!(panel_frame(&loaded, "counter", &mut counter, Duration::ZERO));
+        let called = (1..=100).filter(|frame| panel_frame(&loaded, "counter", &mut counter, Duration::from_millis(16 * frame))).count();
+        assert_eq!(called, 0, "{kind:?}");
+        let Widget::Button { id, .. } = counter.widgets()[0] else { panic!("{kind:?} button expected") };
+        counter.push(vec![UiEvent { id, kind: UiEventKind::Click }], "");
+        assert!(panel_frame(&loaded, "counter", &mut counter, Duration::from_millis(1700)));
+        assert_eq!(texts(counter.widgets()), vec!["1 clicks at speed 0".to_string(), "calls 2".to_string()], "{kind:?}");
+    });
+}
+
+#[test]
+fn a_plugin_built_before_ui_levels_still_gets_the_clicks_on_its_panel() {
+    let before = load_before_regions();
+    assert_eq!(before.plugin.contributions().ui_level, 0);
+    let mut counter = Retained::with_level(before.plugin.contributions().event_level());
+    assert!(panel_frame(&before, "counter", &mut counter, Duration::ZERO));
+    let Widget::Button { id, .. } = counter.widgets()[0] else { panic!("button expected") };
+    counter.push(vec![UiEvent { id, kind: UiEventKind::Click }], "");
+    assert!(panel_frame(&before, "counter", &mut counter, Duration::from_millis(20)));
+    assert_eq!(texts(counter.widgets()).first().map(String::as_str), Some("1 clicks at speed 0"));
+}
+
+#[test]
+fn a_plugin_built_before_ui_levels_keeps_one_instance_so_its_tool_and_overlay_see_what_its_panel_set() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/it/fixtures/shared-before-levels.wasm"), dir.path().join("shared.wasm")).unwrap();
+    let manifest = json!({"id": "test.shared-before-levels", "name": "Shared", "version": "1.0.0", "entry": {"wasm": "shared.wasm"}});
+    std::fs::write(dir.path().join("plugin.json"), manifest.to_string()).unwrap();
+    let bundle = Bundle::open(dir.path()).unwrap();
+    let before = open(dir, bundle);
+    assert_eq!(before.plugin.contributions().ui_level, 0);
+    let mut bump = Retained::with_level(before.plugin.contributions().event_level());
+    assert!(panel_frame(&before, "bump", &mut bump, Duration::ZERO));
+    let Widget::Button { id, .. } = bump.widgets()[0] else { panic!("button expected") };
+    bump.push(vec![UiEvent { id, kind: UiEventKind::Click }], "");
+    assert!(panel_frame(&before, "bump", &mut bump, Duration::from_millis(20)));
+    let written = |overlay: craft_plugin::Overlay| -> Vec<String> {
+        overlay.marks.into_iter().filter_map(|mark| if let craft_plugin::Shape::Text { text, .. } = mark.shape { Some(text) } else { None }).collect()
+    };
+    let event = craft_plugin::ToolEvent { kind: craft_plugin::ToolEventKind::Move, zoom: 1.0, ..Default::default() };
+    let tool = before.plugin.call(&Call::Tool { tool: "census".into(), event }, None, &mut Recorder::default()).map(written);
+    let overlay = before.plugin.call(&Call::Overlay { effect: "peek".into(), cx: cx(4, 4) }, None, &mut Recorder::default()).map(written);
+    assert_eq!(
+        (texts(bump.widgets()), tool, overlay),
+        (vec!["shared 1".to_string()], Ok(vec!["shared 1".to_string()]), Ok(vec!["shared 1".to_string()]))
+    );
+}
+
+#[test]
+fn two_clicks_on_one_button_made_during_a_call_are_counted_twice() {
+    each_kind(|kind| {
+        let loaded = load(kind, &[]);
+        let mut counter = Retained::new();
+        panel_frame(&loaded, "counter", &mut counter, Duration::ZERO);
+        let Widget::Button { id, .. } = counter.widgets()[0] else { panic!("{kind:?} button expected") };
+        counter.invalidate();
+        let slow = counter.start([300.0, 200.0], Duration::from_millis(16)).expect("an invalidated panel is called");
+        counter.push(vec![UiEvent { id, kind: UiEventKind::Click }, UiEvent { id, kind: UiEventKind::Click }], "");
+        let reply =
+            loaded.plugin.call::<craft_plugin::PanelReply>(&Call::Panel { panel: "counter".into(), input: slow }, None, &mut Recorder::default());
+        counter.finish(reply.map_err(|e| e.to_string()), Duration::from_millis(16));
+        let called = (2..6).filter(|frame| panel_frame(&loaded, "counter", &mut counter, Duration::from_millis(16 * frame))).count();
+        assert_eq!(called, 2, "{kind:?}");
+        assert_eq!(texts(counter.widgets()), vec!["2 clicks at speed 0".to_string(), "calls 4".to_string()], "{kind:?}");
+    });
+}
+
+#[test]
+fn a_panel_timer_fires_ten_times_in_a_simulated_second_and_a_one_shot_once() {
+    each_kind(|kind| {
+        let loaded = load(kind, &[]);
+        let mut ticker = Retained::new();
+        for frame in 0..=60 {
+            panel_frame(&loaded, "ticker", &mut ticker, Duration::from_secs_f64(f64::from(frame) / 60.0));
+        }
+        assert_eq!(texts(ticker.widgets()), vec!["ticks 10 once true".to_string()], "{kind:?}");
+    });
+}
+
+#[test]
+fn a_plugin_reads_and_writes_the_clipboard_only_with_the_clipboard_permission() {
+    each_kind(|kind| {
+        let mut host = Recorder { clipboard: "hello".into(), ..Default::default() };
+        let refused = command(&load(kind, &[]), "swap-clipboard", &mut host).unwrap_err().to_string();
+        assert!(refused.contains("does not have `clipboard`"), "{kind:?} {refused}");
+        command(&load(kind, &["clipboard"]), "swap-clipboard", &mut host).unwrap();
+        assert_eq!(host.clipboard, "probe saw hello", "{kind:?}");
+    });
+}
+
+#[test]
+fn a_command_edits_the_document_only_with_the_permission_for_it() {
+    each_kind(|kind| {
+        let denied = load(kind, &["document.read"]);
+        let mut host = Recorder::default();
+        let error = command(&denied, "edit", &mut host).unwrap_err();
+        assert!(error.to_string().contains("document.write"), "{kind:?} {error}");
+        assert!(host.commands.is_empty(), "{kind:?} the app command ran without permission");
+        command(&denied, "read", &mut host).unwrap();
+        assert_eq!(host.commands, ["comp.info"]);
+
+        let allowed = load(kind, &["document.write"]);
+        let mut host = Recorder::default();
+        command(&allowed, "edit", &mut host).unwrap();
+        assert_eq!(host.commands, ["layer.newNull"]);
+        let saved = std::fs::read_to_string(allowed.data.path().join("data/last-reply.json")).unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&saved).unwrap(), json!({"echo": {"name": "From Plugin"}}));
+    });
+}
+
+#[test]
+fn a_command_the_app_refuses_stays_refused_whatever_was_granted() {
+    each_kind(|kind| {
+        let loaded = load(kind, &["document.read", "document.write", "files.read", "files.write"]);
+        let mut host = Recorder::default();
+        let error = command(&loaded, "run-script", &mut host).unwrap_err();
+        assert!(error.to_string().contains("refused"), "{kind:?} {error}");
+        assert!(host.commands.is_empty());
+    });
+}
+
+#[test]
+fn files_outside_the_plugins_own_folders_need_the_files_permission() {
+    each_kind(|kind| {
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("out.txt");
+        let attempt = |permissions: &[&str]| {
+            let loaded = load(kind, permissions);
+            std::fs::write(loaded._dir.path().join("user-target.txt"), target.to_str().unwrap()).unwrap();
+            command(&loaded, "write-user", &mut Recorder::default())
+        };
+        let error = attempt(&[]).unwrap_err();
+        assert!(error.to_string().contains("files.write"), "{kind:?} {error}");
+        assert!(!target.exists(), "{kind:?} wrote a user file without permission");
+        attempt(&["files.write"]).unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "written by plugin");
+    });
+}
+
+#[test]
+fn the_private_data_folder_cannot_be_escaped_and_the_bundle_is_read_only() {
+    each_kind(|kind| {
+        let loaded = load(kind, &[]);
+        let mut host = Recorder::default();
+        assert!(command(&loaded, "escape-data", &mut host).is_err(), "{kind:?}");
+        assert!(!loaded.data.path().join("outside.txt").exists());
+        let error = command(&loaded, "write-bundle", &mut host).unwrap_err();
+        assert!(error.to_string().contains("read-only"), "{kind:?} {error}");
+    });
+}
+
+#[test]
+fn a_sandboxed_plugin_whose_host_call_returns_after_its_time_limit_fails() {
+    struct Slow;
+    impl Host for Slow {
+        fn access(&self, _command: &str, _params: &Value) -> Access {
+            Access::Needs(vec![])
+        }
+        fn command(&mut self, _id: &str, _params: Value) -> Result<Value, String> {
+            std::thread::sleep(Duration::from_millis(700));
+            Ok(Value::Null)
+        }
+    }
+    let loaded = load(Kind::Wasm, &[]);
+    std::fs::write(loaded._dir.path().join("relay.json"), json!({"command": "comp.info", "params": {}}).to_string()).unwrap();
+    let late = loaded.plugin.call::<()>(&Call::Command { command: "relay".into() }, None, &mut Slow).unwrap_err();
+    assert!(matches!(&late, PluginError::Trap(why) if why.contains("time limit")), "{late:?}");
+}
+
+#[test]
+fn a_sandboxed_plugin_that_never_returns_is_stopped_and_the_next_call_still_works() {
+    let loaded = load(Kind::Wasm, &[]);
+    let mut pixels: Vec<Pixel> = vec![[0.0; 4]; 4];
+    let stopped = loaded.plugin.render("spin", &cx(2, 2), &Layout::whole_frame(), None, &mut pixels, Recorder::default).unwrap_err();
+    assert!(matches!(stopped, PluginError::Trap(_)), "{stopped:?}");
+    let mut pixels: Vec<Pixel> = vec![[0.25, 0.25, 0.25, 1.0]];
+    let mut cx = cx(1, 1);
+    cx.params.insert("amount".into(), craft_plugin::Value::Number(1.0));
+    loaded.plugin.render("invert", &cx, &Layout::whole_frame(), None, &mut pixels, Recorder::default).unwrap();
+    assert_eq!(pixels[0], [0.75, 0.75, 0.75, 1.0]);
+}
+
+struct CalledOff(Arc<AtomicBool>);
+
+impl Host for CalledOff {
+    fn cancel(&self) -> Option<Arc<AtomicBool>> {
+        Some(self.0.clone())
+    }
+}
+
+#[test]
+fn a_sandboxed_render_called_off_stops_at_the_next_tick_without_an_error_and_the_next_render_works() {
+    let (dir, bundle) = bundle(Kind::Wasm, &[]);
+    let data = tempfile::tempdir().unwrap();
+    let limits = Limits { interactive: Duration::from_millis(400), work: Duration::from_secs(20) };
+    let loaded =
+        Loaded { plugin: Plugin::load(&bundle, bundle.manifest.permissions.clone(), data.path().join("data"), limits).unwrap(), _dir: dir, data };
+    let cancel = Arc::new(AtomicBool::new(false));
+    let mut pixels: Vec<Pixel> = vec![[0.0; 4]; 4];
+    let started = Instant::now();
+    let stopped = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            std::thread::sleep(Duration::from_millis(100));
+            cancel.store(true, Ordering::Relaxed);
+        });
+        loaded.plugin.render("spin", &cx(2, 2), &Layout::whole_frame(), None, &mut pixels, || CalledOff(cancel.clone())).unwrap_err()
+    });
+    let took = started.elapsed();
+    assert!(matches!(stopped, PluginError::Cancelled), "{stopped:?}");
+    assert!(took < Duration::from_secs(5), "the call-off took {took:?}; the time limit is 20 s");
+    assert_eq!(loaded.plugin.logs(0).iter().filter(|line| line.level == LogLevel::Error).count(), 0);
+    let mut pixels: Vec<Pixel> = vec![[0.25, 0.25, 0.25, 1.0]];
+    let mut cx = cx(1, 1);
+    cx.params.insert("amount".into(), craft_plugin::Value::Number(1.0));
+    loaded.plugin.render("invert", &cx, &Layout::whole_frame(), None, &mut pixels, || CalledOff(Arc::default())).unwrap();
+    assert_eq!(pixels[0], [0.75, 0.75, 0.75, 1.0]);
+}
+
+#[test]
+fn a_render_called_off_stops_at_the_next_pass_and_keeps_its_input() {
+    let loaded = load(Kind::Native, &[]);
+    let cancel = Arc::new(AtomicBool::new(false));
+    struct CallsOffWhenDone(Arc<AtomicBool>, bool);
+    impl Host for CallsOffWhenDone {
+        fn cancel(&self) -> Option<Arc<AtomicBool>> {
+            Some(self.0.clone())
+        }
+    }
+    impl Drop for CallsOffWhenDone {
+        fn drop(&mut self) {
+            if self.1 {
+                self.0.store(true, Ordering::Relaxed);
+            }
+        }
+    }
+    let made = AtomicUsize::new(0);
+    let host = || CallsOffWhenDone(cancel.clone(), made.fetch_add(1, Ordering::Relaxed) == 1);
+    let mut pixels = ramp();
+    let stopped =
+        loaded.plugin.run_passes("passes", &cx(PASS_FRAME[0], PASS_FRAME[1]), &halve_and_restore([None, None]), &mut pixels, host).unwrap_err();
+    assert!(matches!(stopped, PluginError::Cancelled), "{stopped:?}");
+    assert_eq!(made.load(Ordering::Relaxed), 3, "the first pass ran; the second never started");
+    assert!(pixels == ramp(), "a render called off keeps its input");
+    let mut pixels: Vec<Pixel> = vec![[0.25, 0.25, 0.25, 1.0]];
+    let stopped = loaded.plugin.render("invert", &cx(1, 1), &Layout::whole_frame(), None, &mut pixels, || CalledOff(cancel.clone())).unwrap_err();
+    assert!(matches!(stopped, PluginError::Cancelled), "{stopped:?}");
+    assert_eq!(pixels[0], [0.25, 0.25, 0.25, 1.0]);
+}
+
+struct CallsOffAfterABand(Arc<AtomicBool>);
+
+impl Host for CallsOffAfterABand {
+    fn cancel(&self) -> Option<Arc<AtomicBool>> {
+        Some(self.0.clone())
+    }
+
+    fn finish(&mut self, _written: &mut [Pixel]) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
+fn called_off_after_a_band(loaded: &Loaded, effect: &str, pixels: &mut Vec<Pixel>) -> PluginError {
+    let cancel = Arc::new(AtomicBool::new(false));
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap();
+    let mut cx = cx(2, 256);
+    cx.params.insert("amount".into(), craft_plugin::Value::Number(1.0));
+    pool.install(|| loaded.plugin.render(effect, &cx, &Layout::pointwise(), None, pixels, || CallsOffAfterABand(cancel.clone())).unwrap_err())
+}
+
+#[test]
+fn a_pointwise_render_called_off_between_bands_returns_cancelled_and_caches_nothing() {
+    let loaded = load(Kind::Native, &[]);
+    let mut pixels: Vec<Pixel> = vec![[0.25, 0.25, 0.25, 1.0]; 2 * 256];
+    let stopped = called_off_after_a_band(&loaded, "invert", &mut pixels);
+    assert!(matches!(stopped, PluginError::Cancelled), "{stopped:?}");
+    assert_eq!(loaded.plugin.cached("invert"), None);
+}
+
+#[test]
+fn a_render_called_off_after_a_band_leaves_no_cache_entry_behind() {
+    let loaded = load(Kind::Native, &[]);
+    let mut pixels: Vec<Pixel> = vec![[0.25, 0.25, 0.25, 1.0]; 2 * 256];
+    let stopped = called_off_after_a_band(&loaded, "tally", &mut pixels);
+    assert!(matches!(stopped, PluginError::Cancelled), "{stopped:?}");
+    assert_eq!(loaded.plugin.cached("tally"), None, "a cancelled render's cache writes stay unseen");
+    let mut cx = cx(2, 256);
+    cx.params.insert("amount".into(), craft_plugin::Value::Number(1.0));
+    loaded.plugin.render("tally", &cx, &Layout::pointwise(), None, &mut pixels, Recorder::default).unwrap();
+    assert!(loaded.plugin.cached("tally").is_some(), "a finished render keeps its cache writes");
+}
+
+#[test]
+fn an_installed_plugin_runs_only_after_the_user_approves_exactly_what_it_asks_for() {
+    let (source, _) = bundle(Kind::Wasm, &["document.read"]);
+    let root = tempfile::tempdir().unwrap();
+    let mut registry = Registry::open(root.path());
+    let installed = registry.install(source.path()).unwrap();
+    assert_eq!(registry.grants(&installed), Err(Refusal::NotApproved), "installed plugins start disabled");
+
+    registry.approve(&installed).unwrap();
+    let reopened = Registry::open(root.path());
+    assert_eq!(reopened.grants(&installed), Ok(BTreeSet::from([Permission::DocumentRead])));
+
+    let manifest = installed.dir.join("plugin.json");
+    let asked = std::fs::read_to_string(&manifest).unwrap();
+    std::fs::write(&manifest, asked.replace("\"document.read\"", "\"document.read\",\"files.write\"")).unwrap();
+    assert_eq!(reopened.grants(&installed), Err(Refusal::Wider), "an update asking for more waits for a new approval");
+    std::fs::write(&manifest, asked).unwrap();
+
+    registry.disable("test.probe").unwrap();
+    assert_eq!(registry.grants(&installed), Err(Refusal::Disabled));
+    registry.uninstall("test.probe").unwrap();
+    assert!(registry.bundles().is_empty());
+}
+
+#[test]
+fn approval_covers_the_exact_files_and_a_reused_version_with_other_files_is_refused() {
+    let (source, _) = bundle(Kind::Wasm, &[]);
+    let root = tempfile::tempdir().unwrap();
+    let mut registry = Registry::open(root.path());
+    let installed = registry.install(source.path()).unwrap();
+    registry.approve(&installed).unwrap();
+    assert_eq!(registry.grants(&installed), Ok(BTreeSet::new()));
+
+    std::fs::write(installed.dir.join("probe.wasm"), b"\0asm\x01\0\0\0").unwrap();
+    let refused = registry.grants(&installed).unwrap_err();
+    assert!(matches!(&refused, Refusal::Changed(why) if why.starts_with("approved 1.0.0 ") && why.contains(", found 1.0.0 ")), "{refused}");
+    assert!(refused.to_string().starts_with("its files changed since you approved them"), "{refused}");
+
+    std::fs::write(source.path().join("extra.txt"), b"more").unwrap();
+    let reused = registry.install(source.path()).unwrap_err();
+    assert_eq!(
+        reused.to_string(),
+        "plugin `test.probe` version 1.0.0 is already approved with different files; give this build a new version number or remove the installed one first"
+    );
+    std::fs::remove_file(source.path().join("extra.txt")).unwrap();
+    let reinstalled = registry.install(source.path()).unwrap();
+    assert_eq!(registry.grants(&reinstalled), Ok(BTreeSet::new()), "the approved files are accepted again");
+}
+
+#[test]
+fn a_run_that_ended_without_a_clean_quit_quarantines_its_unsandboxed_plugins() {
+    let (source, _) = bundle(Kind::Native, &[]);
+    let root = tempfile::tempdir().unwrap();
+    let mut crashed = Registry::open(root.path());
+    let installed = crashed.install(source.path()).unwrap();
+    crashed.approve(&installed).unwrap();
+    crashed.mark_running(&BTreeSet::from(["test.probe".to_string()])).unwrap();
+
+    let mut alongside = Registry::open(root.path());
+    assert_eq!(alongside.recover().unwrap(), Vec::<String>::new(), "a run that is still going is left alone");
+    drop(crashed);
+
+    let mut next = Registry::open(root.path());
+    assert_eq!(next.recover().unwrap(), ["test.probe"]);
+    let why = "it was turned off because the app closed unexpectedly while it ran unsandboxed";
+    assert_eq!(next.grants(&installed).map_err(|e| e.to_string()), Err(why.to_string()));
+    assert_eq!(Registry::open(root.path()).recover().unwrap(), Vec::<String>::new(), "the marker is gone");
+    next.approve(&installed).unwrap();
+    assert_eq!(Registry::open(root.path()).grants(&installed), Ok(BTreeSet::new()), "approving turns it back on");
+
+    next.mark_running(&BTreeSet::from(["test.probe".to_string()])).unwrap();
+    next.end_run().unwrap();
+    assert_eq!(Registry::open(root.path()).recover().unwrap(), Vec::<String>::new(), "a clean quit quarantines nothing");
+}
+
+#[test]
+fn a_process_opened_before_a_restart_keeps_the_quarantine_that_restart_wrote() {
+    let (source, _) = bundle(Kind::Native, &[]);
+    let root = tempfile::tempdir().unwrap();
+    let mut crashed = Registry::open(root.path());
+    let installed = crashed.install(source.path()).unwrap();
+    crashed.approve(&installed).unwrap();
+    crashed.mark_running(&BTreeSet::from(["test.probe".to_string()])).unwrap();
+    let mut desktop = Registry::open(root.path());
+    drop(crashed);
+
+    assert_eq!(Registry::open(root.path()).recover().unwrap(), ["test.probe"]);
+    desktop.disable("test.probe").unwrap();
+    let why = "the app closed unexpectedly while it ran unsandboxed".to_string();
+    assert_eq!(Registry::open(root.path()).grants(&installed), Err(Refusal::Quarantined(why.clone())));
+    assert_eq!(desktop.grants(&installed), Err(Refusal::Quarantined(why)));
+    assert!(!Registry::open(root.path()).consent("test.probe").unwrap().enabled);
+}
+
+#[test]
+fn a_native_plugin_needs_explicit_trust_beyond_its_permissions() {
+    let (source, _) = bundle(Kind::Native, &[]);
+    let root = tempfile::tempdir().unwrap();
+    let mut registry = Registry::open(root.path());
+    let installed = registry.install(source.path()).unwrap();
+    assert_eq!(registry.mode(&installed.manifest), craft_plugin::RunMode::Unsandboxed);
+    assert_eq!(registry.grants(&installed), Err(Refusal::NotApproved));
+    registry.approve(&installed).unwrap();
+    assert_eq!(registry.grants(&installed), Ok(BTreeSet::new()));
+
+    let manifest = installed.dir.join("plugin.json");
+    let current = std::fs::read_to_string(&manifest).unwrap();
+    std::fs::write(&manifest, current.replace("\"1.0.0\"", "\"1.0.1\"")).unwrap();
+    assert_eq!(registry.grants(&installed), Err(Refusal::NotApproved), "a new native version waits for a new approval");
+}
+
+#[test]
+fn bands_cover_every_row_whatever_the_thread_count_and_frame_height() {
+    let loaded = load(Kind::Wasm, &[]);
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(67).build().unwrap();
+    for (width, height) in [(3usize, 4289usize), (5, 129), (2, 64), (1, 1)] {
+        let source: Vec<Pixel> = (0..width * height).map(|i| [i as f32, 0.25, 0.5, 1.0]).collect();
+        let mut expected = vec![[0.0; 4]; width];
+        expected.extend_from_slice(&source[..width * (height - 1)]);
+        let mut rendered = source.clone();
+        pool.install(|| {
+            loaded.plugin.render("shift-down", &cx(width as u32, height as u32), &Layout::neighbourhood(1), None, &mut rendered, Recorder::default)
+        })
+        .unwrap();
+        assert!(rendered == expected, "{width}x{height} differs from the shifted source");
+    }
+}
+
+#[test]
+fn an_empty_frame_renders_to_nothing_without_failing() {
+    each_kind(|kind| {
+        let loaded = load(kind, &[]);
+        let mut none: Vec<Pixel> = Vec::new();
+        for size in [[0, 0], [0, 720], [1280, 0]] {
+            let cx = RenderCx { size, scale: 1.0, ..Default::default() };
+            loaded
+                .plugin
+                .render("invert", &cx, &Layout::neighbourhood(0), None, &mut none, Recorder::default)
+                .unwrap_or_else(|e| panic!("{kind:?} {size:?}: {e}"));
+        }
+        let wide = RenderCx { size: [1 << 31, 0], scale: 1.0, ..Default::default() };
+        let refused = loaded.plugin.render("invert", &wide, &Layout::pointwise(), None, &mut none, Recorder::default).unwrap_err();
+        assert_eq!(
+            refused.to_string(),
+            "a 2147483648x0 frame is larger than a plugin can address; each side must be under 2147483648 pixels",
+            "{kind:?}"
+        );
+    });
+}
+
+#[test]
+fn an_effect_whose_last_band_fails_leaves_each_other_band_finished_or_as_it_was() {
+    each_kind(|kind| {
+        let loaded = load(kind, &[]);
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+        for (size, reach) in [([2, 2], None), ([3, 512], Some(0)), ([3, 512], Some(2))] {
+            let source: Vec<Pixel> = (0..size[0] * size[1]).map(|i| [i as f32, 0.2, 0.3, 1.0]).collect();
+            let mut pixels = source.clone();
+            let failed = pool
+                .install(|| {
+                    loaded.plugin.render(
+                        "half-done",
+                        &cx(size[0], size[1]),
+                        &reach.map_or(Layout::whole_frame(), Layout::neighbourhood),
+                        None,
+                        &mut pixels,
+                        Recorder::default,
+                    )
+                })
+                .unwrap_err();
+            assert!(failed.to_string().contains("gave up half way"), "{kind:?} {reach:?}: {failed}");
+            if reach != Some(0) {
+                assert!(pixels == source, "{kind:?} {reach:?}: a failed render changed a frame that is not changed in place");
+                continue;
+            }
+            let band = 3 * 128;
+            let (earlier, last) = pixels.split_at(source.len() - band);
+            let last_is_written = last.iter().all(|pixel| *pixel == [9.0; 4]);
+            let last_is_untouched = last == &source[source.len() - band..];
+            assert!(if kind == Kind::Native { last_is_written } else { last_is_untouched }, "{kind:?}: the failing band");
+            for (at, rows) in earlier.chunks(band).enumerate() {
+                let written = rows.iter().all(|pixel| *pixel == [9.0; 4]);
+                let untouched = rows == &source[at * band..(at + 1) * band];
+                assert!(written || untouched, "{kind:?}: band {at} is neither finished nor as it was");
+            }
+        }
+    });
+}
+
+#[test]
+fn a_neighbourhood_effect_renders_in_bands_that_hold_their_reach() {
+    each_kind(|kind| {
+        let loaded = load(kind, &[]);
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+        let mut pixels: Vec<Pixel> = vec![[0.0; 4]; 1024];
+        pool.install(|| loaded.plugin.render("mark-band", &cx(1, 1024), &Layout::neighbourhood(2), None, &mut pixels, Recorder::default)).unwrap();
+        assert_eq!([pixels[0], pixels[255]], [[0.0, 258.0, 0.0, 1.0], [0.0, 258.0, 255.0, 1.0]], "{kind:?} first band");
+        assert_eq!([pixels[256], pixels[600]], [[254.0, 260.0, 256.0, 1.0], [510.0, 260.0, 600.0, 1.0]], "{kind:?} middle bands");
+        assert_eq!(pixels[1023], [766.0, 258.0, 1023.0, 1.0], "{kind:?} last band");
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn a_link_in_the_data_folder_cannot_redirect_a_write_outside_it() {
+    each_kind(|kind| {
+        let loaded = load(kind, &[]);
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("planted.txt");
+        let data = loaded.data.path().join("data");
+        std::fs::create_dir_all(&data).unwrap();
+        std::os::unix::fs::symlink(&target, data.join("link.txt")).unwrap();
+        assert!(command(&loaded, "write-link", &mut Recorder::default()).is_err(), "{kind:?}");
+        assert!(!target.exists(), "{kind:?} wrote through the link");
+    });
+}
+
+#[test]
+fn a_half_finished_install_is_not_treated_as_an_installed_plugin() {
+    let (source, _) = bundle(Kind::Wasm, &[]);
+    let root = tempfile::tempdir().unwrap();
+    let mut registry = Registry::open(root.path());
+    let installed = registry.install(source.path()).unwrap();
+    registry.approve(&installed).unwrap();
+
+    let staged = root.path().join(".installing-test.probe");
+    std::fs::create_dir_all(&staged).unwrap();
+    for file in ["plugin.json", "probe.wasm"] {
+        std::fs::copy(source.path().join(file), staged.join(file)).unwrap();
+    }
+    let listed: Vec<_> = Registry::open(root.path()).bundles().into_iter().flatten().map(|b| b.dir).collect();
+    assert_eq!(listed, std::slice::from_ref(&installed.dir));
+
+    let again = registry.install(source.path()).unwrap();
+    assert_eq!(again.dir, installed.dir);
+    assert!(!staged.exists(), "the leftover staging folder is cleaned up by the next install");
+}
+
+#[test]
+fn an_update_whose_entry_file_is_missing_keeps_the_working_install() {
+    let (source, _) = bundle(Kind::Wasm, &[]);
+    let root = tempfile::tempdir().unwrap();
+    let mut registry = Registry::open(root.path());
+    let installed = registry.install(source.path()).unwrap();
+
+    let broken = tempfile::tempdir().unwrap();
+    let manifest = json!({"id": "test.probe", "name": "Probe", "version": "2.0.0", "entry": {"wasm": "probe.wasm"}, "permissions": []});
+    std::fs::write(broken.path().join("plugin.json"), manifest.to_string()).unwrap();
+    let error = registry.install(broken.path()).unwrap_err();
+    assert!(error.to_string().contains("missing"), "{error}");
+
+    let kept = Bundle::open(&installed.dir).unwrap();
+    assert_eq!(kept.manifest.version, "1.0.0");
+    let data = tempfile::tempdir().unwrap();
+    let limits = Limits { interactive: Duration::from_millis(400), work: Duration::from_millis(400) };
+    assert!(Plugin::load(&kept, BTreeSet::new(), data.path().join("data"), limits).is_ok());
+}
+
+#[test]
+fn a_plugin_with_file_access_cannot_touch_the_apps_plugin_folders() {
+    each_kind(|kind| {
+        let (source, _) = bundle(kind, &["files.read", "files.write"]);
+        let root = tempfile::tempdir().unwrap();
+        let mut registry = Registry::open(root.path());
+        let installed = registry.install(source.path()).unwrap();
+        registry.approve(&installed).unwrap();
+        let running = registry.running(&installed);
+        let grants = registry.grants(&running).unwrap();
+        let limits = Limits { interactive: Duration::from_millis(400), work: Duration::from_millis(400) };
+        let plugin = Plugin::load(&running, grants, registry.data_dir("test.probe"), limits).unwrap();
+        let compiled = root.path().join(".data/.compiled");
+        std::fs::create_dir_all(&compiled).unwrap();
+        let consent = root.path().join("state.json");
+        let before = std::fs::read_to_string(&consent).unwrap();
+        let entry = running.entry_path().unwrap();
+        let attempt = |command: &str, target: &Path| {
+            std::fs::write(installed.dir.join("user-target.txt"), target.to_str().unwrap()).unwrap();
+            plugin.call::<()>(&Call::Command { command: command.into() }, None, &mut Recorder::default()).unwrap_err().to_string()
+        };
+        for target in [compiled.join("planted.cwasm"), consent.clone(), entry.clone()] {
+            let error = attempt("write-user", &target);
+            assert!(error.contains("that folder belongs to the app"), "{kind:?} {target:?} {error}");
+            let error = attempt("read-user", &target);
+            assert!(error.contains("that folder belongs to the app"), "{kind:?} {target:?} {error}");
+        }
+        assert!(!compiled.join("planted.cwasm").exists(), "{kind:?}");
+        assert_eq!(std::fs::read_to_string(&consent).unwrap(), before);
+        assert!(std::fs::read(&entry).unwrap().len() > 2, "{kind:?}");
+    });
+}
+
+#[test]
+fn time_spent_in_a_file_dialog_does_not_count_against_the_call_limit() {
+    struct SlowPicker(PathBuf);
+    impl Host for SlowPicker {
+        fn pick_file(&mut self, _request: &craft_plugin::PickFile) -> Result<Option<PathBuf>, String> {
+            std::thread::sleep(Duration::from_millis(900));
+            Ok(Some(self.0.clone()))
+        }
+    }
+    let outside = tempfile::tempdir().unwrap();
+    let chosen = outside.path().join("chosen.txt");
+    std::fs::write(&chosen, "chosen slowly").unwrap();
+    let loaded = load(Kind::Wasm, &["files.write"]);
+    loaded.plugin.call::<()>(&Call::Command { command: "pick-and-read".into() }, None, &mut SlowPicker(chosen.clone())).unwrap();
+    assert_eq!(std::fs::read_to_string(loaded.data.path().join("data/picked.txt")).unwrap(), "chosen slowly");
+    assert_eq!(std::fs::read_to_string(&chosen).unwrap(), "overwritten");
+}
+
+#[test]
+fn a_cache_put_outside_a_render_changes_the_cache_generation_and_one_inside_does_not() {
+    each_kind(|kind| {
+        let loaded = load(kind, &[]);
+        let start = loaded.plugin.cache_generation();
+        let mut pixels: Vec<Pixel> = vec![[0.0; 4]];
+        loaded.plugin.render("memo", &cx(1, 1), &Layout::whole_frame(), None, &mut pixels, Recorder::default).unwrap();
+        assert_eq!(loaded.plugin.cached("memo").as_deref(), Some(&[1u8, 2, 3][..]), "{kind:?}");
+        assert_eq!(loaded.plugin.cache_generation(), start, "{kind:?}");
+        command(&loaded, "put-table", &mut Recorder::default()).unwrap();
+        assert_eq!(loaded.plugin.cached("table").as_deref(), Some(&[4u8, 5, 6][..]), "{kind:?}");
+        assert!(loaded.plugin.cache_generation() > start, "{kind:?}");
+    });
+}
+
+#[test]
+fn a_staged_call_keeps_its_cache_writes_apart_until_they_are_kept() {
+    each_kind(|kind| {
+        let loaded = load(kind, &[]);
+        let memo = Memo::default();
+        loaded.plugin.call_staged::<()>(&Call::Command { command: "put-table".into() }, &mut Recorder::default(), &memo).unwrap();
+        assert_eq!(loaded.plugin.cached("table"), None, "{kind:?}: a staged write stays out of the plugin's cache");
+        assert_eq!(loaded.plugin.cached_in(&memo, "table").as_deref(), Some(&[4u8, 5, 6][..]), "{kind:?}");
+        loaded.plugin.keep(memo);
+        assert_eq!(loaded.plugin.cached("table").as_deref(), Some(&[4u8, 5, 6][..]), "{kind:?}");
+    });
+}
+
+fn settle(loaded: &Loaded, id: u64, host: &mut Recorder) -> TaskState {
+    let until = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        loaded.plugin.pump(host);
+        let state = loaded.plugin.tasks().into_iter().find(|task| task.id == id).expect("the task is listed");
+        if state.status != TaskStatus::Running || std::time::Instant::now() > until {
+            return state;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn a_task_reports_progress_and_finishes_with_its_result_without_a_time_limit() {
+    each_kind(|kind| {
+        let loaded = load(kind, &[]);
+        let id = loaded.plugin.start("count", json!({"steps": 4}), &Recorder::default()).unwrap();
+        let state = settle(&loaded, id, &mut Recorder::default());
+        assert_eq!(state.status, TaskStatus::Done, "{kind:?} {state:?}");
+        assert_eq!(state.result, Some(json!({"counted": 4})));
+        assert_eq!((state.progress, state.message.as_str()), (1.0, "step 3"));
+
+        command(&loaded, "start-count", &mut Recorder::default()).unwrap();
+        let started: u64 = std::fs::read_to_string(loaded.data.path().join("data/task-id.txt")).unwrap().parse().unwrap();
+        assert_eq!(started, id + 1);
+        assert_eq!(settle(&loaded, started, &mut Recorder::default()).result, Some(json!({"counted": 3})));
+        assert!(loaded.plugin.start("missing", json!({}), &Recorder::default()).unwrap_err().to_string().contains("no task `missing`"));
+    });
+}
+
+#[test]
+fn cancel_stops_a_task_that_never_reports_progress() {
+    let loaded = load(Kind::Wasm, &[]);
+    let id = loaded.plugin.start("forever", json!({}), &Recorder::default()).unwrap();
+    std::thread::sleep(Duration::from_millis(600));
+    assert_eq!(loaded.plugin.tasks()[0].status, TaskStatus::Running, "a task has no fixed time limit");
+    let asked = std::time::Instant::now();
+    assert!(loaded.plugin.cancel(id));
+    let state = settle(&loaded, id, &mut Recorder::default());
+    assert_eq!(state.status, TaskStatus::Cancelled);
+    assert!(asked.elapsed() < Duration::from_secs(2), "{:?}", asked.elapsed());
+
+    let native = load(Kind::Native, &[]);
+    let id = native.plugin.start("patient", json!({}), &Recorder::default()).unwrap();
+    native.plugin.cancel(id);
+    assert_eq!(settle(&native, id, &mut Recorder::default()).status, TaskStatus::Cancelled);
+}
+
+#[test]
+fn a_task_edits_the_document_on_the_apps_thread_only_with_the_permission_for_it() {
+    each_kind(|kind| {
+        let denied = load(kind, &["document.read"]);
+        let mut host = Recorder::default();
+        let id = denied.plugin.start("edit", json!({}), &Recorder::default()).unwrap();
+        let state = settle(&denied, id, &mut host);
+        assert_eq!(state.status, TaskStatus::Failed, "{kind:?}");
+        assert!(state.error.as_deref().unwrap_or_default().contains("document.write"), "{kind:?} {state:?}");
+        assert!(host.commands.is_empty());
+
+        let allowed = load(kind, &["document.write"]);
+        let id = allowed.plugin.start("edit", json!({}), &Recorder::default()).unwrap();
+        let state = settle(&allowed, id, &mut host);
+        assert_eq!(state.result, Some(json!({"echo": {"name": "From Task"}})), "{kind:?}");
+        assert_eq!(host.commands, ["layer.newNull"]);
+    });
+}
+
+#[test]
+fn a_plugin_runs_at_most_four_tasks_at_once_and_stopping_it_cancels_them() {
+    each_kind(|kind| {
+        let loaded = load(kind, &[]);
+        let ids: Vec<u64> = (0..4).map(|_| loaded.plugin.start("patient", json!({}), &Recorder::default()).unwrap()).collect();
+        let fifth = loaded.plugin.start("patient", json!({}), &Recorder::default()).unwrap_err();
+        assert!(fifth.to_string().contains("already runs 4 tasks"), "{kind:?} {fifth}");
+        loaded.plugin.cancel_all();
+        let states: Vec<TaskStatus> = ids.iter().map(|id| settle(&loaded, *id, &mut Recorder::default()).status).collect();
+        assert_eq!(states, [TaskStatus::Cancelled; 4], "{kind:?}");
+        assert_eq!(loaded.plugin.running_tasks(), 0);
+        let after = loaded.plugin.start("count", json!({"steps": 1}), &Recorder::default()).unwrap_err();
+        assert!(after.to_string().contains("the plugin was stopped"), "{kind:?} {after}");
+    });
+}
+
+#[test]
+fn a_task_reads_a_frame_through_the_app_only_with_document_read() {
+    each_kind(|kind| {
+        let reader = load(kind, &["document.read"]);
+        let id = reader.plugin.start("frame", json!({"time": 0.75, "scale": 0.5}), &Recorder::default()).unwrap();
+        let state = settle(&reader, id, &mut Recorder::default());
+        assert_eq!(state.result, Some(json!({"width": 2, "height": 1, "center": [0.75, 0.0, 0.0, 1.0]})), "{kind:?} {state:?}");
+
+        let blind = load(kind, &[]);
+        let id = blind.plugin.start("frame", json!({"time": 0.0}), &Recorder::default()).unwrap();
+        let state = settle(&blind, id, &mut Recorder::default());
+        assert!(state.error.as_deref().unwrap_or_default().contains("document.read"), "{kind:?} {state:?}");
+    });
+}
+
+#[test]
+fn an_effect_cannot_render_a_frame_from_inside_its_own_render() {
+    each_kind(|kind| {
+        let loaded = load(kind, &["document.read"]);
+        let mut pixels: Vec<Pixel> = vec![[0.0; 4]];
+        loaded.plugin.render("recurse", &cx(1, 1), &Layout::whole_frame(), None, &mut pixels, Recorder::default).unwrap();
+        assert_eq!(pixels[0][0], 1.0, "{kind:?}");
+    });
+}
+
+#[test]
+fn a_picked_file_becomes_readable_without_the_files_permission_but_not_writable() {
+    each_kind(|kind| {
+        let outside = tempfile::tempdir().unwrap();
+        let chosen = outside.path().join("chosen.txt");
+        std::fs::write(&chosen, "chosen by the user").unwrap();
+        let loaded = load(kind, &[]);
+        let mut host = Recorder { picked: Some(chosen.clone()), ..Default::default() };
+        let error = command(&loaded, "pick-and-read", &mut host).unwrap_err();
+        assert!(error.to_string().contains("files.write"), "{kind:?} {error}");
+        assert_eq!(std::fs::read_to_string(loaded.data.path().join("data/picked.txt")).unwrap(), "chosen by the user");
+        assert_eq!(std::fs::read_to_string(&chosen).unwrap(), "chosen by the user");
+
+        let id = loaded.plugin.start("pick", json!({}), &Recorder::default()).unwrap();
+        let state = settle(&loaded, id, &mut host);
+        assert!(state.error.as_deref().unwrap_or_default().contains("only from a panel or a command"), "{kind:?} {state:?}");
+    });
+}
+
+#[test]
+fn a_dropped_file_is_readable_like_a_picked_one_but_not_writable_and_its_folder_stays_closed() {
+    each_kind(|kind| {
+        let outside = tempfile::tempdir().unwrap();
+        let (dropped, sibling) = (outside.path().join("dropped.txt"), outside.path().join("sibling.txt"));
+        std::fs::write(&dropped, "dropped by the user").unwrap();
+        std::fs::write(&sibling, "next to it").unwrap();
+        let loaded = load(kind, &[]);
+        let target = |path: &Path| std::fs::write(loaded._dir.path().join("user-target.txt"), path.to_str().unwrap()).unwrap();
+        let mut host = Recorder::default();
+        loaded.plugin.accept_drop(&dropped).unwrap();
+        target(&dropped);
+        command(&loaded, "read-user", &mut host).unwrap();
+        assert_eq!(std::fs::read_to_string(loaded.data.path().join("data/read.txt")).unwrap(), "dropped by the user", "{kind:?}");
+        let error = command(&loaded, "write-user", &mut host).unwrap_err().to_string();
+        assert!(error.contains("files.write"), "{kind:?} {error}");
+        target(&sibling);
+        let error = command(&loaded, "read-user", &mut host).unwrap_err().to_string();
+        assert!(error.contains("files.read"), "{kind:?} {error}");
+        assert_eq!(std::fs::read_to_string(&dropped).unwrap(), "dropped by the user", "{kind:?}");
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn a_picked_file_replaced_by_a_link_is_refused_and_a_new_save_target_is_not_followed() {
+    each_kind(|kind| {
+        let outside = tempfile::tempdir().unwrap();
+        let (chosen, secret) = (outside.path().join("chosen.txt"), outside.path().join("secret.txt"));
+        std::fs::write(&chosen, "chosen by the user").unwrap();
+        std::fs::write(&secret, "not for the plugin").unwrap();
+        let loaded = load(kind, &[]);
+        let mut host = Recorder { picked: Some(chosen.clone()), ..Default::default() };
+        command(&loaded, "pick-and-read", &mut host).unwrap_err();
+        std::fs::write(loaded._dir.path().join("user-target.txt"), chosen.to_str().unwrap()).unwrap();
+        command(&loaded, "read-user", &mut host).unwrap();
+        assert_eq!(std::fs::read_to_string(loaded.data.path().join("data/read.txt")).unwrap(), "chosen by the user", "{kind:?}");
+
+        std::fs::remove_file(&chosen).unwrap();
+        std::os::unix::fs::symlink(&secret, &chosen).unwrap();
+        let error = command(&loaded, "read-user", &mut host).unwrap_err().to_string();
+        assert!(error.contains("is no longer the file the user picked"), "{kind:?} {error}");
+        assert_eq!(std::fs::read_to_string(loaded.data.path().join("data/read.txt")).unwrap(), "chosen by the user", "{kind:?}");
+
+        let target = outside.path().join("new.txt");
+        let saver = load(kind, &[]);
+        let mut host = Recorder { picked: Some(target.clone()), ..Default::default() };
+        saver.plugin.call::<()>(&Call::Command { command: "pick-and-save".into() }, None, &mut host).unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "saved", "{kind:?}");
+        std::fs::remove_file(&target).unwrap();
+        std::os::unix::fs::symlink(&secret, &target).unwrap();
+        std::fs::write(saver._dir.path().join("user-target.txt"), target.to_str().unwrap()).unwrap();
+        let error = saver.plugin.call::<()>(&Call::Command { command: "write-user".into() }, None, &mut host).unwrap_err().to_string();
+        assert!(error.contains("is no longer the file the user picked"), "{kind:?} {error}");
+        assert_eq!(std::fs::read_to_string(&secret).unwrap(), "not for the plugin", "{kind:?}");
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn a_new_save_target_is_created_in_the_folder_the_user_picked_even_if_that_folder_is_moved_and_replaced_by_a_link() {
+    each_kind(|kind| {
+        let outside = tempfile::tempdir().unwrap();
+        let (chosen, moved, elsewhere) = (outside.path().join("chosen"), outside.path().join("moved"), outside.path().join("elsewhere"));
+        std::fs::create_dir(&chosen).unwrap();
+        std::fs::create_dir(&elsewhere).unwrap();
+        let target = chosen.join("new.txt");
+        let loaded = load(kind, &[]);
+        let mut host = Recorder { picked: Some(target.clone()), ..Default::default() };
+        command(&loaded, "pick-save-target", &mut host).unwrap();
+        std::fs::rename(&chosen, &moved).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &chosen).unwrap();
+        std::fs::write(loaded._dir.path().join("user-target.txt"), target.to_str().unwrap()).unwrap();
+        command(&loaded, "write-user", &mut host).unwrap();
+        assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0, "{kind:?}");
+        assert_eq!(std::fs::read_to_string(moved.join("new.txt")).unwrap(), "written by plugin", "{kind:?}");
+    });
+}
+
+#[test]
+fn a_save_target_picked_inside_the_apps_folders_is_refused() {
+    each_kind(|kind| {
+        let loaded = load(kind, &[]);
+        let planted = loaded.data.path().join("planted.json");
+        let mut host = Recorder { picked: Some(planted.clone()), ..Default::default() };
+        let error = command(&loaded, "pick-and-save", &mut host).unwrap_err().to_string();
+        assert!(error.contains("that folder belongs to the app"), "{kind:?} {error}");
+        assert!(!planted.exists(), "{kind:?}");
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn a_sandboxed_call_whose_file_write_stalls_returns_only_after_the_write_landed() {
+    let outside = tempfile::tempdir().unwrap();
+    let stalled = outside.path().join("stalled");
+    assert!(Command::new("mkfifo").arg(&stalled).status().unwrap().success());
+    let loaded = load(Kind::Wasm, &["files.read", "files.write"]);
+    std::fs::write(loaded._dir.path().join("user-target.txt"), stalled.to_str().unwrap()).unwrap();
+    std::thread::scope(|scope| {
+        let reader = scope.spawn(|| {
+            std::thread::sleep(Duration::from_millis(700));
+            let released = std::time::Instant::now();
+            let mut written = String::new();
+            std::io::Read::read_to_string(&mut std::fs::File::open(&stalled).unwrap(), &mut written).unwrap();
+            (released, written)
+        });
+        let error = command(&loaded, "write-user", &mut Recorder::default()).unwrap_err().to_string();
+        let returned = std::time::Instant::now();
+        let (released, written) = reader.join().unwrap();
+        assert!(error.contains("the plugin passed its time limit while the host served a call"), "{error}");
+        assert!(returned > released, "the call returned {:?} before the disk let the write through", released - returned);
+        assert_eq!(written, "written by plugin");
+    });
+}
+
+const PASS_FRAME: [u32; 2] = [37, 301];
+
+fn ramp() -> Vec<Pixel> {
+    let [width, height] = PASS_FRAME;
+    (0..height).flat_map(|y| (0..width).map(move |x| [x as f32, y as f32, (x * y % 7) as f32, 1.0])).collect()
+}
+
+fn run_plan(kind: Kind, plan: &Plan) -> Result<Vec<Pixel>, PluginError> {
+    let loaded = load(kind, &[]);
+    let mut pixels = ramp();
+    loaded.plugin.run_passes("passes", &cx(PASS_FRAME[0], PASS_FRAME[1]), plan, &mut pixels, Recorder::default)?;
+    Ok(pixels)
+}
+
+fn halve_and_restore(reach: [Option<u32>; 2]) -> Plan {
+    let mut plan = Plan::new();
+    let half = plan.scratch(PASS_FRAME.map(|side| side.div_ceil(2)));
+    let mut down = PlanPass::new("probe_down", PlanImage::Source, half);
+    let mut up = PlanPass::new("probe_up", half, PlanImage::Output);
+    (down.reach, up.reach) = (reach[0], reach[1]);
+    plan.pass(down).pass(up)
+}
+
+fn at(pixels: &[Pixel], x: usize, y: usize) -> Pixel {
+    pixels[y * PASS_FRAME[0] as usize + x]
+}
+
+#[test]
+fn a_two_pass_plan_gives_the_same_pixels_in_bands_as_in_one_call() {
+    each_kind(|kind| {
+        let banded = run_plan(kind, &halve_and_restore([Some(2), Some(1)])).unwrap();
+        let whole = run_plan(kind, &halve_and_restore([None, None])).unwrap();
+        assert_eq!(banded, whole, "{kind:?}");
+        assert_eq!(at(&banded, 10, 100), [10.5, 101.5, 3.5, 1.0], "{kind:?}");
+        assert_eq!(at(&banded, 10, 75)[..2], [10.5, 75.5], "{kind:?}");
+        assert_eq!(at(&banded, 10, 76)[..2], [10.5, 77.5], "{kind:?}");
+        assert_eq!(at(&banded, 36, 300), [4.5, 37.5, 0.75, 0.125], "{kind:?}");
+    });
+}
+
+#[test]
+fn a_pass_reads_its_reach_across_band_edges() {
+    each_kind(|kind| {
+        let tall = |reach| Plan::new().pass(PlanPass { reach, ..PlanPass::new("probe_tall", PlanImage::Source, PlanImage::Output) });
+        let banded = run_plan(kind, &tall(Some(3))).unwrap();
+        assert_eq!(banded, run_plan(kind, &tall(None)).unwrap(), "{kind:?}");
+        assert_eq!(at(&banded, 10, 0)[..2], [220.0, 38.0], "{kind:?}");
+        assert_eq!(at(&banded, 10, 75), [280.0, 2128.0, 70.0, 28.0], "{kind:?}");
+        assert_eq!(at(&banded, 10, 76)[..2], [280.0, 2156.0], "{kind:?}");
+        assert_eq!(at(&banded, 10, 300)[..2], [100.0, 2990.0], "{kind:?}");
+    });
+}
+
+#[test]
+fn aux_reads_its_own_reach_across_band_edges() {
+    let plan = |pass: PlanPass| Plan::new().pass(pass);
+    let tall_aux = PlanPass::new("probe_tall_aux", PlanImage::Source, PlanImage::Output).aux(PlanImage::Source);
+    each_kind(|kind| {
+        let banded = run_plan(kind, &plan(tall_aux.clone().reach(0).aux_reach(3))).unwrap();
+        assert_eq!(banded, run_plan(kind, &plan(tall_aux.clone())).unwrap(), "{kind:?}");
+        assert_eq!(at(&banded, 10, 75), [290.0, 2203.0, 71.0, 29.0], "{kind:?}");
+    });
+    let short = run_plan(Kind::Wasm, &plan(tall_aux.reach(0))).unwrap();
+    assert_eq!(at(&short, 10, 75)[..2], [110.0, 815.0]);
+}
+
+#[test]
+fn host_kernel_passes_run_in_the_app_between_plugin_passes() {
+    each_kind(|kind| {
+        let mut plan = Plan::new();
+        let tall = plan.scratch(PASS_FRAME);
+        let swizzle = [[0.5, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
+        let plan = plan.pass(PlanPass::new("probe_tall", PlanImage::Source, tall).reach(3)).pass(PlanPass::matrix(tall, PlanImage::Output, swizzle));
+        assert_eq!(at(&run_plan(kind, &plan).unwrap(), 10, 75), [140.0, 28.0, 70.0, 28.0], "{kind:?}");
+    });
+}
+
+#[test]
+fn a_native_pass_is_handed_its_target_as_the_passes_before_it_left_it() {
+    let mut plan = Plan::new();
+    let (a, b) = (plan.scratch(PASS_FRAME), plan.scratch(PASS_FRAME));
+    let half = [[0.5, 0.0, 0.0, 0.0], [0.0, 0.5, 0.0, 0.0], [0.0, 0.0, 0.5, 0.0], [0.0, 0.0, 0.0, 0.5]];
+    let identity = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
+    let plan = plan
+        .pass(PlanPass::matrix(PlanImage::Source, a, half))
+        .pass(PlanPass::matrix(a, b, identity))
+        .pass(PlanPass::new("probe_nothing", b, a))
+        .pass(PlanPass::matrix(a, PlanImage::Output, identity));
+    assert_eq!(at(&run_plan(Kind::Native, &plan).unwrap(), 10, 75), [5.0, 37.5, 0.5, 0.5]);
+    assert_eq!(at(&run_plan(Kind::Wasm, &plan).unwrap(), 10, 75), [0.0; 4], "a sandboxed pass starts from a clear target");
+}
+
+#[test]
+fn a_plugin_pass_on_a_new_image_starts_clear_although_an_image_of_its_size_is_no_longer_needed() {
+    each_kind(|kind| {
+        let mut plan = Plan::new();
+        let (a, b) = (plan.scratch(PASS_FRAME), plan.scratch(PASS_FRAME));
+        let half = [[0.5, 0.0, 0.0, 0.0], [0.0, 0.5, 0.0, 0.0], [0.0, 0.0, 0.5, 0.0], [0.0, 0.0, 0.0, 0.5]];
+        let plan = plan
+            .pass(PlanPass::matrix(PlanImage::Source, a, half))
+            .pass(PlanPass::convolve(a, PlanImage::Output, Taps::Separable { x: vec![1.0], y: vec![1.0] }))
+            .pass(PlanPass::new("probe_nothing", PlanImage::Source, b))
+            .pass(PlanPass::blend_images(PlanImage::Output, b, PlanImage::Output, BlendMode::Add, 1.0));
+        assert_eq!(at(&run_plan(kind, &plan).unwrap(), 10, 75), [5.0, 37.5, 0.5, 0.5], "{kind:?}");
+    });
+}
+
+#[test]
+fn a_pass_with_too_little_reach_is_missing_rows_at_band_edges() {
+    let short = Plan::new().pass(PlanPass::new("probe_tall", PlanImage::Source, PlanImage::Output).reach(2));
+    let pixels = run_plan(Kind::Wasm, &short).unwrap();
+    assert_eq!(at(&pixels, 10, 74)[..2], [280.0, 2100.0]);
+    assert_eq!(at(&pixels, 10, 75)[..2], [210.0, 1582.0]);
+}
+
+#[test]
+fn a_plan_naming_an_image_it_does_not_declare_is_refused() {
+    each_kind(|kind| {
+        let writes = Plan::new().pass(PlanPass::new("probe_tall", PlanImage::Source, PlanImage::Scratch(3)));
+        assert_eq!(run_plan(kind, &writes), Err(PluginError::Failed("pass 0 writes Scratch(3), which the plan does not declare".into())));
+        let reads = Plan::new().pass(PlanPass::new("probe_tall", PlanImage::Scratch(1), PlanImage::Output));
+        assert_eq!(run_plan(kind, &reads), Err(PluginError::Failed("pass 0 reads Scratch(1), which the plan does not declare".into())));
+    });
+}
+
+#[test]
+fn a_pass_writing_the_image_it_reads_is_refused() {
+    let tall = |src| PlanPass::new("probe_tall", src, PlanImage::Output).reach(3);
+    let plan = Plan::new().pass(tall(PlanImage::Source)).pass(tall(PlanImage::Output));
+    assert_eq!(run_plan(Kind::Wasm, &plan), Err(PluginError::Failed("pass 1 reads the image it writes".into())));
+}
+
+#[test]
+fn a_pass_that_writes_nothing_leaves_its_image_transparent() {
+    each_kind(|kind| {
+        let mut plan = Plan::new();
+        let scratch = plan.scratch(PASS_FRAME);
+        let plan = plan.pass(PlanPass::new("probe_red", PlanImage::Source, scratch)).pass(PlanPass::new("probe_nothing", scratch, PlanImage::Output));
+        let pixels = run_plan(kind, &plan).unwrap();
+        assert_eq!(pixels, vec![[0.0; 4]; pixels.len()], "{kind:?}");
+    });
+}
+
+#[test]
+fn a_render_call_through_the_generic_entry_point_is_refused_and_writes_nothing() {
+    each_kind(|kind| {
+        let loaded = load(kind, &[]);
+        let frame = FrameDesc { width: 2, height: 1, origin: [0, 0], ..Default::default() };
+        let call = Call::Render { effect: "passes".into(), cx: cx(2, 1), frame };
+        let mut pixels = vec![[0.25; 4]; 2];
+        let error = loaded.plugin.call::<()>(&call, Some(&mut pixels), &mut Recorder::default()).unwrap_err();
+        assert_eq!(error, PluginError::Failed("a render call stages its frame through Plugin::render; call render".into()), "{kind:?}");
+        assert_eq!(pixels, vec![[0.25; 4]; 2], "{kind:?}");
+    });
+}
+
+#[test]
+fn a_failing_pass_fails_the_render() {
+    each_kind(|kind| {
+        let plan = Plan::new().pass(PlanPass::new("nope", PlanImage::Source, PlanImage::Output).reach(0));
+        assert_eq!(run_plan(kind, &plan), Err(PluginError::Failed("no probe kernel `nope`".into())));
+    });
+}
+
+#[test]
+fn a_panic_in_a_sandboxed_plugin_logs_its_file_and_line_before_the_trap() {
+    let loaded = load(Kind::Wasm, &[]);
+    let error = command(&loaded, "panic", &mut Recorder::default()).unwrap_err().to_string();
+    assert!(error.starts_with("the plugin stopped: the plugin panicked at src/lib.rs:") && error.ends_with(": oops"), "{error}");
+    let logs: Vec<String> = loaded.plugin.logs(0).into_iter().map(|line| line.message).collect();
+    let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/probe/src/lib.rs")).unwrap();
+    let (line, column) = source.lines().enumerate().find_map(|(n, text)| Some((n + 1, text.find("panic!(\"oops\")")? + 1))).unwrap();
+    assert_eq!(logs.first().cloned(), Some(format!("the plugin panicked at src/lib.rs:{line}:{column}: oops")), "{logs:?}");
+}
+
+#[test]
+fn a_trapped_sandboxed_render_is_reported_in_one_short_line_with_the_effect_and_the_panic_location() {
+    let loaded = load(Kind::Wasm, &[]);
+    let mut pixels = vec![[0.0; 4]; 2];
+    let error = loaded.plugin.render("explode", &cx(2, 1), &Layout::neighbourhood(0), None, &mut pixels, Recorder::default).unwrap_err().to_string();
+    let journal = loaded.plugin.logs(0).into_iter().map(|line| line.message).next_back().unwrap();
+    for text in [&error, &journal] {
+        assert!(!text.contains('\n') && !text.contains("\\n"), "{text}");
+        assert!(text.chars().count() < 300, "{} characters: {text}", text.chars().count());
+        assert!(text.contains("the plugin panicked at src/lib.rs:"), "{text}");
+        assert!(text.contains("index out of bounds"), "{text}");
+    }
+    assert!(journal.starts_with("render of effect `explode` failed: "), "{journal}");
+}
+
+#[test]
+fn an_effect_with_a_parameter_id_ten_thousand_groups_deep_is_refused_at_load_with_the_rule() {
+    struct Deep;
+    impl craft_plugin::Effect for Deep {
+        fn spec(&self) -> craft_plugin::EffectSpec {
+            craft_plugin::EffectSpec::new("deep", "Deep", "Probe").param(craft_plugin::Param::checkbox(&vec!["a"; 10_000].join("/"), "On", true))
+        }
+    }
+    let manifest = serde_json::from_value(json!({"id": "test.deep", "name": "Deep", "version": "1.0.0", "entry": {"wasm": "deep.wasm"}})).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let plugin = craft_plugin::Plugin::new().effect(Deep);
+    let error =
+        Plugin::in_process(manifest, plugin, dir.path().into(), dir.path().join("data"), Limits::default()).err().map(|error| error.to_string());
+    let shown = "a/".repeat(20);
+    assert_eq!(
+        error,
+        Some(format!("the plugin could not be loaded: effect `deep`: parameter id `{}…` is 19999 bytes long; at most 256 are allowed", &shown[..40]))
+    );
+}
+
+struct SlidersOnly;
+
+impl craft_plugin_host::EffectRegistry for SlidersOnly {
+    type Loaded = Plugin;
+
+    fn supports(&self, kind: &craft_plugin::ParamKind) -> bool {
+        matches!(kind, craft_plugin::ParamKind::Slider { .. })
+    }
+
+    fn register(&self, _loaded: &std::sync::Arc<Plugin>) {}
+
+    fn unregister(&self, _plugin: &str) {}
+}
+
+#[test]
+fn an_app_with_only_sliders_refuses_a_curve_at_load_and_names_it() {
+    use craft_plugin::ParamKind;
+    use craft_plugin_host::EffectRegistry;
+    let loaded = load(Kind::Wasm, &[]);
+    let mut found = loaded.plugin.contributions().clone();
+    found.effects.retain(|effect| effect.id == "report");
+    found.effects[0].params.retain(|param| matches!(param.kind, ParamKind::Slider { .. } | ParamKind::Curve { .. }));
+    assert_eq!(
+        SlidersOnly.admit(&found).unwrap_err(),
+        "effect `report` parameter `tone` is a curve control, which this app does not offer; remove it or use another kind"
+    );
+    found.effects[0].params.retain(|param| matches!(param.kind, ParamKind::Slider { .. }));
+    assert_eq!(SlidersOnly.admit(&found), Ok(()));
+}
+
+fn sprite(kind: Kind, whole: bool, drawn: bool, size: [u32; 2], part: Option<Rect>) -> (Rect, Vec<Pixel>) {
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+    let loaded = load(kind, &[]);
+    let mut cx = cx(size[0], size[1]);
+    cx.params.insert("whole".into(), craft_plugin_host::Value::Bool(whole));
+    cx.params.insert("drawn".into(), craft_plugin_host::Value::Bool(drawn));
+    let layout = loaded.plugin.call::<Layout>(&Call::Layout { effect: "sprite".into(), cx: cx.clone() }, None, &mut Recorder::default()).unwrap();
+    assert_eq!(layout.ignores_input, drawn);
+    let mut pixels = vec![[0.5; 4]; size[0] as usize * size[1] as usize];
+    let area = pool.install(|| loaded.plugin.render("sprite", &cx, &layout, part, &mut pixels, Recorder::default)).unwrap();
+    (area, pixels)
+}
+
+#[test]
+fn a_generator_that_ignores_its_input_and_reports_what_it_drew_gives_the_same_pixels_cropped_to_that_rectangle() {
+    let frame = Rect::of_size([300, 260]);
+    let drawn = Rect { left: 50, top: 30, right: 250, bottom: 230 };
+    let part = Rect { left: 100, top: 0, right: 300, bottom: 260 };
+    for (kind, whole) in [(Kind::Wasm, false), (Kind::Wasm, true), (Kind::Native, false), (Kind::Native, true)] {
+        let (area, full) = sprite(kind, whole, false, [300, 260], None);
+        assert_eq!(area, frame, "{kind:?} whole {whole}");
+        let (area, cropped) = sprite(kind, whole, true, [300, 260], None);
+        assert_eq!(area, drawn, "{kind:?} whole {whole}");
+        assert!(cropped == cut(&full, 300, drawn), "{kind:?} whole {whole}: the drawn rectangle differs");
+        let inside = |i: usize| (drawn.left..drawn.right).contains(&((i % 300) as i32)) && (drawn.top..drawn.bottom).contains(&((i / 300) as i32));
+        assert!(
+            full.iter().enumerate().all(|(i, pixel)| inside(i) || *pixel == [0.0; 4]),
+            "{kind:?} whole {whole}: outside the sprite is transparent"
+        );
+        let (area, shown) = sprite(kind, whole, true, [300, 260], Some(part));
+        assert_eq!(area, Rect { left: 100, top: 30, right: 250, bottom: 230 }, "{kind:?} whole {whole}");
+        assert!(shown == cut(&full, 300, area), "{kind:?} whole {whole}: the shown part differs");
+    }
+}
+
+#[test]
+fn several_generator_plugins_rendering_alternately_share_at_most_two_buffers_and_draw_the_same_pixels() {
+    let (_, expected) = sprite(Kind::Native, false, true, [300, 260], None);
+    let others: Vec<_> = (0..4).map(|_| load(Kind::Native, &[])).collect();
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+    let mut cx = cx(300, 260);
+    cx.params.insert("drawn".into(), craft_plugin_host::Value::Bool(true));
+    for round in 0..3 {
+        for loaded in &others {
+            let layout =
+                loaded.plugin.call::<Layout>(&Call::Layout { effect: "sprite".into(), cx: cx.clone() }, None, &mut Recorder::default()).unwrap();
+            let mut pixels = vec![[0.5; 4]; 300 * 260];
+            pool.install(|| loaded.plugin.render("sprite", &cx, &layout, None, &mut pixels, Recorder::default)).unwrap();
+            assert!(pixels == expected, "round {round}");
+            assert!(craft_plugin_host::pooled_generator_buffers() <= 2);
+        }
+    }
+}
+
+#[test]
+fn a_generator_whose_last_band_fails_leaves_its_input_whole() {
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+    each_kind(|kind| {
+        let loaded = load(kind, &[]);
+        let mut cx = cx(300, 260);
+        cx.params.insert("drawn".into(), craft_plugin_host::Value::Bool(true));
+        cx.params.insert("fails".into(), craft_plugin_host::Value::Bool(true));
+        let layout = loaded.plugin.call::<Layout>(&Call::Layout { effect: "sprite".into(), cx: cx.clone() }, None, &mut Recorder::default()).unwrap();
+        let mut pixels = vec![[0.5; 4]; 300 * 260];
+        let rendered = pool.install(|| loaded.plugin.render("sprite", &cx, &layout, None, &mut pixels, Recorder::default));
+        assert!(rendered.is_err(), "{kind:?}");
+        assert!(pixels == vec![[0.5; 4]; 300 * 260], "{kind:?}: {} pixels, the input is not kept", pixels.len());
+    });
+}
+
+#[test]
+fn a_drawn_rectangle_reaching_outside_the_frame_is_clipped_to_it() {
+    each_kind(|kind| {
+        let (area, pixels) = sprite(kind, false, true, [300, 150], None);
+        assert_eq!(area, Rect { left: 50, top: 0, right: 250, bottom: 150 }, "{kind:?}");
+        assert_eq!(pixels.len(), 200 * 150, "{kind:?}");
+        assert_eq!([pixels[0], pixels[200 * 150 - 1]], [[0.0, 0.125, 1.0, 1.0], [0.995, 0.87, 1.0 - 0.995 * 0.87, 1.0]], "{kind:?}");
+    });
+}
+
+#[test]
+fn a_sandboxed_plugin_names_its_module_by_the_digest_of_its_compiled_cache_entry_and_a_native_one_has_none() {
+    let wasm = load_before_regions();
+    let digest = wasm.plugin.module_digest().unwrap().to_string();
+    let compiled = wasm.data.path().join(".compiled");
+    let mut entries: Vec<String> = std::fs::read_dir(&compiled).unwrap().map(|entry| entry.unwrap().file_name().into_string().unwrap()).collect();
+    entries.sort();
+    let kinds: Vec<&str> = entries.iter().map(|entry| entry.split_once('.').map_or(entry.as_str(), |(_, kind)| kind)).collect();
+    assert_eq!(entries.iter().filter(|entry| entry.starts_with(&digest)).count(), 2);
+    assert_eq!(kinds.iter().filter(|kind| ["cwasm", "cwasm.mac", "described", "described.mac", "key"].contains(kind)).count(), 5);
+    assert_eq!(load(Kind::Native, &[]).plugin.module_digest(), None);
+}
+
+type AuxAsked = (Vec<Channel>, Option<[u32; 2]>, Option<[u32; 2]>);
+
+#[derive(Clone, Default)]
+struct AuxGrid(Arc<Mutex<Vec<AuxAsked>>>);
+
+impl Host for AuxGrid {
+    fn aux(&mut self, channels: &[Channel], rows: Option<[u32; 2]>, size: Option<[u32; 2]>) -> Result<Option<AuxPlanes>, String> {
+        self.0.lock().unwrap().push((channels.to_vec(), rows, size));
+        let [width, height] = size.unwrap_or(PASS_FRAME);
+        let [first, count] = rows.unwrap_or([0, height]);
+        let depth = (first..first + count).flat_map(|y| (0..width).map(move |_| y as f32)).collect();
+        Ok(Some(AuxPlanes { width, height: count, planes: vec![(Channel::Depth, depth)] }))
+    }
+}
+
+#[test]
+fn a_cpu_pass_reads_aux_once_per_channel_on_its_own_grid_and_band() {
+    each_kind(|kind| {
+        let loaded = load(kind, &[]);
+        let mut plan = Plan::new();
+        let half = PASS_FRAME.map(|side| side.div_ceil(2));
+        let scratch = plan.scratch(half);
+        let plan = plan.pass(PlanPass::new("probe_aux_depth", PlanImage::Source, scratch).reach(0)).pass(PlanPass::new(
+            "probe_up",
+            scratch,
+            PlanImage::Output,
+        ));
+        let asked = AuxGrid::default();
+        let mut pixels = ramp();
+        loaded.plugin.run_passes("passes", &cx(PASS_FRAME[0], PASS_FRAME[1]), &plan, &mut pixels, || asked.clone()).unwrap();
+        let mut asked = asked.0.lock().unwrap().clone();
+        asked.sort_by_key(|(_, rows, _)| *rows);
+        assert!(asked.len() > 1, "{kind:?}: the pass ran in one band");
+        let mut covered = 0;
+        for (channels, rows, size) in &asked {
+            let [first, count] = rows.expect("a band asks for its rows");
+            assert_eq!((channels.as_slice(), first, *size), ([Channel::Depth].as_slice(), covered, Some(half)), "{kind:?}");
+            covered += count;
+        }
+        assert_eq!(covered, half[1], "{kind:?}");
+        assert_eq!(at(&pixels, 10, 75)[..2], [37.5, half[0] as f32], "{kind:?}");
+    });
+}
+
+#[test]
+fn a_second_start_registers_from_the_kept_description_and_the_module_starts_on_first_use() {
+    let (dir, bundle) = bundle(Kind::Wasm, &[]);
+    let data = tempfile::tempdir().unwrap();
+    let start = |bundle: &Bundle| Plugin::load(bundle, BTreeSet::new(), data.path().join("data"), Limits::default()).unwrap();
+    let first = start(&bundle);
+    assert!(first.started(), "the first start describes the plugin by running it");
+    let warm = start(&bundle);
+    assert!(!warm.started(), "a warm start ran the module");
+    assert_eq!(warm.contributions(), first.contributions());
+    let mut cx = cx(2, 1);
+    cx.params.insert("amount".into(), craft_plugin::Value::Number(1.0));
+    let mut pixels: Vec<Pixel> = vec![[0.25, 0.5, 1.0, 1.0], [0.0, 0.0, 0.0, 0.5]];
+    warm.render("invert", &cx, &Layout::neighbourhood(0), None, &mut pixels, Recorder::default).unwrap();
+    assert_eq!(pixels, [[0.75, 0.5, 0.0, 1.0], [1.0, 1.0, 1.0, 0.5]]);
+    assert!(warm.started());
+
+    std::fs::write(dir.path().join("notes.txt"), "changed").unwrap();
+    let changed = start(&bundle);
+    assert!(changed.started(), "a changed bundle was not described again");
+    assert_eq!(changed.module_digest(), first.module_digest(), "the same module is compiled once");
+}
+
+#[test]
+fn a_module_whose_files_changed_after_its_start_refuses_to_run_instead_of_running_the_new_bytes() {
+    let (dir, bundle) = bundle(Kind::Wasm, &[]);
+    let data = tempfile::tempdir().unwrap();
+    let digest = bundle.digest().unwrap();
+    drop(Plugin::open(&bundle, &digest, BTreeSet::new(), data.path().join("data"), Limits::default()).unwrap());
+    for entry in std::fs::read_dir(data.path().join(".compiled")).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|extension| extension == "cwasm") {
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+    let warm = Plugin::open(&bundle, &digest, BTreeSet::new(), data.path().join("data"), Limits::default()).unwrap();
+    std::fs::write(dir.path().join("notes.txt"), "changed").unwrap();
+    let mut pixels: Vec<Pixel> = vec![[0.25, 0.5, 1.0, 1.0]];
+    let refused = warm.render("invert", &cx(1, 1), &Layout::neighbourhood(0), None, &mut pixels, Recorder::default).unwrap_err();
+    assert_eq!(refused, PluginError::Load("the plugin's files changed since it was started; turn it off and on again".into()));
+    assert!(!warm.started());
+    assert_eq!(warm.failure(), Some(refused.to_string()));
+}
+
+fn warm_without_compiled(bundle: &Bundle, data: &Path) -> Plugin {
+    let start = || Plugin::load(bundle, BTreeSet::new(), data.join("data"), Limits::default()).unwrap();
+    drop(start());
+    for entry in std::fs::read_dir(data.join(".compiled")).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|extension| extension == "cwasm") {
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+    start()
+}
+
+#[test]
+fn a_first_use_compiling_off_the_render_pool_finishes_while_every_render_worker_waits_for_it() {
+    let (_dir, bundle) = bundle(Kind::Wasm, &[]);
+    let data = tempfile::tempdir().unwrap();
+    let warm = Arc::new(warm_without_compiled(&bundle, data.path()));
+    assert!(!warm.started());
+    let render = |plugin: &Plugin| {
+        let mut pixels: Vec<Pixel> = vec![[0.25, 0.5, 1.0, 1.0]];
+        plugin.render("invert", &cx(1, 1), &Layout::neighbourhood(0), None, &mut pixels, Recorder::default).unwrap();
+    };
+    let (done, finished) = std::sync::mpsc::channel();
+    let (first, busy) = (warm.clone(), warm.clone());
+    std::thread::spawn(move || render(&first));
+    std::thread::sleep(Duration::from_millis(20));
+    std::thread::spawn(move || {
+        rayon::broadcast(|_| render(&busy));
+        done.send(()).unwrap();
+    });
+    finished.recv_timeout(Duration::from_secs(300)).expect("the renders finished");
+    assert!(warm.started());
+}
+
+#[test]
+fn a_kept_description_over_the_reply_limit_is_not_read_and_the_plugin_is_described_again() {
+    let (_dir, bundle) = bundle(Kind::Wasm, &[]);
+    let data = tempfile::tempdir().unwrap();
+    drop(Plugin::load(&bundle, BTreeSet::new(), data.path().join("data"), Limits::default()).unwrap());
+    for entry in std::fs::read_dir(data.path().join(".compiled")).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|extension| extension == "described" || extension == "mac") {
+            std::fs::OpenOptions::new().write(true).open(path).unwrap().set_len(1 << 40).unwrap();
+        }
+    }
+    let again = Plugin::load(&bundle, BTreeSet::new(), data.path().join("data"), Limits::default()).unwrap();
+    assert!(again.started(), "the oversized description was used");
+}
+
+#[test]
+fn an_entry_named_in_another_case_than_its_file_is_refused_at_install() {
+    let (dir, _) = bundle(Kind::Wasm, &[]);
+    let manifest = dir.path().join("plugin.json");
+    let text = std::fs::read_to_string(&manifest).unwrap().replace("probe.wasm", "Probe.wasm");
+    std::fs::write(&manifest, text).unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let refused = Registry::open(root.path()).install(dir.path()).unwrap_err();
+    assert!(matches!(refused, craft_plugin_host::BundleError::MissingEntry(_)), "{refused}");
+}
+
+#[test]
+fn an_approved_start_reads_its_manifest_from_the_bytes_it_hashed_not_from_an_older_copy() {
+    let (dir, _) = bundle(Kind::Wasm, &[]);
+    let root = tempfile::tempdir().unwrap();
+    let mut registry = Registry::open(root.path());
+    let older = registry.install(dir.path()).unwrap();
+    let manifest = older.dir.join("plugin.json");
+    std::fs::write(&manifest, std::fs::read_to_string(&manifest).unwrap().replace("\"Probe\"", "\"Renamed\"")).unwrap();
+    registry.approve(&Bundle::open(&older.dir).unwrap()).unwrap();
+    let approved = registry.approved(&older).unwrap();
+    assert_eq!(approved.bundle.manifest.name, "Renamed");
+    assert_eq!(approved.digest, older.digest().unwrap());
+}
+
+#[derive(Clone)]
+struct OtherFrames {
+    declared: bool,
+    short: bool,
+    cancel: Arc<AtomicBool>,
+    asked: Arc<AtomicUsize>,
+    spec: craft_plugin::EffectSpec,
+}
+
+impl OtherFrames {
+    fn new(declared: bool, short: bool) -> OtherFrames {
+        let spec = craft_plugin::EffectSpec::new("passes", "Passes", "Probe");
+        let spec = if declared { spec.reads_other_frames() } else { spec };
+        OtherFrames { declared, short, cancel: Arc::default(), asked: Arc::default(), spec }
+    }
+
+    fn run(&self, times: &[f64]) -> Result<Vec<Pixel>, PluginError> {
+        let loaded = load(Kind::Native, &[]);
+        let mut plan = Plan::new();
+        let frames: Vec<PlanImage> = times.iter().map(|time| plan.source_at(*time)).collect();
+        let identity = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
+        let plan = plan.pass(PlanPass::matrix(frames[0], PlanImage::Output, identity));
+        let mut pixels = ramp();
+        loaded.plugin.run_passes("passes", &cx(PASS_FRAME[0], PASS_FRAME[1]), &plan, &mut pixels, || self.clone())?;
+        Ok(pixels)
+    }
+}
+
+impl Host for OtherFrames {
+    fn effect(&self) -> Option<&craft_plugin::EffectSpec> {
+        self.declared.then_some(&self.spec)
+    }
+
+    fn cancel(&self) -> Option<Arc<AtomicBool>> {
+        Some(self.cancel.clone())
+    }
+
+    fn source(&mut self, layer_time: f64) -> Option<Pixels> {
+        self.asked.fetch_add(1, Ordering::Relaxed);
+        let [width, height] = PASS_FRAME;
+        let count = (width * height) as usize - usize::from(self.short);
+        Some(Pixels { width, height, data: vec![[layer_time as f32, 0.0, 0.0, 1.0]; count] })
+    }
+}
+
+#[test]
+fn a_plan_reading_other_frames_needs_a_declaring_spec_from_the_host() {
+    let error = OtherFrames::new(false, false).run(&[0.25]).unwrap_err().to_string();
+    assert!(error.contains("declare `.reads_other_frames()`"), "{error}");
+    let pixels = OtherFrames::new(true, false).run(&[0.25]).unwrap();
+    assert!(pixels.iter().all(|p| *p == [0.25, 0.0, 0.0, 1.0]));
+}
+
+#[test]
+fn a_source_frame_with_too_few_pixels_reads_as_a_missing_frame() {
+    let pixels = OtherFrames::new(true, true).run(&[0.25]).unwrap();
+    assert!(pixels.iter().all(|p| *p == [0.0; 4]));
+}
+
+#[test]
+fn a_plan_called_off_while_loading_frames_loads_no_more() {
+    let frames = OtherFrames::new(true, false);
+    frames.cancel.store(true, Ordering::Relaxed);
+    let stopped = frames.run(&[0.25, 0.5, 0.75]).unwrap_err();
+    assert!(matches!(stopped, PluginError::Cancelled), "{stopped}");
+    assert_eq!(frames.asked.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn a_list_of_a_hundred_thousand_rows_builds_only_its_view_and_activating_a_row_opens_the_floating_inspector() {
+    each_kind(|kind| {
+        let loaded = load(kind, &[]);
+        let panels = loaded.plugin.contributions().panels.clone();
+        let inspector = panels.iter().find(|panel| panel.id == "inspector").map(|panel| (panel.place, panel.size, panel.icon.clone()));
+        assert_eq!(inspector, Some((craft_plugin::PanelPlace::Float, craft_plugin::PanelSize::Large, Some("sliders".into()))));
+        let (mut files, mut host) = (Retained::new(), Recorder::default());
+        let frame = |files: &mut Retained, host: &mut Recorder, now: u64| {
+            let input = files.start([300.0, 200.0], Duration::from_millis(now))?;
+            let reply = loaded.plugin.call::<craft_plugin::PanelReply>(&Call::Panel { panel: "files".into(), input }, None, host);
+            files.finish(reply.map_err(|e| e.to_string()), Duration::from_millis(now));
+            Some(())
+        };
+        let list = |files: &Retained| match files.widgets() {
+            [Widget::List { id, count, first, items, .. }, Widget::Label { text, .. }] => (*id, *count, *first, items.len(), text.clone()),
+            other => panic!("{kind:?}: a list and a label expected, got {other:?}"),
+        };
+        frame(&mut files, &mut host, 0);
+        let (id, count, first, built, text) = list(&files);
+        assert_eq!((count, first, built, text.as_str()), (100_000, 0, 128, "built 128"), "{kind:?}");
+        files.push(vec![UiEvent { id, kind: UiEventKind::List(craft_plugin::ListEvent::Show { first: 50_000, count: 60 }) }], "");
+        frame(&mut files, &mut host, 1);
+        let (_, _, first, built, text) = list(&files);
+        assert_eq!((first, built, text.as_str()), (50_000, 60, "built 188"), "{kind:?}");
+        files.push(vec![UiEvent { id, kind: UiEventKind::List(craft_plugin::ListEvent::Activate(50_010)) }], "");
+        frame(&mut files, &mut host, 2);
+        assert_eq!(host.panels, vec![("inspector".to_string(), true)], "{kind:?}");
+    });
+}

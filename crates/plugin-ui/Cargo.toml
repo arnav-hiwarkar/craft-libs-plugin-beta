@@ -1,0 +1,25 @@
+[package]
+name = "craft-plugin-ui"
+description = "Craft Plugin Kit egui drawing: plug-in panels, controls and viewer marks, with the app's theme, words and drag payloads passed in"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+conformance = ["dep:egui_kittest"]
+
+[dependencies]
+craft-plugin = { workspace = true }
+egui = { workspace = true }
+egui_kittest = { version = "0.37", optional = true }
+
+[dev-dependencies]
+egui_kittest = "0.37"
+egui = { workspace = true, features = ["default_fonts", "monochrome_emoji_fonts"] }
+craft-plugin-host = { workspace = true }
+serde_json = { workspace = true }
+craft-plugin-ui = { path = ".", features = ["conformance"] }
