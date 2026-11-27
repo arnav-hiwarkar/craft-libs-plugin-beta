@@ -1,7 +1,7 @@
 use crate::paint_area::{PaintArea, PaintPhase};
 use craft_plugin::{Key, Modifiers, Paint, Pointer, PointerPhase, Shape, UiEventKind};
 use craft_ui::contract::{Props as _, Show as _};
-use craft_ui::primitives::{ContentPainterCx, Revision, TextureState, TextureStore, TextureStoreOptions};
+use craft_ui::primitives::{CachedTexture, ContentPainterCx, Revision, TextureState, TextureStore, TextureStoreOptions};
 use egui::epaint::CubicBezierShape;
 use egui::{Align2, Color32, FontId, Pos2, Rect, Stroke, StrokeKind, Vec2};
 
@@ -70,7 +70,7 @@ pub(crate) fn ear_clipped(outline: &[[f64; 2]]) -> Vec<[usize; 3]> {
 struct Drawn<'a> {
     space: Space,
     triangulate: craft_plugin_ui::Triangulate,
-    textures: &'a [(String, egui::TextureId)],
+    textures: &'a [(String, CachedTexture)],
 }
 
 fn shape(painter: &ContentPainterCx, drawn: &Drawn<'_>, shape: &Shape) -> Option<egui::Shape> {
@@ -112,8 +112,7 @@ fn shape(painter: &ContentPainterCx, drawn: &Drawn<'_>, shape: &Shape) -> Option
         Shape::Polygon { points: outline, fill } => craft_plugin_ui::filled_polygon(points(outline)?, color(painter, *fill), drawn.triangulate),
         Shape::Image { key, min, max } => {
             let (_, texture) = drawn.textures.iter().find(|(held, _)| held == key)?;
-            let whole = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
-            painter.picture(*texture, Rect::from_two_pos(space.at(*min)?, space.at(*max)?), whole, 0.0);
+            painter.picture(texture.id, Rect::from_two_pos(space.at(*min)?, space.at(*max)?), texture.uv(), 0.0);
             return None;
         }
     })
@@ -134,9 +133,9 @@ fn modifiers(mods: craft_keymap::Mods) -> Modifiers {
 }
 
 impl Painter<'_> {
-    fn textures(&self, ui: &egui::Ui, shapes: &[Shape]) -> Vec<(String, egui::TextureId)> {
+    fn textures(&self, ui: &egui::Ui, shapes: &[Shape]) -> Vec<(String, CachedTexture)> {
         let store = TextureStore::<String>::in_context(ui.ctx(), "craft-plugin-ui-framework.canvas", TextureStoreOptions::thumbnails());
-        let mut textures: Vec<(String, egui::TextureId)> = Vec::new();
+        let mut textures: Vec<(String, CachedTexture)> = Vec::new();
         for key in shapes.iter().filter_map(|shape| if let Shape::Image { key, .. } = shape { Some(key) } else { None }) {
             if textures.iter().any(|(held, _)| held == key) {
                 continue;
@@ -149,7 +148,7 @@ impl Painter<'_> {
                     None => state.shown(),
                 },
             };
-            textures.extend(texture.map(|texture| (key.clone(), texture.id)));
+            textures.extend(texture.map(|texture| (key.clone(), texture)));
         }
         textures
     }

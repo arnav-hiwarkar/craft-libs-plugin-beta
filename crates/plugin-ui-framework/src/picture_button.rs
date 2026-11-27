@@ -4,7 +4,7 @@ use craft_ui::contract::{Common, Component, Cx, DisabledLook, MeasureCx, NoValue
 use craft_ui::primitives::{PaintShape, Revision, StrokeWidth, TextureStore, TextureStoreOptions, fit_rect};
 use craft_ui::runtime::env::Label;
 use craft_ui::style::{ComponentStyle, FocusLook, StyleColor, StyleCx, UiTokens};
-use egui::{ColorImage, CornerRadius, Id, Pos2, Rect, Response, Vec2};
+use egui::{ColorImage, CornerRadius, Id, Response, Vec2};
 
 #[derive(Clone, Debug, PartialEq, ComponentStyle)]
 pub struct PictureButtonStyle {
@@ -91,9 +91,8 @@ impl Component for PictureButton<'_> {
         let ctx = painter.painter.ctx();
         let store = TextureStore::<(Id, u64)>::in_context(ctx, "craft-plugin-ui-framework.picture", TextureStoreOptions::thumbnails());
         let texture = store.get_or_put(ctx, (cx.resolved.id, self.key), self.revision, self.image);
-        let whole = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
-        painter.picture(texture.id, fit_rect(cx.rect, texture.size_vec2()), whole, 0.0);
-        ui.draw().stroke(&shape, StrokeWidth::Thin, cx.state().resolve(&cx.style.edge));
+        painter.picture(texture.id, fit_rect(cx.rect, texture.size_vec2()), texture.uv(), 0.0);
+        ui.draw().stroke(&shape, StrokeWidth::Thin, cx.resolve(&cx.style.edge));
     }
 
     fn finish(self, cx: Cx<'_, Self>) -> PictureButtonOutput {
