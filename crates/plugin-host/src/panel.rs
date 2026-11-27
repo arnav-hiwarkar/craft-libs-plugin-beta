@@ -21,6 +21,7 @@ pub struct Retained {
     widgets: Vec<Widget>,
     error: Option<String>,
     events: Vec<UiEvent>,
+    sent: Vec<u64>,
     gestures: Vec<u64>,
     gesture: u64,
     started: u64,
@@ -192,6 +193,10 @@ impl Retained {
         !self.events.is_empty()
     }
 
+    pub fn unanswered(&self, id: u64) -> bool {
+        self.sent.contains(&id) || self.events.iter().any(|event| event.id == id)
+    }
+
     pub fn split(&mut self) {
         self.gesture += 1;
     }
@@ -337,6 +342,7 @@ impl Retained {
             events.retain(|event| event.kind.known_to_every_sdk());
         }
         let timers = fired.into_iter().filter(|name| name != LEGACY_TIMER).collect();
+        self.sent = events.iter().map(|event| event.id).collect();
         self.calls += 1;
         let (keys, app, views) = (std::mem::take(&mut self.keys), std::mem::take(&mut self.app), self.views.clone());
         let pressed = std::mem::take(&mut self.pressed);
@@ -372,6 +378,7 @@ impl Retained {
 
     pub fn abandon(&mut self) {
         (self.in_flight, self.stale) = (false, true);
+        self.sent.clear();
     }
 
     pub fn finish(&mut self, reply: Result<PanelReply, String>, now: Duration) {
@@ -379,6 +386,7 @@ impl Retained {
             return self.abandon();
         }
         self.in_flight = false;
+        self.sent.clear();
         self.drawn = true;
         let reply = match reply {
             Ok(reply) => reply,
@@ -658,6 +666,35 @@ mod tests {
             (input.events, input.keys, input.pressed, input.views, input.app),
             (vec![], String::new(), Vec::<String>::new(), vec![], vec![AppEvent::Project { path: None }])
         );
+    }
+
+    #[test]
+    fn a_widget_is_unanswered_while_its_event_waits_or_rides_the_call_in_flight_and_answered_once_a_call_carried_its_latest() {
+        let typed = |text: &str| UiEvent { id: 3, kind: UiEventKind::Text(text.into()) };
+        let field =
+            |text: &str| Ok(PanelReply { widgets: vec![Widget::TextEdit { id: 3, value: text.into(), hint: "Note".into() }], ..Default::default() });
+        let mut panel = drawn(vec![], vec![]);
+        assert!(!panel.unanswered(3));
+        panel.push(vec![typed("a")], "");
+        assert!(panel.unanswered(3));
+        assert_eq!(panel.start(SIZE, ms(16)).map(|input| input.events), Some(vec![typed("a")]));
+        assert!(panel.unanswered(3) && !panel.unanswered(4));
+        panel.push(vec![typed("ab")], "");
+        panel.finish(field("a"), ms(20));
+        assert!(panel.unanswered(3), "the reply to \"a\" does not answer \"ab\"");
+        assert_eq!(panel.start(SIZE, ms(32)).map(|input| input.events), Some(vec![typed("ab")]));
+        assert!(panel.unanswered(3));
+        panel.finish(field("AB"), ms(40));
+        assert_eq!((panel.unanswered(3), panel.widgets()), (false, &[Widget::TextEdit { id: 3, value: "AB".into(), hint: "Note".into() }][..]));
+        panel.push(vec![click(7)], "");
+        panel.start(SIZE, ms(48));
+        panel.finish(Err("trapped".into()), ms(50));
+        assert!(!panel.unanswered(7), "a failed call answers its events too");
+        panel.push(vec![click(8)], "");
+        panel.start(SIZE, ms(64));
+        panel.hide();
+        panel.finish(field("late"), ms(70));
+        assert!(!panel.unanswered(8), "a hidden panel's late reply still ends its call");
     }
 
     #[test]

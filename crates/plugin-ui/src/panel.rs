@@ -99,6 +99,20 @@ impl<H: Host> Renderer<'_, H> {
         self.events.push(UiEvent { id, kind });
     }
 
+    pub(crate) fn kept<T: Clone + Send + Sync + 'static>(&self, ui: &egui::Ui, id: u64) -> Option<T> {
+        let local = egui::Id::unique(("plugin-local", self.scope, id));
+        if self.host.unanswered(id) {
+            return ui.data(|data| data.get_temp::<T>(local));
+        }
+        ui.data_mut(|data| data.remove::<T>(local));
+        None
+    }
+
+    pub(crate) fn emit_kept<T: Clone + Send + Sync + 'static>(&mut self, ui: &egui::Ui, id: u64, local: T, kind: UiEventKind) {
+        ui.data_mut(|data| data.insert_temp(egui::Id::unique(("plugin-local", self.scope, id)), local));
+        self.emit(id, kind);
+    }
+
     pub(crate) fn register(&mut self, id: u64, response: &egui::Response, label: &str) {
         self.host.register(&format!("{}.{id}", self.scope), response, label);
         self.last = Some(response.clone());
@@ -136,24 +150,24 @@ impl<H: Host> Renderer<'_, H> {
                 }
             }
             Widget::Checkbox { id, text, value } => {
-                let mut on = *value;
+                let mut on = self.kept(ui, *id).unwrap_or(*value);
                 let response = ui.checkbox(&mut on, text);
                 self.register(*id, &response, text);
                 if response.changed() {
-                    self.emit(*id, UiEventKind::Bool(on));
+                    self.emit_kept(ui, *id, on, UiEventKind::Bool(on));
                 }
             }
             Widget::Slider { id, text, value, min, max } => {
-                let mut number = *value;
+                let mut number = self.kept(ui, *id).unwrap_or(*value);
                 let range = finite_or(*min, 0.0)..=finite_or(*max, 1.0);
                 let response = ui.add(egui::Slider::new(&mut number, range).text(text));
                 self.register(*id, &response, text);
                 if response.changed() {
-                    self.emit(*id, UiEventKind::Number(number));
+                    self.emit_kept(ui, *id, number, UiEventKind::Number(number));
                 }
             }
             Widget::Number { id, text, value, speed, range, decimals } => {
-                let mut number = *value;
+                let mut number = self.kept(ui, *id).unwrap_or(*value);
                 let response = ui
                     .horizontal(|ui| {
                         let label = ui.label(self.text(text, TextStyle::Body));
@@ -173,7 +187,7 @@ impl<H: Host> Renderer<'_, H> {
                     .inner;
                 self.register(*id, &response, text);
                 if response.changed() {
-                    self.emit(*id, UiEventKind::Number(number));
+                    self.emit_kept(ui, *id, number, UiEventKind::Number(number));
                 }
             }
             Widget::TextEdit { id, value, hint } => {
@@ -181,11 +195,12 @@ impl<H: Host> Renderer<'_, H> {
             }
             Widget::Popup { id, text, options, selected } => self.popup(ui, *id, text, options, *selected as usize),
             Widget::Color { id, text, value } => {
+                let value = self.kept(ui, *id).unwrap_or(*value);
                 let (response, edited) = ui
                     .horizontal(|ui| {
                         let label = ui.label(self.text(text, TextStyle::Body));
-                        let (response, edited) = self.host.color(ui, &format!("{}.{id}", self.scope), *value).unwrap_or_else(|| {
-                            let mut color = *value;
+                        let (response, edited) = self.host.color(ui, &format!("{}.{id}", self.scope), value).unwrap_or_else(|| {
+                            let mut color = value;
                             let response = ui.color_edit_button_rgba_unmultiplied(&mut color);
                             (response, Some(color))
                         });
@@ -193,8 +208,8 @@ impl<H: Host> Renderer<'_, H> {
                     })
                     .inner;
                 self.register(*id, &response, text);
-                if let Some(color) = edited.filter(|color| color != value) {
-                    self.emit(*id, UiEventKind::Color(color));
+                if let Some(color) = edited.filter(|color| *color != value) {
+                    self.emit_kept(ui, *id, color, UiEventKind::Color(color));
                 }
             }
             Widget::Row { children } => {
@@ -338,12 +353,13 @@ impl<H: Host> Renderer<'_, H> {
     }
 
     fn tabs(&mut self, ui: &mut egui::Ui, id: u64, options: &[String], selected: usize) {
+        let selected = self.kept(ui, id).unwrap_or(selected);
         ui.horizontal(|ui| {
             for (index, option) in options.iter().enumerate() {
                 let tab = ui.selectable_label(index == selected, option);
                 self.host.register(&format!("{}.{id}.{index}", self.scope), &tab, option);
                 if tab.clicked() && index != selected {
-                    self.emit(id, UiEventKind::Number(index as f64));
+                    self.emit_kept(ui, id, index, UiEventKind::Number(index as f64));
                 }
                 self.last = Some(tab);
             }
@@ -362,6 +378,7 @@ impl<H: Host> Renderer<'_, H> {
     }
 
     fn popup(&mut self, ui: &mut egui::Ui, id: u64, text: &str, options: &[String], selected: usize) {
+        let selected = self.kept(ui, id).unwrap_or(selected);
         let mut chosen = None;
         let shown = options.get(selected).cloned().unwrap_or_default();
         let mut items = Vec::new();
@@ -379,7 +396,7 @@ impl<H: Host> Renderer<'_, H> {
         }
         self.register(id, &combo, text);
         if let Some(index) = chosen.filter(|index| *index != selected) {
-            self.emit(id, UiEventKind::Number(index as f64));
+            self.emit_kept(ui, id, index, UiEventKind::Number(index as f64));
         }
     }
 

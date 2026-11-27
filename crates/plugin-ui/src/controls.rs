@@ -28,18 +28,6 @@ fn arrow_step(ui: &egui::Ui, response: &egui::Response, back: egui::Key, forward
     ui.input(|i| i32::from(i.key_pressed(forward)) - i32::from(i.key_pressed(back)))
 }
 
-fn pending<T: Clone + Send + Sync + 'static>(ui: &egui::Ui, id: egui::Id, shown: &T) -> T {
-    let held = ui.input(|i| i.pointer.any_down());
-    match ui.data(|data| data.get_temp::<T>(id)) {
-        Some(sent) if held => sent,
-        Some(_) => {
-            ui.data_mut(|data| data.remove::<T>(id));
-            shown.clone()
-        }
-        None => shown.clone(),
-    }
-}
-
 impl<H: Host> Renderer<'_, H> {
     pub(crate) fn icon_button(&mut self, ui: &mut egui::Ui, id: u64, icon: &str, text: &str, enabled: bool) {
         let side = ui.spacing().interact_size.y;
@@ -62,6 +50,7 @@ impl<H: Host> Renderer<'_, H> {
     }
 
     pub(crate) fn toggle(&mut self, ui: &mut egui::Ui, id: u64, text: &str, value: bool) {
+        let value = self.kept(ui, id).unwrap_or(value);
         let height = ui.spacing().interact_size.y * 0.8;
         let switch = vec2(height * 1.8, height);
         let galley =
@@ -84,11 +73,12 @@ impl<H: Host> Renderer<'_, H> {
         painter.galley(egui::pos2(rect.right() + gap, whole.center().y - galley.size().y / 2.0), galley, self.theme.text);
         self.register(id, &response, text);
         if response.clicked() {
-            self.emit(id, UiEventKind::Bool(!value));
+            self.emit_kept(ui, id, !value, UiEventKind::Bool(!value));
         }
     }
 
     pub(crate) fn radio(&mut self, ui: &mut egui::Ui, id: u64, text: &str, options: &[String], selected: usize) {
+        let selected = self.kept(ui, id).unwrap_or(selected);
         let responses = ui
             .horizontal_wrapped(|ui| {
                 ui.label(self.text(text, TextStyle::Body));
@@ -121,7 +111,7 @@ impl<H: Host> Renderer<'_, H> {
             self.register(id, response, text);
         }
         if let Some(index) = chosen.filter(|index| *index != selected) {
-            self.emit(id, UiEventKind::Number(index as f64));
+            self.emit_kept(ui, id, index, UiEventKind::Number(index as f64));
         }
     }
 
@@ -138,17 +128,12 @@ impl<H: Host> Renderer<'_, H> {
         hint: &str,
         edit: impl for<'t> FnOnce(&'t mut String) -> egui::TextEdit<'t>,
     ) {
-        let typed = egui::Id::unique(("plugin-typed", self.scope, id));
-        let awaiting = ui.data(|data| data.get_temp::<(String, String)>(typed)).filter(|(sent_over, _)| sent_over == value);
-        let mut text = awaiting.map_or_else(|| value.to_string(), |(_, local)| local);
+        let mut text = self.kept(ui, id).unwrap_or_else(|| value.to_string());
         let response = ui.add(edit(&mut text));
         ui.ctx().accesskit_node_builder(response.id, |node| node.set_label(hint));
         self.register(id, &response, hint);
         if response.changed() {
-            ui.data_mut(|data| data.insert_temp(typed, (value.to_string(), text.clone())));
-            self.emit(id, UiEventKind::Text(text));
-        } else if ui.data(|data| data.get_temp::<(String, String)>(typed)).is_some_and(|(sent_over, _)| sent_over != value) {
-            ui.data_mut(|data| data.remove::<(String, String)>(typed));
+            self.emit_kept(ui, id, text.clone(), UiEventKind::Text(text));
         }
     }
 
@@ -305,32 +290,30 @@ impl<H: Host> Renderer<'_, H> {
     }
 
     pub(crate) fn curve(&mut self, ui: &mut egui::Ui, id: u64, text: &str, points: &[[f64; 2]]) {
-        let sent = egui::Id::unique(("plugin-curve-sent", self.scope, id));
-        let shown = pending(ui, sent, &points.to_vec());
+        let kept: Option<Vec<[f64; 2]>> = self.kept(ui, id);
+        let shown = kept.as_deref().unwrap_or(points);
         let label = ui.label(self.text(text, TextStyle::Body));
-        let Some((response, edited)) = self.host.curve(ui, &format!("{}.{id}", self.scope), &shown) else {
+        let Some((response, edited)) = self.host.curve(ui, &format!("{}.{id}", self.scope), shown) else {
             return self.cannot_edit(ui, id, "This app cannot edit curves here", text);
         };
         let response = response.labelled_by(label.id);
         self.register(id, &response, text);
-        if let Some(points) = edited.filter(|edited| *edited != shown) {
-            ui.data_mut(|data| data.insert_temp(sent, points.clone()));
-            self.emit(id, UiEventKind::Points(points));
+        if let Some(points) = edited.filter(|edited| edited != shown) {
+            self.emit_kept(ui, id, points.clone(), UiEventKind::Points(points));
         }
     }
 
     pub(crate) fn gradient(&mut self, ui: &mut egui::Ui, id: u64, text: &str, value: &Gradient) {
-        let sent = egui::Id::unique(("plugin-gradient-sent", self.scope, id));
-        let shown = pending(ui, sent, value);
+        let kept: Option<Gradient> = self.kept(ui, id);
+        let shown = kept.as_ref().unwrap_or(value);
         let label = ui.label(self.text(text, TextStyle::Body));
-        let Some((response, edited)) = self.host.gradient(ui, &format!("{}.{id}", self.scope), &shown) else {
+        let Some((response, edited)) = self.host.gradient(ui, &format!("{}.{id}", self.scope), shown) else {
             return self.cannot_edit(ui, id, "This app cannot edit gradients here", text);
         };
         let response = response.labelled_by(label.id);
         self.register(id, &response, text);
-        if let Some(gradient) = edited.filter(|edited| *edited != shown) {
-            ui.data_mut(|data| data.insert_temp(sent, gradient.clone()));
-            self.emit(id, UiEventKind::Gradient(gradient));
+        if let Some(gradient) = edited.filter(|edited| edited != shown) {
+            self.emit_kept(ui, id, gradient.clone(), UiEventKind::Gradient(gradient));
         }
     }
 

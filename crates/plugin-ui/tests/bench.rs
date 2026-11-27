@@ -116,7 +116,7 @@ fn plugin_ui_speed() {
 
     let widgets = reply.widgets.clone();
     let mut harness = Harness::builder().with_size(egui::vec2(SIZE[0], SIZE[1])).build_ui_state(
-        move |ui, events: &mut Vec<UiEvent>| events.extend(draw(ui, &widgets, &theme(), "plugin.bench.panel", &mut Bare)),
+        move |ui, events: &mut Vec<UiEvent>| events.extend(draw(ui, &widgets, &theme(), "plugin.bench.panel", &mut Bare::default())),
         Vec::new(),
     );
     harness.run();

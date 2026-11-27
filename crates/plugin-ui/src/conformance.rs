@@ -7,13 +7,19 @@ use egui_kittest::kittest::Queryable;
 
 use crate::{Host, Theme, Triangulate};
 
-pub struct Bare;
+#[derive(Default)]
+pub struct Bare<'a> {
+    pub unanswered: &'a [u64],
+}
 
-impl Host for Bare {
+impl Host for Bare<'_> {
     type Payload = ();
 
     fn tr(&self, english: &str) -> String {
         english.to_string()
+    }
+    fn unanswered(&self, id: u64) -> bool {
+        self.unanswered.contains(&id)
     }
     fn register(&mut self, _: &str, _: &egui::Response, _: &str) {}
     fn texture(&mut self, _: &egui::Context, _: &str) -> Option<egui::TextureId> {
@@ -67,7 +73,11 @@ pub enum Step {
     Chord(egui::Modifiers, egui::Key),
     Scroll(&'static str, f32),
     Drag(&'static str, &'static str),
+    Hold,
+    Reply(Reply),
 }
+
+pub type Reply = fn(&[Widget], &[UiEvent]) -> Vec<Widget>;
 
 pub enum Expect {
     Events(Vec<UiEvent>),
@@ -93,16 +103,56 @@ impl Case {
     }
 }
 
-pub type Painter = Box<dyn FnMut(&mut egui::Ui, &[Widget]) -> Vec<UiEvent>>;
+pub type Painter = Box<dyn FnMut(&mut egui::Ui, &[Widget], &[u64]) -> Vec<UiEvent>>;
+
+#[derive(Default)]
+struct Plugin {
+    tree: Vec<Widget>,
+    sent: Vec<UiEvent>,
+    held: bool,
+    queued: Vec<UiEvent>,
+    call: Option<Vec<UiEvent>>,
+}
+
+impl Plugin {
+    fn unanswered(&self) -> Vec<u64> {
+        self.queued.iter().chain(self.call.iter().flatten()).map(|event| event.id).collect()
+    }
+
+    fn take(&mut self, events: Vec<UiEvent>) {
+        self.sent.extend(events.iter().cloned());
+        if self.held {
+            self.queued.extend(events.into_iter().filter(|event| !matches!(event.kind, UiEventKind::List(ListEvent::Show { .. }))));
+            self.call();
+        }
+    }
+
+    fn call(&mut self) {
+        if self.call.is_none() && !self.queued.is_empty() {
+            self.call = Some(std::mem::take(&mut self.queued));
+        }
+    }
+
+    fn answer(&mut self, answer: Reply) {
+        if let Some(events) = self.call.take() {
+            self.tree = answer(&self.tree, &events);
+            self.call();
+        }
+    }
+}
 
 pub fn run(case: &Case, mut paint: Painter) -> Vec<UiEvent> {
-    let tree = case.tree.clone();
-    let mut harness = Harness::builder()
-        .with_size(egui::vec2(case.size[0], case.size[1]))
-        .with_max_steps(64)
-        .build_ui_state(move |ui, events: &mut Vec<UiEvent>| events.extend(paint(ui, &tree)), Vec::new());
+    let plugin = Plugin { tree: case.tree.clone(), ..Plugin::default() };
+    let mut harness = Harness::builder().with_size(egui::vec2(case.size[0], case.size[1])).with_max_steps(64).build_ui_state(
+        move |ui, plugin: &mut Plugin| {
+            let unanswered = plugin.unanswered();
+            let events = paint(ui, &plugin.tree, &unanswered);
+            plugin.take(events);
+        },
+        plugin,
+    );
     harness.run();
-    harness.state_mut().clear();
+    harness.state_mut().sent.clear();
     for step in &case.steps {
         match step {
             Step::Click(name) => harness.get_by_label(name).click(),
@@ -148,11 +198,13 @@ pub fn run(case: &Case, mut paint: Painter) -> Vec<UiEvent> {
                 }
                 harness.event(button(end, false));
             }
+            Step::Hold => harness.state_mut().held = true,
+            Step::Reply(answer) => harness.state_mut().answer(*answer),
         }
         harness.run();
     }
     harness.run();
-    std::mem::take(harness.state_mut())
+    std::mem::take(&mut harness.state_mut().sent)
 }
 
 pub fn run_all(mut painter: impl FnMut() -> Painter) -> Vec<String> {
@@ -279,6 +331,55 @@ fn at(phase: PointerPhase) -> Pointer {
 
 fn radio() -> Widget {
     Widget::Radio { id: 13, text: "Mode".into(), options: vec!["Plain".into(), "Soft".into(), "Hard".into()], selected: 0 }
+}
+
+fn notes(value: &str) -> Widget {
+    Widget::TextArea { id: 14, value: value.into(), hint: "Notes".into(), rows: 4 }
+}
+
+fn upper_case(_: &[Widget], call: &[UiEvent]) -> Vec<Widget> {
+    let typed = call.iter().rev().find_map(|event| match &event.kind {
+        UiEventKind::Text(text) => Some(text.to_uppercase()),
+        _ => None,
+    });
+    vec![notes(&typed.unwrap_or_default())]
+}
+
+fn refuses(tree: &[Widget], _: &[UiEvent]) -> Vec<Widget> {
+    tree.to_vec()
+}
+
+fn sorts(tree: &[Widget], call: &[UiEvent]) -> Vec<Widget> {
+    let mut tree = tree.to_vec();
+    for event in call {
+        if let (UiEventKind::List(ListEvent::Sort { column, descending }), Some(Widget::List { edit, .. })) = (&event.kind, tree.first_mut()) {
+            edit.sorted = Some((*column, *descending));
+        }
+    }
+    tree
+}
+
+fn speed(value: f64) -> Widget {
+    Widget::Slider { id: 5, text: "Speed".into(), value, min: 0.0, max: 10.0 }
+}
+
+fn takes_the_first_value(_: &[Widget], call: &[UiEvent]) -> Vec<Widget> {
+    let first = call.iter().find_map(|event| match event.kind {
+        UiEventKind::Number(value) => Some(value),
+        _ => None,
+    });
+    vec![speed(first.unwrap_or_default())]
+}
+
+fn each_value_above_the_last(events: &[UiEvent]) -> bool {
+    let values: Vec<f64> = events
+        .iter()
+        .filter_map(|event| match event {
+            UiEvent { id: 5, kind: UiEventKind::Number(value) } => Some(*value),
+            _ => None,
+        })
+        .collect();
+    values.len() == 3 && values.len() == events.len() && values.windows(2).all(|pair| pair[1] > pair[0])
 }
 
 pub fn cases() -> Vec<Case> {
@@ -555,14 +656,54 @@ pub fn cases() -> Vec<Case> {
             expect: Expect::Events(vec![list_event(ListEvent::Sort { column: 16, descending: false })]),
         },
         Case {
-            name: "clicking a column heading sorts by it, and clicking it again flips the order",
+            name: "clicking a column heading sorts by it, and once the plugin sorts, clicking it again flips the order",
             size: [240.0, 200.0],
             tree: vec![sortable()],
-            steps: vec![Step::Click("Size"), Step::Click("Size")],
+            steps: vec![Step::Hold, Step::Click("Size"), Step::Reply(sorts), Step::Click("Size")],
             expect: Expect::Events(vec![
                 list_event(ListEvent::Sort { column: 1, descending: false }),
                 list_event(ListEvent::Sort { column: 1, descending: true }),
             ]),
+        },
+        Case {
+            name: "a sort the plugin refuses shows the plugin's order once it answers, so the next click asks for the same sort again",
+            size: [240.0, 200.0],
+            tree: vec![sortable()],
+            steps: vec![Step::Hold, Step::Click("Size"), Step::Reply(refuses), Step::Click("Size")],
+            expect: Expect::Events(vec![
+                list_event(ListEvent::Sort { column: 1, descending: false }),
+                list_event(ListEvent::Sort { column: 1, descending: false }),
+            ]),
+        },
+        Case {
+            name: "text typed during a slow call is never replaced by an older reply, and the plugin's own text shows once it has answered every letter",
+            size: [300.0, 160.0],
+            tree: vec![notes("")],
+            steps: vec![
+                Step::Hold,
+                Step::Type("Notes", "a"),
+                Step::TypeFocused("b"),
+                Step::Reply(upper_case),
+                Step::TypeFocused("c"),
+                Step::Reply(upper_case),
+                Step::Reply(upper_case),
+                Step::TypeFocused("d"),
+            ],
+            expect: Expect::Events(["a", "ab", "abc", "ABCd"].map(|text| event(14, UiEventKind::Text(text.into()))).to_vec()),
+        },
+        Case {
+            name: "a slider moved during a slow call does not jump back to the value of an older reply",
+            size: [300.0, 80.0],
+            tree: vec![speed(0.0)],
+            steps: vec![
+                Step::Hold,
+                Step::Key(egui::Key::Tab),
+                Step::Key(egui::Key::ArrowRight),
+                Step::Key(egui::Key::ArrowRight),
+                Step::Reply(takes_the_first_value),
+                Step::Key(egui::Key::ArrowRight),
+            ],
+            expect: Expect::Holds("three Numbers, each above the one before", each_value_above_the_last),
         },
         Case {
             name: "a status item one row high sends its button's Click",

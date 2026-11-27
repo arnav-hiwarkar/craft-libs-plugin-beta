@@ -26,8 +26,6 @@ struct Cursor {
     renaming: Option<Renaming>,
     clicked_name: Option<(u32, f64)>,
     dragging: Option<Vec<u32>>,
-    told: Option<(u32, bool)>,
-    sent: Option<(u32, bool)>,
     seek: Option<(u32, u8, u32)>,
 }
 
@@ -198,16 +196,14 @@ impl<H: Host> Renderer<'_, H> {
         let cells = rows.columns.len().max(rows.items.iter().map(|item| item.cells.len()).max().unwrap_or(1));
         let kinds: Vec<ColumnWidth> = (0..cells).map(|at| rows.columns.get(at).map_or(ColumnWidth::Auto, |column| column.width)).collect();
         let widths = widths(&kinds, ui.available_width(), font);
-        if cursor.told != rows.edit.sorted {
-            (cursor.told, cursor.sent) = (rows.edit.sorted, None);
-        }
+        let selected: Option<Vec<u32>> = self.kept(ui, id);
+        let rows = Rows { selected: selected.as_deref().unwrap_or(rows.selected), ..rows };
         if !rows.columns.is_empty() {
-            let sorted = cursor.sent.or(rows.edit.sorted);
+            let sorted = self.kept(ui, id).unwrap_or(rows.edit.sorted);
             let heading = Heading { list: id, sortable: rows.edit.sortable, sorted, row_height };
             if let Some(column) = self.headings(ui, rows.columns, &widths, &heading) {
                 let descending = sorted == Some((column, false));
-                cursor.sent = Some((column, descending));
-                self.emit(id, UiEventKind::List(ListEvent::Sort { column, descending }));
+                self.emit_kept(ui, id, Some((column, descending)), UiEventKind::List(ListEvent::Sort { column, descending }));
             }
         }
         let height = match rows.rows {
@@ -288,7 +284,7 @@ impl<H: Host> Renderer<'_, H> {
                     }
                     (cursor.current, cursor.seek) = (Some(row), None);
                     response.request_focus();
-                    self.emit(id, UiEventKind::List(ListEvent::Select(picked)));
+                    self.select(ui, id, picked);
                 }
                 if response.drag_started() {
                     cursor.dragging = Some(rows.moving(row));
@@ -340,13 +336,13 @@ impl<H: Host> Renderer<'_, H> {
                         cursor.scroll = Some(end - output.inner_rect.height());
                     }
                     (cursor.current, cursor.focus) = (Some(to), Some(to));
-                    self.emit(id, UiEventKind::List(ListEvent::Select(picked)));
+                    self.select(ui, id, picked);
                 }
                 Some(Action::Toggle(open)) => self.emit(id, UiEventKind::List(ListEvent::Toggle { row, open })),
                 Some(Action::Activate) => self.emit(id, UiEventKind::List(ListEvent::Activate(row))),
                 Some(Action::Flip) => {
                     cursor.anchor = Some(row);
-                    self.emit(id, UiEventKind::List(ListEvent::Select(rows.picked(&cursor, row, false, true))));
+                    self.select(ui, id, rows.picked(&cursor, row, false, true));
                 }
                 Some(Action::Rename) => {
                     let text = rows.item(row).and_then(|item| item.cells.first().cloned()).unwrap_or_default();
@@ -376,6 +372,10 @@ impl<H: Host> Renderer<'_, H> {
         }
         ui.data_mut(|data| data.insert_temp(state, cursor));
         self.last = Some(menu);
+    }
+
+    fn select(&mut self, ui: &egui::Ui, id: u64, rows: Vec<u32>) {
+        self.emit_kept(ui, id, rows.clone(), UiEventKind::List(ListEvent::Select(rows)));
     }
 
     fn drag_rows(

@@ -67,6 +67,10 @@ pub trait Host {
     fn dropped(&self, payload: &Self::Payload) -> Option<Dropped>;
     fn accept_files(&mut self, paths: &[String]);
 
+    fn unanswered(&self, _id: u64) -> bool {
+        false
+    }
+
     fn icon(&mut self, _painter: &egui::Painter, _rect: egui::Rect, _name: &str, _color: Color32) -> bool {
         false
     }

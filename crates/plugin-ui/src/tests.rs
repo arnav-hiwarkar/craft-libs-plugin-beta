@@ -8,7 +8,7 @@ use crate::{Answer, draw, draw_form, draw_panel_menu};
 
 fn harness(widgets: Vec<Widget>) -> Harness<'static, Vec<UiEvent>> {
     Harness::new_ui_state(
-        move |ui, events: &mut Vec<UiEvent>| events.extend(draw(ui, &widgets, &theme(), "plugin.test.panel", &mut Bare)),
+        move |ui, events: &mut Vec<UiEvent>| events.extend(draw(ui, &widgets, &theme(), "plugin.test.panel", &mut Bare::default())),
         Vec::new(),
     )
 }
@@ -23,7 +23,7 @@ fn an_open_section_inside_a_row_stays_open_when_a_sibling_appears_above_the_row(
     };
     let mut harness = Harness::new_ui_state(
         move |ui, widgets: &mut Vec<Widget>| {
-            draw(ui, widgets, &theme(), "plugin.test.panel", &mut Bare);
+            draw(ui, widgets, &theme(), "plugin.test.panel", &mut Bare::default());
         },
         vec![Widget::Row { children: vec![section] }],
     );
@@ -46,7 +46,7 @@ fn picking_a_panel_menu_item_sends_its_index_counting_separators_and_a_disabled_
         craft_plugin::MenuItem { disabled: true, ..item("Export") },
     ];
     let mut harness = Harness::new_ui_state(
-        move |ui, events: &mut Vec<UiEvent>| events.extend(draw_panel_menu(ui, &items, &theme(), "plugin.test.panel", &mut Bare)),
+        move |ui, events: &mut Vec<UiEvent>| events.extend(draw_panel_menu(ui, &items, &theme(), "plugin.test.panel", &mut Bare::default())),
         Vec::new(),
     );
     harness.get_by_label("Export").click();
@@ -239,7 +239,7 @@ fn form_harness() -> Harness<'static, Asked> {
         .field(craft_plugin::Param::text("label", "Label", "none"));
     Harness::new_ui_state(
         move |ui, (values, answer): &mut Asked| {
-            *answer = answer.or(draw_form(ui, &form, values, "plugin.test.form", &mut Bare));
+            *answer = answer.or(draw_form(ui, &form, values, "plugin.test.form", &mut Bare::default()));
         },
         Asked::default(),
     )
@@ -286,7 +286,7 @@ fn a_form_field_shows_and_enables_by_another_fields_value_and_keeps_its_value_wh
         .field(craft_plugin::Param::text("label", "Label", "none").enabled_when("soft", craft_plugin::Is::On));
     let mut harness = Harness::new_ui_state(
         move |ui, (values, answer): &mut Asked| {
-            *answer = answer.or(draw_form(ui, &form, values, "plugin.test.form", &mut Bare));
+            *answer = answer.or(draw_form(ui, &form, values, "plugin.test.form", &mut Bare::default()));
         },
         Asked::default(),
     );
@@ -308,7 +308,7 @@ fn a_parameter_button_reports_a_press_by_pointer_and_keyboard_only_while_enabled
     let press = |enabled: bool| {
         let param = craft_plugin::Param::button("analyze", "Analyze");
         let mut harness = Harness::new_ui_state(
-            move |ui, pressed: &mut u32| *pressed += u32::from(crate::param_button(ui, &param, enabled, "fx.analyze", &mut Bare)),
+            move |ui, pressed: &mut u32| *pressed += u32::from(crate::param_button(ui, &param, enabled, "fx.analyze", &mut Bare::default())),
             0,
         );
         harness.get_by_label("Analyze").click();
@@ -324,7 +324,9 @@ fn a_parameter_button_reports_a_press_by_pointer_and_keyboard_only_while_enabled
 
 #[test]
 fn every_conformance_case_passes_on_the_egui_painter() {
-    let failures = crate::conformance::run_all(|| Box::new(|ui, widgets| draw(ui, widgets, &theme(), "plugin.test.panel", &mut Bare)));
+    let failures = crate::conformance::run_all(|| {
+        Box::new(|ui, widgets, unanswered| draw(ui, widgets, &theme(), "plugin.test.panel", &mut Bare { unanswered }))
+    });
     assert!(failures.is_empty(), "{failures:#?}");
 }
 
@@ -369,7 +371,7 @@ fn a_panel_icon_the_app_cannot_draw_is_the_first_letter_of_its_title() {
     let ctx = egui::Context::default();
     let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
         let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), vec2(16.0, 16.0));
-        crate::paint_icon(&mut Bare, ui.painter(), rect, "nonesuch", "notes", egui::Color32::WHITE);
+        crate::paint_icon(&mut Bare::default(), ui.painter(), rect, "nonesuch", "notes", egui::Color32::WHITE);
     });
     output.textures_delta.clear();
     let texts: Vec<String> = output
@@ -427,7 +429,7 @@ fn focus_is_taken_once_per_call_so_tab_can_leave_until_the_plugin_asks_again() {
     };
     let mut harness = Harness::new_ui_state(
         |ui, widgets: &mut Vec<Widget>| {
-            draw(ui, widgets, &theme(), "plugin.test.panel", &mut Bare);
+            draw(ui, widgets, &theme(), "plugin.test.panel", &mut Bare::default());
         },
         tree(3),
     );
@@ -493,6 +495,7 @@ fn a_host_that_cannot_edit_curves_or_gradients_says_so_in_place() {
 struct Curves {
     given: Vec<Vec<[f64; 2]>>,
     colors: Vec<(String, [f32; 4])>,
+    waiting: bool,
 }
 
 impl crate::Host for Curves {
@@ -516,6 +519,10 @@ impl crate::Host for Curves {
     }
     fn accept_files(&mut self, _: &[String]) {}
 
+    fn unanswered(&self, _: u64) -> bool {
+        self.waiting
+    }
+
     fn curve(&mut self, ui: &mut egui::Ui, key: &str, points: &[[f64; 2]]) -> Option<(egui::Response, Option<Vec<[f64; 2]>>)> {
         self.given.push(points.to_vec());
         let (rect, _) = ui.allocate_exact_size(vec2(100.0, 100.0), egui::Sense::hover());
@@ -537,7 +544,7 @@ impl crate::Host for Curves {
 }
 
 #[test]
-fn a_curve_drag_sends_points_and_the_host_keeps_drawing_what_was_sent_until_the_pointer_lets_go() {
+fn a_curve_drag_sends_points_and_the_host_draws_what_was_sent_until_the_plugin_answers() {
     let tree = vec![Widget::Curve { id: 6, text: "Shape".into(), points: vec![[0.0, 0.0], [1.0, 1.0]] }];
     let mut harness = Harness::new_ui_state(
         move |ui, state: &mut (Curves, Vec<UiEvent>)| {
@@ -554,12 +561,13 @@ fn a_curve_drag_sends_points_and_the_host_keeps_drawing_what_was_sent_until_the_
     harness.run();
     let sent = vec![[0.0, 0.0], [0.5, 0.75], [1.0, 1.0]];
     assert_eq!(harness.state().1.last(), Some(&UiEvent { id: 6, kind: UiEventKind::Points(sent.clone()) }));
-    harness.state_mut().0.given.clear();
-    harness.run();
-    assert_eq!(harness.state().0.given.last(), Some(&sent), "while held the host draws the sent points, not the stale tree");
     harness.drop_at(rect.center_top() + vec2(0.0, 25.0));
+    harness.state_mut().0.waiting = true;
     harness.run();
-    assert_eq!(harness.state().0.given.last(), Some(&vec![[0.0, 0.0], [1.0, 1.0]]), "after release it draws the plugin's points again");
+    assert_eq!(harness.state().0.given.last(), Some(&sent), "while unanswered the host draws the sent points, not the stale tree");
+    harness.state_mut().0.waiting = false;
+    harness.run();
+    assert_eq!(harness.state().0.given.last(), Some(&vec![[0.0, 0.0], [1.0, 1.0]]), "once answered it draws the plugin's points");
 }
 
 #[test]
@@ -601,10 +609,10 @@ fn click_name(harness: &mut Harness<'static, Vec<UiEvent>>, row: &str, times: us
 #[test]
 fn a_click_on_the_selected_rows_name_opens_it_for_renaming_after_the_double_click_time_and_a_double_click_activates_instead() {
     let widgets = vec![renamable_list(vec![1])];
-    let mut harness = Harness::builder()
-        .with_step_dt(1.0 / 60.0)
-        .with_max_steps(64)
-        .build_ui_state(move |ui, events: &mut Vec<UiEvent>| events.extend(draw(ui, &widgets, &theme(), "plugin.test.panel", &mut Bare)), Vec::new());
+    let mut harness = Harness::builder().with_step_dt(1.0 / 60.0).with_max_steps(64).build_ui_state(
+        move |ui, events: &mut Vec<UiEvent>| events.extend(draw(ui, &widgets, &theme(), "plugin.test.panel", &mut Bare::default())),
+        Vec::new(),
+    );
     harness.run();
     click_name(&mut harness, "file 1", 1);
     assert_eq!(harness.get_by_label("Rename").value().as_deref(), Some("file 1"));
@@ -633,28 +641,6 @@ fn the_sorted_column_heading_tells_assistive_tools_its_order() {
     harness.run();
     let order = |label: &str| harness.get_by_label(label).accesskit_node().sort_direction();
     assert_eq!((order("Name"), order("Size")), (None, Some(egui::accesskit::SortDirection::Descending)));
-}
-
-#[test]
-fn text_typed_in_two_passes_before_the_plugin_replies_keeps_both_letters_and_a_reply_that_clears_the_field_is_shown() {
-    type Typing = (Vec<Widget>, Vec<UiEvent>);
-    let notes = |value: &str| vec![Widget::TextArea { id: 3, value: value.into(), hint: "Notes".into(), rows: 3 }];
-    let mut harness = Harness::new_ui_state(
-        move |ui, (widgets, events): &mut Typing| events.extend(draw(ui, widgets, &theme(), "plugin.test.panel", &mut Bare)),
-        (notes(""), Vec::new()),
-    );
-    harness.get_by_role(egui::Role::MultilineTextInput).click();
-    harness.run();
-    for letter in ["a", "b"] {
-        harness.get_by_role(egui::Role::MultilineTextInput).type_text(letter);
-        harness.run();
-    }
-    assert_eq!(harness.state().1.last(), Some(&UiEvent { id: 3, kind: UiEventKind::Text("ab".into()) }));
-    harness.state_mut().0 = notes("ab");
-    harness.run();
-    harness.state_mut().0 = notes("");
-    harness.run();
-    assert_eq!(harness.get_by_role(egui::Role::MultilineTextInput).accesskit_node().value().as_deref(), Some(""));
 }
 
 #[test]
