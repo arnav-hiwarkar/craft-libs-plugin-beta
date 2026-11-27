@@ -3,6 +3,7 @@
 mod canvas;
 mod containers;
 pub mod dock;
+mod drag_source;
 mod icons;
 mod list;
 mod menu;
