@@ -1,10 +1,9 @@
-//! `Button`, `IconButton`, `PictureButton`, `ToggleButton`, `SplitButton` and `Link`.
+//! `Button`, `IconButton`, `ToggleButton`, `SplitButton` and `Link`.
 
 pub mod button;
 pub(crate) mod face;
 pub mod icon_button;
 pub mod link;
-pub mod picture_button;
 pub mod split_button;
 #[cfg(feature = "testing")]
 mod stories;
@@ -14,6 +13,5 @@ mod words;
 pub use button::{Button, ButtonOutput, ButtonStyle};
 pub use icon_button::{IconButton, IconButtonStyle, PopupMark};
 pub use link::{Link, LinkStyle};
-pub use picture_button::{PictureButton, PictureButtonStyle};
 pub use split_button::{SplitButton, SplitButtonStyle, SplitOutput};
 pub use toggle_button::{ToggleButton, ToggleButtonStyle};

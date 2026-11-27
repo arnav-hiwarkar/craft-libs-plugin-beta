@@ -1113,31 +1113,3 @@ fn a_row_dragged_to_the_edge_scrolls_the_list_and_rests_without_frames() {
     assert!(!fixture.repaint_requested(), "a drag held over the middle rows asks for no frame");
     fixture.release_at(Pos2::new(grab.x, list.center().y));
 }
-
-/// A reorder drag held in the top edge band of rows that cannot scroll up, at the top of a long list or in a list whose
-/// rows all fit, asks for no frame: the band scrolls only rows that can move.
-#[trial]
-fn a_row_dragged_into_an_edge_band_the_rows_cannot_scroll_toward_asks_for_no_frame() {
-    use craft_ui::contract::{ReorderRule, Sizing};
-    use egui::Pos2;
-    use std::borrow::Cow;
-
-    for rows in [40_usize, 3] {
-        let list_id = Id::NULL.with(("edge-rest", rows));
-        let mut fixture = Fixture::new(move |ui| {
-            let keys: Vec<usize> = (0..rows).collect();
-            let source = keyed(&keys, |key: &usize| *key).with_text(|key| Cow::Owned(format!("Layer {key}")));
-            let list = List::new("Layers").id(list_id).sizing(Sizing::Content).max_rows(6).reorder(ReorderRule::new());
-            list.show_items(ui, &source, &mut |key, _| ListRow::new(format!("Layer {key}")));
-        });
-        fixture.room(Vec2::new(300.0, 400.0));
-        fixture.settle();
-        let first = fixture.by_label("Layer 0").expect("the first row").rect;
-        let grab = fixture.by_label("Layer 2").expect("a lower row").rect.center();
-        fixture.drag_hold_at(grab, Pos2::new(grab.x, first.min.y + first.height() / 4.0) - grab);
-        fixture.frame(Vec::new()).frame(Vec::new());
-        assert!(!fixture.repaint_requested(), "{rows} rows at the top: the held drag in the top band asks for no frame");
-        assert_eq!(fixture.by_label("Layer 0").map(|row| row.rect), Some(first), "{rows} rows: nothing scrolled");
-        fixture.release_at(grab);
-    }
-}

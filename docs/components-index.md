@@ -65,8 +65,6 @@ Grouped by gallery level, then shape, then name.
 | `Link` | Leaf | `craft_ui_widgets::buttons::link` | A link: drawn in the accent colour in a type role (body by default) and underlined, so colour is not its only cue |
 | `LinkedFields` | Leaf | `craft_ui_widgets::text::linked` | `N` number fields joined by a link toggle |
 | `NumberField` | Leaf | `craft_ui_widgets::text::number` | A number field: a text part over [`NumberCodec`]; empty text is `None` |
-| `PaintArea` | Leaf | `craft_ui_widgets::controls::paint_area` | An area the caller paints that reports the pointer and the keys over it |
-| `PictureButton` | Leaf | `craft_ui_widgets::buttons::picture_button` | A button that shows only a picture: the image `image` makes, stored under `key`, fitted at its own aspect inside a rect of the size the caller gives, over a sunken well |
 | `PointPicker` | Leaf | `craft_ui_widgets::value_drag::point_picker` | A point `[x, y]` picked on a well: x grows to the right and y downwards, as image coordinates do, in either reading direction |
 | `Progress` | Leaf | `craft_ui_widgets::display::progress` | A progress bar |
 | `Radio` | Leaf | `craft_ui_widgets::choice::radio` | A member of a `RadioGroup`: selected when the group's pick is its value |
@@ -108,13 +106,11 @@ Grouped by gallery level, then shape, then name.
 | `Tile` | Leaf | `craft_ui_widgets::tile_grid::tile` | One tile of a tile grid |
 | `TitleFace` | Leaf | `craft_ui_widgets::menu::bar` | The face of a menu title: lit while its menu is open or the keyboard is on it, its mnemonic underlined while Alt is held or the bar has focus |
 | `TitleRow` | Leaf | `craft_ui_panels::sections::title_row` | An optional icon, a title with an optional note run on after it ("· note", muted body text) and an optional subtitle at the band's end (faint caption text: the target's kind), a lead (a disclosure bound to the container's open state, or a check box bound to its gate) and action parts |
-| `DragSource` | Body | `craft_ui_panels::sections::drag_source` | A container that is as large as its one child and starts a drag of `payload` when a press on it moves past slop; the drop targets of type `P` take it |
 | `DropAction` | Body | `craft_ui_panels::sections::footer` | A container that is as large as its one child and takes drops of payload type `P` over that child |
 | `Field` | Body | `craft_ui_widgets::form::field` | One control with a side label: beside it, above it, as a caption or after it (`Field::layout`) |
 | `FieldGroup` | Body | `craft_ui_widgets::form::group` | A stack of `Field`s (and `LinkedFields`) named `label`, filling the width offered |
 | `FooterBar` | Body | `craft_ui_panels::sections::footer` | A footer region's content: its body is the caller's closure, and each member is its own Tab stop, in display order |
 | `GroupBox` | Body | `craft_ui_panels::sections::group_box` | A frame around a body, titled by the container's label |
-| `KeyArea` | Body | `craft_ui_panels::sections::key_area` | A container as wide as the room it is offered that takes key focus from a press inside it that no control inside takes focus for (a button's click, a press on its empty room), as a click anywhere in a panel focuses the panel, and that is a Tab stop before its children |
 | `Menu` | Body | `craft_ui_widgets::menu::popup` | A menu: a popup of [`MenuItem`]s and [`Divider`]s the arrow keys move through, one roving group |
 | `Section` | Body | `craft_ui_panels::sections::section` | An inline section of a panel that fills the width offered: a rule over a section-strength title row over a body |
 | `SectionStack` | Body | `craft_ui_panels::sections::stack` | Sections in the order of `order`, each shown by the caller's closure as a `Section::in_stack` |

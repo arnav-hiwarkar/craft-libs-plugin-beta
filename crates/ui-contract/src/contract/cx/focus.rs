@@ -17,10 +17,6 @@ pub trait Focus {
     fn claim(&mut self, chord: Chord);
     /// Whether `chord` arrived this pass for this component, consuming it.
     fn take_claimed(&mut self, chord: Chord) -> bool;
-    /// Makes a primary press inside this component, a focus stop, that no control inside takes focus for (a button's
-    /// click, a press on its empty room) give the component key focus, as a click anywhere in a panel focuses the panel;
-    /// a press on a control that takes focus keeps that control's. Call it each pass.
-    fn take_presses(&mut self);
     /// The focused part while the component holds focus.
     fn active_part(&self) -> Option<PartRef>;
     /// The part focus moved onto in this frame (Tab or an arrow into a roving group, a focus request, a click), for
@@ -61,12 +57,6 @@ impl Focus for CxCore<'_> {
 
     fn take_claimed(&mut self, chord: Chord) -> bool {
         crate::runtime::keys::take_claimed(&self.ctx, self.id, chord)
-    }
-
-    fn take_presses(&mut self) {
-        if !measure::active(&self.ctx) {
-            focus::note_takes_presses(&self.ctx, self.id);
-        }
     }
 
     fn active_part(&self) -> Option<PartRef> {
@@ -129,10 +119,6 @@ impl<C: Component> Focus for Cx<'_, C> {
 
     fn take_claimed(&mut self, chord: Chord) -> bool {
         self.core.take_claimed(chord)
-    }
-
-    fn take_presses(&mut self) {
-        self.core.take_presses();
     }
 
     fn active_part(&self) -> Option<PartRef> {

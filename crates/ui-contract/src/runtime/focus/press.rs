@@ -27,12 +27,6 @@ pub(crate) fn note_holds_drafts(ctx: &Context, owner: Id, part: PartRef) {
     super::with(ctx, |state| state.press.holding.push((owner, part)));
 }
 
-/// Records that `owner`, a focus stop, takes key focus from a press inside it that no control takes focus for, for the
-/// press classification of the next pass.
-pub(crate) fn note_takes_presses(ctx: &Context, owner: Id) {
-    super::with(ctx, |state| state.press.taking.push(owner));
-}
-
 /// The text stop whose draft the press of this pass left unapplied, when one is.
 pub(crate) fn held_draft(ctx: &Context) -> Option<Id> {
     super::with(ctx, |state| state.press.held_draft)
@@ -57,8 +51,6 @@ struct Plan {
     root: Option<Id>,
     part: Option<PartRef>,
     pane: Option<Id>,
-    /// The innermost stop under the press that takes the presses no control inside it takes focus for.
-    area: Option<Id>,
     was_text: bool,
 }
 
@@ -77,10 +69,6 @@ pub(crate) struct PressState {
     last_holding: Vec<(Id, PartRef)>,
     /// The text stop whose draft this pass's press left unapplied.
     held_draft: Option<Id>,
-    /// The stops that take the presses inside them no control takes focus for, in the running pass.
-    taking: Vec<Id>,
-    /// The same stops of the last pass, whose shapes the press is classified on.
-    last_taking: Vec<Id>,
 }
 
 impl PressState {
@@ -91,7 +79,6 @@ impl PressState {
         self.by_keys = false;
         self.focus_at_begin = focused;
         self.last_holding = std::mem::take(&mut self.holding);
-        self.last_taking = std::mem::take(&mut self.taking);
         self.held_draft = None;
     }
 
@@ -128,8 +115,7 @@ impl State {
         let leaves = was_text || (kind == PressFocus::Take && owner != text_stop);
         self.press.commit_now = text_stop.filter(|_| leaves);
         let pane = self.stop_of_focus().filter(|_| was_text).and_then(|rec| self.pane_of(&rec));
-        let area = self.press.last_taking.iter().rev().copied().find(|area| at.under.iter().any(|(owner, _)| owner == area));
-        self.press.plan = Some(Plan { kind, owner, root: at.root, part, pane, area, was_text });
+        self.press.plan = Some(Plan { kind, owner, root: at.root, part, pane, was_text });
     }
 
     /// The stop this pass's press takes focus for, which the end hook moves focus to.
@@ -150,10 +136,6 @@ impl State {
     /// to the component.
     pub(super) fn apply_press(&mut self, focused: Option<Id>, on_app_widget: bool) -> Vec<Act> {
         let Some(plan) = self.press.plan.take() else { return Vec::new() };
-        let released = matches!(plan.kind, PressFocus::Release | PressFocus::Unclaimed);
-        if let Some(area) = plan.area.filter(|_| released).and_then(|area| self.press_stop(area, None)) {
-            return if focused == Some(area.stop.id) { Vec::new() } else { self.focus_stop_in_place(area) };
-        }
         match plan.kind {
             PressFocus::Take => self.take_focus(&plan),
             PressFocus::Release if plan.was_text => match plan.pane {

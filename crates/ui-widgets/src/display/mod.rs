@@ -8,7 +8,7 @@ mod divider;
 mod icon;
 mod inspect_overlay;
 mod kbd;
-pub(crate) mod picture;
+mod picture;
 mod progress;
 mod spinner;
 mod target_mark;

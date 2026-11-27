@@ -11,7 +11,7 @@ mod press;
 pub mod registration;
 
 pub(crate) use nav::{enter_row, leave_row, roving_move, row_has_stops};
-pub(crate) use press::{held_draft, note_holds_drafts, note_takes_presses};
+pub(crate) use press::{held_draft, note_holds_drafts};
 pub(crate) use registration::{Group, Stop};
 
 use crate::runtime::egui::focus as egui_focus;
