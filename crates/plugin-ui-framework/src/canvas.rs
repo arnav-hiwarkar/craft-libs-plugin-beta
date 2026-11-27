@@ -57,7 +57,14 @@ impl Space {
 
 pub(crate) fn ear_clipped(outline: &[[f64; 2]]) -> Vec<[usize; 3]> {
     let ring: Vec<Pos2> = outline.iter().map(|[x, y]| Pos2::new(*x as f32, *y as f32)).collect();
-    craft_ui::primitives::polygon_triangles(&ring)
+    let mesh = craft_ui::primitives::fill_polygon(&ring, Color32::WHITE, 0.0);
+    let n = ring.len();
+    if mesh.vertices.len() != n {
+        return Vec::new();
+    }
+    let reversed = mesh.vertices.first().map(|vertex| vertex.pos) != ring.first().copied();
+    let at = |index: u32| if reversed { n - 1 - index as usize } else { index as usize };
+    mesh.indices.as_chunks::<3>().0.iter().map(|[a, b, c]| [at(*a), at(*b), at(*c)]).collect()
 }
 
 struct Drawn<'a> {
