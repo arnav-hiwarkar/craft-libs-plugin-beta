@@ -6,8 +6,9 @@ use craft_ui::docking::{SplitArea, SplitFramesCx as _};
 use craft_ui::layout_components::Stack;
 use craft_ui::runtime::drag::OsFiles;
 use craft_ui::runtime::memory::with_session;
-use craft_ui::sections::{DragSource, DropAction};
+use craft_ui::sections::DropAction;
 
+use crate::drag_source::DragSource;
 use crate::{Painter, values};
 
 const EVEN: f32 = 0.5;
