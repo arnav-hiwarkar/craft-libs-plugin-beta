@@ -258,10 +258,11 @@ impl Retained {
 
     fn show(&mut self, view: View) {
         self.views.retain(|shown| shown.id != view.id);
-        if self.views.len() == MAX_VIEWS {
+        if self.views.len() >= MAX_VIEWS {
             let drawn = lists(&self.widgets);
-            let gone = self.views.iter().position(|shown| !drawn.iter().any(|(list, _)| *list == shown.id));
-            self.views.remove(gone.unwrap_or(0));
+            if let Some(gone) = self.views.iter().position(|shown| !drawn.iter().any(|(list, _)| *list == shown.id)) {
+                self.views.remove(gone);
+            }
         }
         self.views.push(view);
         self.stale = true;
@@ -782,6 +783,29 @@ mod tests {
         panel.push(vec![show(70)], "");
         let views = panel.start(SIZE, ms(1)).map(|input| input.views.iter().map(|view| view.id).collect::<Vec<_>>()).unwrap_or_default();
         assert_eq!((views.len(), views.contains(&1), views.contains(&2), views.contains(&70)), (MAX_VIEWS, true, false, true));
+    }
+
+    #[test]
+    fn a_panel_drawing_seventy_lists_keeps_the_view_of_every_list_it_drew() {
+        let list = |id| Widget::List {
+            id,
+            columns: Vec::new(),
+            count: 100,
+            first: 0,
+            items: Vec::new(),
+            selected: Vec::new(),
+            multi: false,
+            rows: 8,
+            edit: Default::default(),
+        };
+        let mut panel = Retained::new();
+        panel.start(SIZE, ms(0));
+        panel.finish(Ok(PanelReply { widgets: (1..=70).map(list).collect(), ..Default::default() }), ms(0));
+        for id in 1..=70 {
+            panel.push(vec![UiEvent { id, kind: UiEventKind::List(ListEvent::Show { first: id as u32, count: 8 }) }], "");
+        }
+        let views = panel.start(SIZE, ms(1)).map(|input| input.views).unwrap_or_default();
+        assert_eq!(views, (1..=70).map(|id| View { id, first: id as u32, count: 8 }).collect::<Vec<_>>());
     }
 
     #[test]
