@@ -644,6 +644,14 @@ fn the_sorted_column_heading_tells_assistive_tools_its_order() {
 }
 
 #[test]
+fn a_part_from_a_newer_plugin_says_in_place_that_it_needs_a_newer_app() {
+    let mut harness = harness(vec![Widget::Unknown, Widget::Button { id: 9, text: "After".into(), enabled: true }]);
+    harness.run();
+    let note = harness.get_all_by_value("This part needs a newer version of the app").next().map(|node| node.rect()).unwrap_or(egui::Rect::NAN);
+    assert!(note.max.y <= harness.get_by_label("After").rect().min.y);
+}
+
+#[test]
 fn a_short_list_that_may_fill_the_panel_claims_only_its_rows_so_the_button_after_it_is_outside() {
     let items = (0..3).map(|row| craft_plugin::Item::new(&format!("file {row}"))).collect();
     let list = Widget::List { id: 4, columns: vec![], count: 3, first: 0, items, selected: vec![], multi: false, rows: 0, edit: Default::default() };

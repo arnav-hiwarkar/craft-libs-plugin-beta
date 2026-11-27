@@ -58,7 +58,7 @@ pub fn draw_marks(
                     painter.text(at, egui::Align2::LEFT_TOP, text, egui::FontId::proportional(size.clamp(6.0, 48.0)), t.paint(*color));
                 }
             }
-            Shape::Image { .. } => {}
+            Shape::Image { .. } | Shape::Unknown => {}
         }
     }
 }

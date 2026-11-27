@@ -449,6 +449,13 @@ pub fn cases() -> Vec<Case> {
             }),
         },
         Case {
+            name: "a part only a newer app knows leaves the parts around it working",
+            size: [300.0, 120.0],
+            tree: vec![Widget::Row { children: vec![Widget::Unknown, button(15, "Apply")] }, Widget::Unknown],
+            steps: vec![Step::Click("Apply")],
+            expect: Expect::Events(vec![event(15, UiEventKind::Click)]),
+        },
+        Case {
             name: "a paragraph and a gap leave the button after them clickable",
             size: [300.0, 160.0],
             tree: vec![

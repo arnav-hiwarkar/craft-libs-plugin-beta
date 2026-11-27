@@ -1293,21 +1293,23 @@ pub struct PanelSpec {
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PanelPlace {
-    #[default]
-    Side,
     Bottom,
     Float,
     Status,
     Bar,
+    #[default]
+    #[serde(other)]
+    Side,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PanelSize {
     Small,
-    #[default]
-    Medium,
     Large,
+    #[default]
+    #[serde(other)]
+    Medium,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -1331,6 +1333,8 @@ pub enum Context {
     Layers,
     Timeline,
     Viewer,
+    #[serde(other)]
+    Unknown,
 }
 
 pub const ICONS: &[&str] = &[
@@ -1779,6 +1783,8 @@ pub enum Topic {
     Comp,
     Project,
     Edit,
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -2156,6 +2162,8 @@ pub enum Widget {
         request: FrameRequest,
         size: [f32; 2],
     },
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -2176,10 +2184,9 @@ impl ListEdit {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TextStyle {
-    Body,
     Heading,
     Weak,
     Mono,
@@ -2187,6 +2194,9 @@ pub enum TextStyle {
     Caption,
     Strong,
     Title,
+    #[default]
+    #[serde(other)]
+    Body,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -2205,11 +2215,12 @@ pub struct Column {
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ColumnWidth {
-    #[default]
-    Auto,
     Narrow,
     Wide,
     Fill,
+    #[default]
+    #[serde(other)]
+    Auto,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -2279,31 +2290,68 @@ pub struct MenuItem {
     pub items: Vec<MenuItem>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Axis {
-    Horizontal,
     Vertical,
+    #[default]
+    #[serde(other)]
+    Horizontal,
 }
 
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Gap {
     Small,
-    Medium,
     Large,
+    #[default]
+    #[serde(other)]
+    Medium,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(tag = "s", rename_all = "snake_case")]
 pub enum Shape {
-    Line { points: Vec<[f32; 2]>, color: Paint, width: f32 },
-    Bezier { points: [[f32; 2]; 4], color: Paint, width: f32 },
-    Rect { min: [f32; 2], max: [f32; 2], fill: Option<Paint>, stroke: Option<(Paint, f32)>, radius: f32 },
-    Circle { center: [f32; 2], radius: f32, fill: Option<Paint>, stroke: Option<(Paint, f32)> },
-    Text { pos: [f32; 2], text: String, color: Paint, size: f32 },
-    Polygon { points: Vec<[f32; 2]>, fill: Paint },
-    Image { key: String, min: [f32; 2], max: [f32; 2] },
+    Line {
+        points: Vec<[f32; 2]>,
+        color: Paint,
+        width: f32,
+    },
+    Bezier {
+        points: [[f32; 2]; 4],
+        color: Paint,
+        width: f32,
+    },
+    Rect {
+        min: [f32; 2],
+        max: [f32; 2],
+        fill: Option<Paint>,
+        stroke: Option<(Paint, f32)>,
+        radius: f32,
+    },
+    Circle {
+        center: [f32; 2],
+        radius: f32,
+        fill: Option<Paint>,
+        stroke: Option<(Paint, f32)>,
+    },
+    Text {
+        pos: [f32; 2],
+        text: String,
+        color: Paint,
+        size: f32,
+    },
+    Polygon {
+        points: Vec<[f32; 2]>,
+        fill: Paint,
+    },
+    Image {
+        key: String,
+        min: [f32; 2],
+        max: [f32; 2],
+    },
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
@@ -2327,6 +2375,59 @@ pub enum Paint {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn contributions_and_a_reply_from_a_newer_plugin_read_their_unknown_names_as_the_defaults_and_keep_everything_else() {
+        let contributions: Contributions = serde_json::from_str(
+            r#"{"panels":[{"id":"clips","title":"Clips","place":"sidebar_left","size":"huge","keys":["Delete"]}],
+                "commands":[{"id":"grade","title":"Grade","shortcut":null,"context":["node","layers"],"toolbar":true}],"ui_level":9}"#,
+        )
+        .unwrap();
+        let panel = PanelSpec { id: "clips".into(), title: "Clips".into(), keys: vec!["Delete".into()], ..PanelSpec::default() };
+        assert_eq!((contributions.panels, contributions.ui_level), (vec![panel], 9));
+        let command = CommandSpec {
+            id: "grade".into(),
+            title: "Grade".into(),
+            context: vec![Context::Unknown, Context::Layers],
+            toolbar: true,
+            ..CommandSpec::default()
+        };
+        assert_eq!(contributions.commands, vec![command]);
+        let reply: PanelReply = serde_json::from_str(
+            r#"{"widgets":[
+                {"w":"label","text":"Takes","style":"glow"},
+                {"w":"sparkline","id":3,"values":[1,2,3],"children":[{"w":"button","id":4,"text":"Lost","enabled":true}]},
+                {"w":"row","children":[{"w":"gap","gap":"vast"},{"w":"button","id":5,"text":"Apply","enabled":true}]},
+                {"w":"split","id":6,"axis":"diagonal","first":[],"second":[]},
+                {"w":"list","id":7,"columns":[{"title":"Name","width":"golden"}],"count":0,"first":0,"items":[],"selected":[],"multi":false,"rows":4}
+            ],"topics":["playhead","time"],"badge":"new"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            reply.widgets,
+            vec![
+                Widget::Label { text: "Takes".into(), style: TextStyle::Body },
+                Widget::Unknown,
+                Widget::Row { children: vec![Widget::Gap { gap: Gap::Medium }, Widget::Button { id: 5, text: "Apply".into(), enabled: true }] },
+                Widget::Split { id: 6, axis: Axis::Horizontal, first: vec![], second: vec![] },
+                Widget::List {
+                    id: 7,
+                    columns: vec![Column { title: "Name".into(), width: ColumnWidth::Auto }],
+                    count: 0,
+                    first: 0,
+                    items: vec![],
+                    selected: vec![],
+                    multi: false,
+                    rows: 4,
+                    edit: ListEdit::default(),
+                },
+            ]
+        );
+        assert_eq!(reply.topics, vec![Topic::Unknown, Topic::Time]);
+        let shapes: Vec<Shape> =
+            serde_json::from_str(r#"[{"s":"arc","radius":3},{"s":"circle","center":[1,2],"radius":3,"fill":"accent","stroke":null}]"#).unwrap();
+        assert_eq!(shapes, vec![Shape::Unknown, Shape::Circle { center: [1.0, 2.0], radius: 3.0, fill: Some(Paint::Accent), stroke: None }]);
+    }
 
     #[test]
     fn a_form_field_condition_is_checked_like_an_effect_parameters() {

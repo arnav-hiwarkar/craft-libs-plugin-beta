@@ -277,6 +277,11 @@ impl<H: Host> Renderer<'_, H> {
                 }
                 None => self.cannot_edit(ui, *id, "This app cannot show frames here", "Frame"),
             },
+            Widget::Unknown => {
+                let text = self.host.tr("This part needs a newer version of the app");
+                let response = ui.label(self.text(&text, TextStyle::Weak));
+                self.label_registered(&response, &text);
+            }
         }
     }
 
@@ -464,6 +469,7 @@ impl<H: Host> Renderer<'_, H> {
                 let texture = self.texture(painter.ctx(), key)?;
                 painter.image(texture, rect, Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
             }
+            Shape::Unknown => {}
         }
         Some(())
     }
