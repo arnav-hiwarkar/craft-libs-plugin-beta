@@ -117,7 +117,11 @@ supplies only a painter: a function from a tree to `UiEvent`s. Use `craft_plugin
 on the craft UI framework. Both must pass `craft_plugin_ui::conformance::run_all` (feature `conformance`), which
 drives each case with real pointer and key input and compares literal events. The app draws what only it can
 draw through `Host` hooks with defaults that say "this app cannot …": `icon`, `curve`, `gradient`, `color`,
-`frame`. Create each panel slot with `Retained::with_level(contributions.event_level())`, and send a tool a
+`frame`. Answer `Host::unanswered(id)` from the panel's `Retained::unanswered(id)` while drawing that panel's
+tree (EffectCraft passes the `Shown` of `Panels::show` to its `AppHost`): the painter then shows a widget's
+own value while its event waits and the plugin's once answered; a painter of another toolkit keeps the same
+rule (the conformance harness's `Step::Hold` and `Step::Reply` cases check it). Create each panel slot with
+`Retained::with_level(contributions.event_level())`, and send a tool a
 `ToolEventKind` only when its `ui_level()` is at most the plugin's `event_level()`. Panel places
 (`Side`, `Bottom`, `Float`, `Status`, `Bar`), `PanelSpec.keys`, the panel menu (`Retained::menu`, `PANEL_MENU`),
 `host::show_panel`, `host::command_state` and the frame widget map to the app's dock, shortcut routing, panel

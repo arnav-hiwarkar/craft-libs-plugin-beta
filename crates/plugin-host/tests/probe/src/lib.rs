@@ -1347,7 +1347,11 @@ impl Panel for Watch {
 }
 
 fn wait_while_held() {
-    while host::read_file(Root::Bundle, "hold").is_ok() {
+    wait_while_held_by("hold");
+}
+
+fn wait_while_held_by(file: &str) {
+    while host::read_file(Root::Bundle, file).is_ok() {
         host::notify("held");
     }
 }
@@ -1877,7 +1881,9 @@ struct Notes {
 
 impl Panel for Notes {
     fn ui(&mut self, ui: &mut Ui) {
-        ui.text_edit("note", &mut self.text, "Note");
+        if ui.text_edit("note", &mut self.text, "Note") {
+            wait_while_held_by("hold-notes");
+        }
         ui.label(&format!("note {}: {}", ui.instance().unwrap_or("-"), self.text));
     }
 }
