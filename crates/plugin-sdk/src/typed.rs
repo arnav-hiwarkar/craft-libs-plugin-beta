@@ -1,7 +1,7 @@
 use crate::curve::{CURVE_CHANNELS, Curve, check_points};
 use crate::effect::{Cx, Image};
 use crate::gradient::Gradient;
-use crate::wire::{EffectSpec, Is, Param, ParamKind, Value};
+use crate::wire::{EffectSpec, Param, ParamKind, Value};
 
 pub trait FromParam: Sized {
     fn from_param(cx: &Cx, id: &'static str) -> Self;
@@ -227,20 +227,7 @@ impl EffectSpec {
             if let ParamKind::Curve { default, .. } = &param.kind {
                 check_points(default).map_err(|error| format!("effect `{}`: parameter `{}`: the default {error}", self.id, param.id))?;
             }
-            for when in param.visible_when.iter().chain(&param.enabled_when) {
-                let fits = |kind: &ParamKind| match when.is {
-                    Is::On => matches!(kind, ParamKind::Checkbox { .. }),
-                    Is::Equals(_) | Is::NotEquals(_) => {
-                        matches!(kind, ParamKind::Slider { .. } | ParamKind::Percent { .. } | ParamKind::Angle { .. } | ParamKind::Popup { .. })
-                    }
-                };
-                if !self.params.iter().any(|other| other.id == when.param && other.id != param.id && fits(&other.kind)) {
-                    return Err(format!(
-                        "effect `{}`: parameter `{}` depends on `{}`, which is not another of its parameters of a kind that fits {:?}; name a checkbox for `Is::On` or a number or popup for `Is::Equals`",
-                        self.id, param.id, when.param, when.is
-                    ));
-                }
-            }
+            param.check_conditions("parameter", &self.params).map_err(|error| format!("effect `{}`: {error}", self.id))?;
         }
         for preset in &self.presets {
             for (id, value) in &preset.values {

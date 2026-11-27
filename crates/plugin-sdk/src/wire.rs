@@ -468,6 +468,24 @@ impl Param {
         self
     }
 
+    pub(crate) fn check_conditions(&self, noun: &str, siblings: &[Param]) -> Result<(), String> {
+        for when in self.visible_when.iter().chain(&self.enabled_when) {
+            let fits = |kind: &ParamKind| match when.is {
+                Is::On => matches!(kind, ParamKind::Checkbox { .. }),
+                Is::Equals(_) | Is::NotEquals(_) => {
+                    matches!(kind, ParamKind::Slider { .. } | ParamKind::Percent { .. } | ParamKind::Angle { .. } | ParamKind::Popup { .. })
+                }
+            };
+            if !siblings.iter().any(|other| other.id == when.param && other.id != self.id && fits(&other.kind)) {
+                return Err(format!(
+                    "{noun} `{}` depends on `{}`, which is not another of its {noun}s of a kind that fits {:?}; name a checkbox for `Is::On` or a number or popup for `Is::Equals`",
+                    self.id, when.param, when.is
+                ));
+            }
+        }
+        Ok(())
+    }
+
     pub fn visible(&self, value: impl Fn(&str) -> Option<Value>) -> bool {
         self.visible_when.as_ref().is_none_or(|when| when.holds(value(&when.param).as_ref()))
     }
@@ -1420,10 +1438,13 @@ impl Form {
                 field.id
             ));
         }
-        match self.fields.iter().enumerate().find(|(at, field)| self.fields[..*at].iter().any(|before| before.id == field.id)) {
-            Some((_, field)) => Err(format!("form field `{}` appears twice; give each field its own id", field.id)),
-            None => Ok(()),
+        if let Some((_, field)) = self.fields.iter().enumerate().find(|(at, field)| self.fields[..*at].iter().any(|before| before.id == field.id)) {
+            return Err(format!("form field `{}` appears twice; give each field its own id", field.id));
         }
+        self.fields
+            .iter()
+            .try_for_each(|field| field.check_conditions("field", &self.fields))
+            .map_err(|error| format!("form `{}`: {error}", self.title))
     }
 
     pub fn defaults(&self) -> BTreeMap<String, Value> {
@@ -2299,6 +2320,32 @@ pub enum Paint {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_form_field_condition_is_checked_like_an_effect_parameters() {
+        let refused = |form: Form| form.check().unwrap_err();
+        let missing = Form::new("Settings").field(Param::slider("amount", "Amount", 1.0, 0.0..=10.0).visible_when("missing", Is::On));
+        assert_eq!(
+            refused(missing),
+            "form `Settings`: field `amount` depends on `missing`, which is not another of its fields of a kind that fits On; name a checkbox for `Is::On` or a number or popup for `Is::Equals`"
+        );
+        let wrong_kind = Form::new("Settings")
+            .field(Param::slider("mode", "Mode", 1.0, 0.0..=10.0))
+            .field(Param::slider("amount", "Amount", 1.0, 0.0..=10.0).enabled_when("mode", Is::On));
+        assert_eq!(
+            refused(wrong_kind),
+            "form `Settings`: field `amount` depends on `mode`, which is not another of its fields of a kind that fits On; name a checkbox for `Is::On` or a number or popup for `Is::Equals`"
+        );
+        let itself = Form::new("Settings").field(Param::checkbox("manual", "Manual", false).visible_when("manual", Is::On));
+        assert_eq!(
+            refused(itself),
+            "form `Settings`: field `manual` depends on `manual`, which is not another of its fields of a kind that fits On; name a checkbox for `Is::On` or a number or popup for `Is::Equals`"
+        );
+        let fine = Form::new("Settings")
+            .field(Param::checkbox("manual", "Manual", false))
+            .field(Param::slider("amount", "Amount", 1.0, 0.0..=10.0).visible_when("manual", Is::On));
+        assert_eq!(fine.check(), Ok(()));
+    }
 
     #[test]
     fn an_answer_keeps_the_prior_value_of_a_field_its_own_answer_turns_off() {
