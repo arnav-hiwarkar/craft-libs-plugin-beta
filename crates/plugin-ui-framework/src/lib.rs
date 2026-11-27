@@ -2,8 +2,8 @@
 
 mod canvas;
 mod containers;
-pub mod dock;
 mod drag_source;
+pub mod host;
 mod icons;
 mod key_area;
 mod list;

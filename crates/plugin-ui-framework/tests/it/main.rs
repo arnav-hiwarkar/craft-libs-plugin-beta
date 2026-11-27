@@ -76,14 +76,8 @@ impl Dock {
     }
 
     fn commands(&mut self) {
-        let (catalog, states) = {
-            let app = self.app.borrow();
-            (app.catalog(), app.command_states())
-        };
-        self.fixture.catalog(catalog);
-        for (command, state) in states {
-            self.fixture.command_state(command, state);
-        }
+        let commands = self.app.borrow().dock.commands();
+        self.fixture.commands(commands);
     }
 
     fn fired(&mut self) {
@@ -180,7 +174,8 @@ fn a_plugin_notice_reaches_the_notice_center() {
 fn unloading_the_plugin_hides_its_panel_and_reloading_brings_it_back_where_it_was() {
     let mut dock = Dock::new();
     let places = |dock: &Dock| {
-        let layout = &dock.app.borrow().workspace.layout;
+        let app = dock.app.borrow();
+        let layout = app.dock.layout();
         let panels: Vec<String> = layout.panels().into_iter().filter(|panel| panel.starts_with("plugin.")).cloned().collect();
         panels.into_iter().map(|panel| (layout.location(&panel).ok(), layout.panel_state(&panel), panel)).collect::<Vec<_>>()
     };
@@ -249,7 +244,7 @@ fn a_command_the_plugin_disables_shows_disabled_on_the_toolbar_and_does_not_run(
 fn a_frame_widget_shows_what_the_app_renders_for_the_plugin_request_and_takes_clicks() {
     let mut dock = Dock::new();
     dock.bring("preview");
-    let asked = dock.app.borrow().frames.last().cloned().expect("the app was asked for the preview's frame");
+    let asked = dock.app.borrow().frames().last().cloned().expect("the app was asked for the preview's frame");
     assert_eq!((asked.time, asked.scale, asked.comp), (0.0, 0.25, None));
     dock.click("Frame");
     assert!(dock.find("1 clicks").is_some(), "a click on the app's frame reached the plugin");
