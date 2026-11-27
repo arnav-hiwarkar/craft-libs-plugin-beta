@@ -321,8 +321,9 @@ impl Painter<'_> {
             Widget::Gradient { id, text, value } => self.gradient(ui, *id, text, value),
             Widget::Image { id, key, size } => self.image(ui, *id, key, *size, extras),
             Widget::Grid { id, columns, children } => {
-                let widths = vec![craft_behavior::ColumnWidth::Content; (*columns).clamp(1, values::MAX_COLUMNS) as usize];
-                Grid::new(widths).id_salt(self.salt(*id)).show(ui, |ui, _| self.all(ui, children));
+                Grid::new(&values::CONTENT_COLUMNS[..(*columns).clamp(1, values::MAX_COLUMNS) as usize])
+                    .id_salt(self.salt(*id))
+                    .show(ui, |ui, _| self.all(ui, children));
             }
             Widget::Split { id, axis, first, second } => self.split(ui, *id, *axis, first, second),
             Widget::DropTarget { id, children } => self.drop_target(ui, *id, children),

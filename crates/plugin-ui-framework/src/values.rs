@@ -8,6 +8,8 @@ use craft_ui::runtime::env::Env;
 
 pub(crate) const CURVE_LEVELS: u32 = 255;
 pub(crate) const MAX_COLUMNS: u32 = 64;
+pub(crate) static CONTENT_COLUMNS: [craft_behavior::ColumnWidth; MAX_COLUMNS as usize] =
+    [const { craft_behavior::ColumnWidth::Content }; MAX_COLUMNS as usize];
 pub(crate) const MAX_ROOM: f32 = 16_384.0;
 
 pub fn changed<T: Clone + PartialEq>(out: &EditResponse<T>, given: &T) -> Option<T> {
