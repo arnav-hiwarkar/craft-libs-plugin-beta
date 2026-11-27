@@ -264,3 +264,21 @@ fn the_default_triangulation_covers_a_concave_polygon_with_indices_into_its_own_
     }
     assert!(triangulate(&[[0.0, 0.0], [1.0, 0.0]]).is_empty(), "two points are no polygon");
 }
+
+#[test]
+fn a_click_on_a_button_gives_the_panel_the_key_focus_and_a_click_on_a_field_keeps_the_field_its_keys() {
+    let pressed = Rc::new(RefCell::new(Vec::new()));
+    let host = Plugged { keys: vec!["Delete".into()], pressed: Rc::clone(&pressed), ..Default::default() };
+    let tree =
+        vec![Widget::Button { id: 1, text: "Apply".into(), enabled: true }, Widget::TextEdit { id: 2, value: "abc".into(), hint: "Name".into() }];
+    let (mut fixture, events) = shown_with(tree, host);
+    let apply = fixture.by_label("Apply").expect("the button");
+    fixture.click(&apply).settle();
+    assert_eq!(events.take(), vec![UiEvent { id: 1, kind: craft_plugin::UiEventKind::Click }], "the button still acts on the click");
+    fixture.key(egui::Key::Delete, egui::Modifiers::NONE).settle();
+    assert_eq!(pressed.take(), vec!["Delete".to_string()], "the click gave the panel the key focus");
+    let name = fixture.by_label("Name").expect("the text field");
+    fixture.click(&name).settle();
+    fixture.key(egui::Key::Delete, egui::Modifiers::NONE).settle();
+    assert_eq!(pressed.take(), Vec::<String>::new(), "the focused field keeps Delete");
+}
