@@ -3807,6 +3807,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-plugin-ui-framework"
+version = "0.1.0"
+dependencies = [
+ "craft-behavior",
+ "craft-color-ui",
+ "craft-host",
+ "craft-imaging",
+ "craft-keymap",
+ "craft-plugin",
+ "craft-plugin-host",
+ "craft-plugin-ui",
+ "craft-theme",
+ "craft-ui",
+ "egui",
+ "egui_kittest",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "craft-png"
 version = "0.1.0"
 dependencies = [
